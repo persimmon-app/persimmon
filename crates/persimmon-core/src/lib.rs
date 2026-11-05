@@ -7,6 +7,7 @@
 //! lives only in [`platform`]. Everything else must compile and pass its tests
 //! unchanged on macOS, Windows and Linux.
 
+pub mod error;
 pub mod platform;
 
 /// The engine's version, from `Cargo.toml`.
