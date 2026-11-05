@@ -12,8 +12,14 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use unicode_normalization::UnicodeNormalization;
 
 use crate::error::{Error, ErrorCode};
+
+/// The longest file name, in bytes, that APFS, ext4 and NTFS all accept.
+const NAME_MAX: usize = 255;
 
 const NOT_WRITABLE: &str = "can't write to this folder";
 const OUT_FIX: &str = "choose another folder with --out <dir>";
@@ -83,11 +89,37 @@ pub fn ensure_writable(dir: &Path) -> Result<(), Error> {
     }
 }
 
+/// The identity of a path for clash checks. Default APFS and NTFS treat
+/// names that differ only in case or in Unicode normalisation (NFC vs NFD)
+/// as one file, so the key folds both, after resolving the folder. On a
+/// case-sensitive volume this only ever adds a needless counter.
+fn clash_key(path: &Path) -> PathBuf {
+    let fold = |s: &str| s.nfc().collect::<String>().to_lowercase();
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let name = path
+        .file_name()
+        .map(|n| fold(&n.to_string_lossy()))
+        .unwrap_or_default();
+    PathBuf::from(fold(&dir.to_string_lossy())).join(name)
+}
+
+/// Mark `path` as taken, so no output in this batch is given its name.
+/// Planning reserves every input this way: `--overwrite` replaces earlier
+/// outputs, never the file being read.
+pub fn reserve(taken: &mut HashSet<PathBuf>, path: &Path) {
+    taken.insert(clash_key(path));
+}
+
 /// A free output path in `dir`: `stem.ext`, else the first `stem (n).ext`
-/// that is neither on disk nor already `taken` by this batch. The result
-/// is added to `taken`. With `overwrite`, files on disk don't count as
-/// clashes, but names taken by the batch still do. An empty `ext` (an
-/// extracted folder) gives a name without a dot.
+/// that is neither on disk nor already `taken` by this batch (compared
+/// ignoring case and normalisation). The result is added to `taken`. With
+/// `overwrite`, files on disk don't count as clashes, but names taken by
+/// the batch still do. An empty `ext` (an extracted folder) gives a name
+/// without a dot. A stem too long for a 255-byte name is shortened.
 pub fn free_name(
     dir: &Path,
     stem: &str,
@@ -96,21 +128,28 @@ pub fn free_name(
     taken: &mut HashSet<PathBuf>,
 ) -> PathBuf {
     let name = |suffix: String| {
+        let tail = suffix.len() + if ext.is_empty() { 0 } else { ext.len() + 1 };
+        let mut cut = stem.len().min(NAME_MAX.saturating_sub(tail));
+        while !stem.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let stem = &stem[..cut];
         if ext.is_empty() {
             dir.join(format!("{stem}{suffix}"))
         } else {
             dir.join(format!("{stem}{suffix}.{ext}"))
         }
     };
-    let is_free =
-        |p: &PathBuf| !taken.contains(p) && (overwrite || std::fs::symlink_metadata(p).is_err());
+    let is_free = |p: &PathBuf| {
+        !taken.contains(&clash_key(p)) && (overwrite || std::fs::symlink_metadata(p).is_err())
+    };
     let mut candidate = name(String::new());
     let mut n = 1u32;
     while !is_free(&candidate) {
         candidate = name(format!(" ({n})"));
         n += 1;
     }
-    taken.insert(candidate.clone());
+    reserve(taken, &candidate);
     candidate
 }
 
@@ -126,14 +165,12 @@ pub struct PendingOutput {
 
 impl PendingOutput {
     /// Prepare to write `dest`. The temporary path is
-    /// `{dir}/.{file_name}.prsm-{pid}.part`, in the same folder so the
-    /// final rename never crosses volumes.
+    /// `{dir}/.prsm-{pid}-{n}.part`: in the same folder, so the final rename
+    /// never crosses volumes, and short, so it fits wherever `dest` does.
     pub fn new(dest: PathBuf) -> PendingOutput {
-        let file_name = dest
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let temp = dest.with_file_name(format!(".{file_name}.prsm-{}.part", std::process::id()));
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let temp = dest.with_file_name(format!(".prsm-{}-{n}.part", std::process::id()));
         PendingOutput {
             dest,
             temp,
@@ -255,6 +292,75 @@ mod tests {
     }
 
     #[test]
+    fn free_name_folds_case_and_normalisation() {
+        let dir = scratch("fold");
+        let mut taken = HashSet::new();
+        assert_eq!(
+            free_name(&dir, "Snap", "webp", false, &mut taken),
+            dir.join("Snap.webp")
+        );
+        assert_eq!(
+            free_name(&dir, "snap", "webp", false, &mut taken),
+            dir.join("snap (1).webp")
+        );
+        assert_eq!(
+            free_name(&dir, "caf\u{e9}", "webp", false, &mut taken),
+            dir.join("caf\u{e9}.webp")
+        );
+        assert_eq!(
+            free_name(&dir, "cafe\u{301}", "webp", false, &mut taken),
+            dir.join("cafe\u{301} (1).webp")
+        );
+    }
+
+    #[test]
+    fn reserved_inputs_are_never_output_names() {
+        let dir = scratch("reserve");
+        std::fs::write(dir.join("photo.jpg"), b"x").unwrap();
+        let mut taken = HashSet::new();
+        reserve(&mut taken, &dir.join("photo.jpg"));
+        assert_eq!(
+            free_name(&dir, "photo", "jpg", true, &mut taken),
+            dir.join("photo (1).jpg")
+        );
+    }
+
+    #[test]
+    fn free_name_fits_the_name_limit() {
+        let dir = scratch("long");
+        let mut taken = HashSet::new();
+        let stem = "\u{e9}".repeat(126); // 252 bytes
+        let first = free_name(&dir, &stem, "webp", false, &mut taken);
+        let second = free_name(&dir, &stem, "webp", false, &mut taken);
+        for p in [&first, &second] {
+            let name = p.file_name().unwrap().to_str().unwrap();
+            assert!(name.len() <= 255, "{} bytes", name.len());
+            assert!(name.ends_with(".webp"));
+        }
+        assert!(
+            second
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with(" (1).webp")
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn pending_temp_name_is_short_and_works_for_long_names() {
+        let dir = scratch("long-temp");
+        let dest = dir.join(format!("{}.webp", "a".repeat(250)));
+        let pending = PendingOutput::new(dest.clone());
+        assert!(pending.temp_path().file_name().unwrap().len() < 64);
+        std::fs::write(pending.temp_path(), b"done").unwrap();
+        assert_eq!(pending.commit(false).unwrap(), dest);
+        let other = PendingOutput::new(dest.clone());
+        assert_ne!(other.temp_path(), PendingOutput::new(dest).temp_path());
+    }
+
+    #[test]
     fn free_name_folder_without_ext() {
         let dir = scratch("folder");
         std::fs::create_dir(dir.join("photos")).unwrap();
@@ -296,10 +402,13 @@ mod tests {
         let dest = dir.join("out.webp");
         let pending = PendingOutput::new(dest.clone());
         let temp = pending.temp_path().to_path_buf();
-        assert_eq!(
-            temp,
-            dir.join(format!(".out.webp.prsm-{}.part", std::process::id()))
+        assert_eq!(temp.parent(), Some(dir.as_path()));
+        let name = temp.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with(&format!(".prsm-{}-", std::process::id())),
+            "{name}"
         );
+        assert!(name.ends_with(".part"), "{name}");
         std::fs::write(&temp, b"half").unwrap();
         drop(pending);
         assert!(!temp.exists());

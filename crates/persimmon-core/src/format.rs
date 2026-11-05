@@ -232,6 +232,10 @@ pub fn sniff(head: &[u8]) -> Option<FormatId> {
     if starts(b"OggS") {
         return Some(Opus);
     }
+    // AAC in ADTS frames (a plain .aac file): sync word FFF, layer 00.
+    if head.len() >= 2 && head[0] == 0xFF && matches!(head[1], 0xF0 | 0xF1 | 0xF8 | 0xF9) {
+        return Some(M4a);
+    }
     if starts(b"ID3")
         || (head.len() >= 2 && head[0] == 0xFF && matches!(head[1], 0xF2 | 0xF3 | 0xFA | 0xFB))
     {
@@ -309,6 +313,9 @@ mod tests {
         assert_eq!(sniff(&[0xFF, 0xF3, 0x90]), Some(Mp3));
         assert_eq!(sniff(&[0xFF, 0xF2, 0x90]), Some(Mp3));
         assert_eq!(sniff(&[0xFF, 0xFA, 0x90]), Some(Mp3));
+        // AAC in ADTS frames, as in a plain .aac file.
+        assert_eq!(sniff(&[0xFF, 0xF1, 0x50, 0x80]), Some(M4a));
+        assert_eq!(sniff(&[0xFF, 0xF9, 0x50, 0x80]), Some(M4a));
         let mut mkv = vec![0x1A, 0x45, 0xDF, 0xA3];
         mkv.extend_from_slice(b"\x9f\x42\x86\x81\x01\x42\x82\x88matroska");
         assert_eq!(sniff(&mkv), Some(Mkv));

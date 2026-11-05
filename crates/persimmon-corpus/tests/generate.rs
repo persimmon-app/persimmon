@@ -104,3 +104,21 @@ fn large_case_is_sparse_and_4gb() {
     assert_eq!(large.expect, Expect::Format("mov"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn generate_refuses_a_folder_it_did_not_make() {
+    let dir = scratch("foreign");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("precious.txt"), b"keep me").unwrap();
+    assert!(generate(&dir, &Options { large: false }).is_err());
+    assert_eq!(std::fs::read(dir.join("precious.txt")).unwrap(), b"keep me");
+}
+
+#[test]
+fn generate_accepts_an_empty_existing_folder() {
+    let dir = scratch("empty-existing");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(generate(&dir, &Options { large: false }).is_ok());
+}

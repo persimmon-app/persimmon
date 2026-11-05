@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::detect::detect;
 use crate::error::{Error, ErrorCode};
 use crate::format::{FormatId, format_for_name};
-use crate::output::{OutputPolicy, free_name};
+use crate::output::{OutputPolicy, free_name, reserve};
 use crate::registry::{Backend, Operation, Registry};
 
 /// `--quality`.
@@ -159,6 +159,9 @@ impl Job {
     pub fn plan(&self, reg: &Registry) -> Plan {
         let inputs = dedupe(&self.inputs);
         let mut taken = HashSet::new();
+        for input in &inputs {
+            reserve(&mut taken, input);
+        }
         let mut plan = Plan::new();
         match self.op {
             Operation::Convert | Operation::Compress | Operation::Extract => {
@@ -424,6 +427,44 @@ mod tests {
         assert_eq!(
             outputs(&plan),
             vec![dir.join("a.webp"), dir.join("a (1).webp")]
+        );
+    }
+
+    #[test]
+    fn batch_clash_ignores_case() {
+        let dir = scratch("clash-case");
+        let a = put(&dir, "Snap.png", &PNG_1X1);
+        let b = put(&dir, "snap.gif", GIF_1X1);
+        let plan =
+            job(Operation::Convert, vec![a, b], Some(FormatId::Webp)).plan(&Registry::builtin());
+        assert_eq!(
+            outputs(&plan),
+            vec![dir.join("Snap.webp"), dir.join("snap (1).webp")]
+        );
+    }
+
+    #[test]
+    fn output_never_replaces_an_input() {
+        let dir = scratch("self");
+        let p = put(&dir, "photo.jpg", &PNG_1X1);
+        let mut j = job(Operation::Convert, vec![p], Some(FormatId::Jpeg));
+        j.output.overwrite = true;
+        assert_eq!(
+            outputs(&j.plan(&Registry::builtin())),
+            vec![dir.join("photo (1).jpg")]
+        );
+    }
+
+    #[test]
+    fn merge_output_never_replaces_an_input() {
+        let dir = scratch("merge-self");
+        let a = put(&dir, "merged.pdf", b"%PDF-1.4\n");
+        let b = put(&dir, "b.pdf", b"%PDF-1.4\n");
+        let mut j = job(Operation::Merge, vec![a, b], Some(FormatId::Pdf));
+        j.output.overwrite = true;
+        assert_eq!(
+            outputs(&j.plan(&Registry::builtin())),
+            vec![dir.join("merged (1).pdf")]
         );
     }
 

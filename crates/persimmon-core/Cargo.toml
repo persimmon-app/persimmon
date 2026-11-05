@@ -16,3 +16,6 @@ persimmon-corpus = { path = "../persimmon-corpus" }
 
 [lints]
 workspace = true
+
+[dependencies]
+unicode-normalization = "0.1"
