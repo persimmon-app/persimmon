@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
 authors = ["Persimmon contributors"]
+repository = "https://github.com/persimmon-app/persimmon"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
