@@ -1,0 +1,5 @@
+# Pinned so CI and local builds agree. Bump deliberately, in its own commit.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,19 @@
+[package]
+name = "persimmon-cli"
+description = "prsm, the Persimmon command line: offline file conversion you can script."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The binary is `prsm`, not `psm` (DD-23): macOS ships /usr/bin/psm.
+[[bin]]
+name = "prsm"
+path = "src/main.rs"
+
+[dependencies]
+persimmon-core = { path = "../persimmon-core", version = "0.0.1" }
+
+[lints]
+workspace = true

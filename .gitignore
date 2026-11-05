@@ -1,0 +1,6 @@
+/target
+.DS_Store
+# Spike build products. The spike sources and FINDINGS stay tracked.
+/spikes/*/build/
+# Spike logs name personal files and folders on the machine they ran on. Kept locally, never published.
+/spikes/*/logs/

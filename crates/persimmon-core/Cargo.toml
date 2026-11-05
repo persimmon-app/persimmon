@@ -1,0 +1,11 @@
+[package]
+name = "persimmon-core"
+description = "The conversion engine behind Persimmon: platform-neutral, offline file conversion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
