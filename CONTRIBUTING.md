@@ -1,6 +1,6 @@
 # Contributing to Persimmon
 
-Thank you for looking. Persimmon is pre-release: it is in Phase 0, and nothing converts files yet. Read [`PLAN.md`](PLAN.md) first. It holds the decisions, and it wins any disagreement with another file.
+Thank you for looking. Persimmon is pre-release: it is in Phase 0, and nothing converts files yet. If you are planning anything larger than a small fix, open an issue first so the change can be agreed before you write it.
 
 By taking part you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -34,8 +34,8 @@ CI runs those on macOS, Windows and Linux for every push. All three must pass, e
 
 ## Rules that are easy to miss
 
-- **Scope.** Persimmon converts, compresses and extracts, plus rename, metadata, OCR and watch folders. Editing, timelines, colour grading, cloud sync, accounts and AI features are out (DD-01). A change outside that boundary will be declined however good it is.
+- **Scope.** Persimmon converts, compresses and extracts, plus rename, metadata, OCR and watch folders. Editing, timelines, colour grading, cloud sync, accounts and AI features are out. A change outside that boundary will be declined however good it is.
 - **Offline.** No network code in the build.
-- **Platform code stays in one place.** `persimmon-core` and `prsm` contain no platform-conditional code outside `crates/persimmon-core/src/platform/` (DD-22). A macOS-only feature above that boundary gets a line in [`docs/port-notes.md`](docs/port-notes.md) in the same change.
+- **Platform code stays in one place.** `persimmon-core` and `prsm` contain no platform-conditional code outside `crates/persimmon-core/src/platform/`. A macOS-only feature above that boundary must say so in its pull request description, with the macOS API it rests on, so the Windows and Linux port can be tracked.
 - **Dependencies are listed.** Anything bundled or linked goes into [`THIRD-PARTY.md`](THIRD-PARTY.md) in the same change, with its licence. It must be compatible with GPL-3.0-or-later. unRAR is never used.
-- **Markdown is not hard-wrapped.** One paragraph, list item or table row is one line, however long (WD-09).
+- **Markdown is not hard-wrapped.** One paragraph, list item or table row is one line, however long.

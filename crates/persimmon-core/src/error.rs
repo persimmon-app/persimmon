@@ -4,7 +4,7 @@
 //! Structured errors (DD-17). Every failure carries a machine code, a
 //! reason, the file it concerns where there is one, and a fix where one
 //! exists. Each code maps to a stable process exit code; the table is the
-//! public contract in `docs/exit-codes.md`.
+//! public contract in the README's "Exit codes" section.
 
 use std::fmt;
 use std::path::PathBuf;

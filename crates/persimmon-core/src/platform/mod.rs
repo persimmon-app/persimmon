@@ -4,7 +4,7 @@
 //! The only place in the core allowed to contain platform-conditional code
 //! (DD-22). Keep it thin: each item here is a small, documented difference
 //! between operating systems, never a feature. Anything macOS-only that lands
-//! above this boundary gets a line in `docs/port-notes.md`.
+//! above this boundary is recorded in the port notes.
 
 /// The operating system this build targets, as a short lowercase name.
 pub const fn os_name() -> &'static str {

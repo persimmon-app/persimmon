@@ -2,7 +2,7 @@
 # CI runs `cargo deny check licenses` on Ubuntu for every push.
 #
 # Every licence here is compatible with GPL-3.0-or-later. Widening this list
-# is an owner decision, recorded in PLAN.md: never add a licence just to make
+# is an owner decision: never add a licence just to make
 # a red build green.
 
 [licenses]

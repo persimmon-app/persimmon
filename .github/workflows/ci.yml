@@ -37,7 +37,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # The 4 GB sparse corpus file runs where the filesystem keeps it
-      # sparse: APFS and ext4, not NTFS (docs/corpus.md).
+      # sparse: APFS and ext4, not NTFS.
       - name: Test
         run: cargo test --workspace --locked
         env:

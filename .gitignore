@@ -1,6 +1,17 @@
 /target
 .DS_Store
-# Spike build products. The spike sources and FINDINGS stay tracked.
-/spikes/*/build/
-# Spike logs name personal files and folders on the machine they ran on. Kept locally, never published.
-/spikes/*/logs/
+
+# Planning and private material stays local and is never pushed (WD-11).
+# The public repository carries only what builds, tests, licenses and
+# explains the product: crates/, CI, the Cargo and toolchain files, README,
+# CONTRIBUTING, CODE_OF_CONDUCT, LICENSE and THIRD-PARTY.
+# Do not `git add -f` anything below. If a new planning or notes file is
+# needed, put it under one of these paths.
+/PLAN.md
+/ROADMAP.md
+/docs/
+/spikes/
+/tools/contrast-audit/
+/notes/
+/private/
+*.local.md

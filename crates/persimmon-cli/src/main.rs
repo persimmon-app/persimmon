@@ -5,7 +5,7 @@
 //!
 //! A thin layer over `persimmon-core`: it parses arguments, builds a job,
 //! prints the plan or the errors, and maps the first failure to a stable
-//! exit code (`docs/exit-codes.md`). Until the backends land, only
+//! exit code (see "Exit codes" in the README). Until the backends land, only
 //! `formats`, `info` and `--dry-run` do real work.
 
 mod render;

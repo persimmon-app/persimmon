@@ -3,8 +3,10 @@
 
 //! The ugly-file corpus (BL-T10), generated at test time instead of
 //! committed as binaries. Every case is a file (or folder) plus what the
-//! engine is expected to make of it. `docs/corpus.md` lists the cases and
-//! the manual checklist for what CI can't host.
+//! engine is expected to make of it.
+//!
+//! To generate it by hand: `cargo run -p persimmon-corpus -- <dir>`, adding
+//! `--large` for the 4 GB sparse case. Each line printed is `id<TAB>path`.
 //!
 //! Expectations are strings (format ids, error codes), not engine types:
 //! the engine's own tests depend on this crate, so it can't depend back.
