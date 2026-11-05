@@ -19,5 +19,8 @@ path = "src/main.rs"
 [dependencies]
 persimmon-core = { path = "../persimmon-core", version = "0.0.1" }
 
+[dev-dependencies]
+persimmon-corpus = { path = "../persimmon-corpus" }
+
 [lints]
 workspace = true

@@ -7,8 +7,16 @@ name = "persimmon-cli"
 version = "0.0.1"
 dependencies = [
  "persimmon-core",
+ "persimmon-corpus",
 ]
 
 [[package]]
 name = "persimmon-core"
+version = "0.0.1"
+dependencies = [
+ "persimmon-corpus",
+]
+
+[[package]]
+name = "persimmon-corpus"
 version = "0.0.1"

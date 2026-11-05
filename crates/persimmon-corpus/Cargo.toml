@@ -1,0 +1,15 @@
+[package]
+name = "persimmon-corpus"
+description = "Generates Persimmon's ugly-file test corpus (BL-T10). Test-only; never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+# No dependency on persimmon-core: the core's tests depend on this crate.
+
+[lints]
+workspace = true

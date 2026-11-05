@@ -11,5 +11,8 @@ readme.workspace = true
 keywords.workspace = true
 categories = ["multimedia"]
 
+[dev-dependencies]
+persimmon-corpus = { path = "../persimmon-corpus" }
+
 [lints]
 workspace = true
