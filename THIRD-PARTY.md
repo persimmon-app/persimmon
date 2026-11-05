@@ -8,8 +8,9 @@ Persimmon is GPL-3.0-or-later (DD-04). Every entry must be compatible with that.
 
 | Component | Version | Licence | Used for | Linked how |
 |---|---|---|---|---|
+| [clap](https://github.com/clap-rs/clap) | 4 | MIT OR Apache-2.0 | `prsm` argument parsing | Statically linked (Rust crate) |
 
-*None yet. `persimmon-core` and `persimmon-cli` use only the Rust standard library.*
+`persimmon-core` still uses only the Rust standard library. `persimmon-corpus` is a test-only crate and is never shipped.
 
 ## Never
 
