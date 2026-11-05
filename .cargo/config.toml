@@ -1,0 +1,4 @@
+# The minimum macOS is 14 Sonoma (DD-27). Only Apple targets read this variable;
+# Windows and Linux builds ignore it.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"

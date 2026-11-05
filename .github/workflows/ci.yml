@@ -46,6 +46,11 @@ jobs:
         shell: bash
         run: ./target/release/prsm --version
 
+      # DD-27: the minimum macOS is 14 Sonoma, declared through .cargo/config.toml.
+      - name: Check macOS deployment target
+        if: runner.os == 'macOS'
+        run: vtool -show-build target/release/prsm | grep -q 'minos 14.0'
+
       - name: Upload prsm
         uses: actions/upload-artifact@v6
         with:
