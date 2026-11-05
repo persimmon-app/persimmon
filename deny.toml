@@ -1,0 +1,22 @@
+# cargo-deny configuration: the licence guard for Rust dependencies (DD-04).
+# CI runs `cargo deny check licenses` on Ubuntu for every push.
+#
+# Every licence here is compatible with GPL-3.0-or-later. Widening this list
+# is an owner decision, recorded in PLAN.md: never add a licence just to make
+# a red build green.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "LGPL-2.1-or-later",
+    "GPL-3.0-or-later",
+]
+confidence-threshold = 0.9

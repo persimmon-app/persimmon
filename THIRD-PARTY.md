@@ -12,6 +12,8 @@ Persimmon is GPL-3.0-or-later (DD-04). Every entry must be compatible with that.
 
 `persimmon-core` still uses only the Rust standard library. `persimmon-corpus` is a test-only crate and is never shipped.
 
+Transitive Rust dependencies (clap's own dependencies, for example) aren't listed one by one. Instead, `cargo deny check licenses` runs in CI on every push and fails the build if any dependency carries a licence not on the list in `deny.toml`. The full inventory, with every transitive crate and its licence, is generated for each release.
+
 ## Never
 
 | Component | Why not |

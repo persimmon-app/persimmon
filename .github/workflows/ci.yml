@@ -36,8 +36,27 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The 4 GB sparse corpus file runs where the filesystem keeps it
+      # sparse: APFS and ext4, not NTFS (docs/corpus.md).
       - name: Test
         run: cargo test --workspace --locked
+        env:
+          PERSIMMON_CORPUS_LARGE: ${{ runner.os != 'Windows' && '1' || '' }}
+
+      # The licence guard (DD-04): every Rust dependency, direct or
+      # transitive, must carry a licence on the deny.toml list. Once is
+      # enough, so it runs on Ubuntu only.
+      # RUSTFLAGS is cleared here: -D warnings is for our code, not for
+      # building a tool.
+      - name: Install cargo-deny
+        if: runner.os == 'Linux'
+        run: cargo install cargo-deny --locked
+        env:
+          RUSTFLAGS: ""
+
+      - name: Check licences
+        if: runner.os == 'Linux'
+        run: cargo deny check licenses
 
       - name: Build release
         run: cargo build --workspace --release --locked
