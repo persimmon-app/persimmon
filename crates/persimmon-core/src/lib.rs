@@ -10,6 +10,7 @@
 pub mod detect;
 pub mod error;
 pub mod format;
+pub mod output;
 pub mod platform;
 pub mod registry;
 
