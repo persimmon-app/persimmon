@@ -11,6 +11,7 @@ pub mod detect;
 pub mod error;
 pub mod format;
 pub mod platform;
+pub mod registry;
 
 /// The engine's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
