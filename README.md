@@ -34,6 +34,8 @@ The workspace has two crates. `persimmon-core` is the engine, platform-neutral b
 | [`PLAN.md`](PLAN.md) | **The living document** — directives, phases, design decisions, backlog. Start here. |
 | [`ROADMAP.md`](ROADMAP.md) | The detailed phase plan with schedule, costs and risks. |
 | [`docs/phase-0-spikes.md`](docs/phase-0-spikes.md) | The current phase, specified. |
+| [`docs/phase-0-gate.md`](docs/phase-0-gate.md) | Phase 0's outcome: the interaction model per platform, spike verdicts, go/no-go. |
+| [`docs/contrast-audit.md`](docs/contrast-audit.md) | WCAG contrast audit of the palette and the fixes adopted (DD-26). |
 | [`docs/naming.md`](docs/naming.md) | Trademark, registry and binary-name checks, and the licence variant (Task 0.1). |
 | [`docs/kickoff-prompt.md`](docs/kickoff-prompt.md) | The prompt that starts a development conversation with the right context. |
 | `spikes/` | Throwaway code for the Phase 0 spikes, one folder each. |
