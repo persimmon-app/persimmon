@@ -4,6 +4,9 @@
 //! Audio and video through a system FFmpeg (DD-29), always run as a child
 //! process (DD-09), never linked.
 
+// The backend that calls it lands in a later commit.
+#[allow(dead_code)]
+mod args;
 mod locate;
 mod probe;
 
