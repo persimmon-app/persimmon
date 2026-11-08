@@ -10,6 +10,7 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 |---|---|---|---|---|
 | [clap](https://github.com/clap-rs/clap) | 4 | MIT OR Apache-2.0 | `prsm` argument parsing | Statically linked (Rust crate) |
 | [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | 0.1 | (MIT OR Apache-2.0) AND Unicode-3.0 | `persimmon-core`: comparing output names the way APFS and NTFS do, so `café` in NFC and NFD forms can't overwrite each other | Statically linked (Rust crate) |
+| [ctrlc](https://github.com/Detegr/rust-ctrlc) | 3 | MIT OR Apache-2.0 | `prsm`: Ctrl-C cancels cleanly, leaving no partial files | Statically linked (Rust crate) |
 | [rs-vips](https://github.com/mrdkprj/rs-vips) | 0.7 | MIT | `persimmon-core`: Rust bindings to libvips, the image backend | Statically linked (Rust crate) |
 | [image](https://github.com/image-rs/image) | 0.25, `bmp` feature only | MIT OR Apache-2.0 | `persimmon-core`: decoding BMP, which libvips can only read through ImageMagick | Statically linked (Rust crate) |
 | [libvips](https://www.libvips.org/) | 8.15 or later | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked; installed separately (Homebrew `vips`, apt `libvips-dev`) until the app bundles it |

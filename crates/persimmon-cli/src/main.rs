@@ -4,9 +4,10 @@
 //! `prsm`, the Persimmon command line.
 //!
 //! A thin layer over `persimmon-core`: it parses arguments, builds a job,
-//! prints the plan or the errors, and maps the first failure to a stable
-//! exit code (see "Exit codes" in the README). Until the backends land, only
-//! `formats`, `info` and `--dry-run` do real work.
+//! runs it (or, with `--dry-run`, prints the plan), and maps the first
+//! failure to a stable exit code (see "Exit codes" in the README). Images
+//! convert for real; video, PDF and archive tasks fail with
+//! `NOT_IMPLEMENTED` until their backends land.
 
 mod render;
 
@@ -14,10 +15,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use persimmon_core::backend::Backends;
 use persimmon_core::detect::detect;
 use persimmon_core::error::{Error, ErrorCode};
+use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
 use persimmon_core::format::FormatId;
-use persimmon_core::job::{Job, JobOptions, PageRanges, Quality};
+use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Quality};
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::registry::{Operation, Registry};
 
@@ -116,6 +119,12 @@ struct TuneArgs {
     /// The ffmpeg binary to use instead of the one on PATH.
     #[arg(long, value_name = "PATH")]
     ffmpeg: Option<PathBuf>,
+    /// Images: shrink so the long edge is at most this many pixels.
+    #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(1..))]
+    max_size: Option<u32>,
+    /// Images: remove EXIF, XMP and colour profiles, converting to sRGB first.
+    #[arg(long)]
+    strip_metadata: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -214,6 +223,8 @@ impl TuneArgs {
         JobOptions {
             quality: self.quality.map(Quality::from),
             preset: self.preset.clone(),
+            max_size: self.max_size,
+            strip_metadata: self.strip_metadata,
             ..JobOptions::default()
         }
     }
@@ -247,8 +258,40 @@ fn info(reg: &Registry, file: PathBuf) -> Result<(), Error> {
     Ok(())
 }
 
-/// Plan a job, print the plan (or, without `--dry-run`, try to run it),
-/// and return the first failure in input order.
+/// How a task's input is named in output lines: the file, or for a merge,
+/// how many files.
+fn label(op: Operation, task: &PlannedTask) -> String {
+    match op {
+        Operation::Merge => {
+            let n = task.inputs.len();
+            format!("{n} {}", if n == 1 { "file" } else { "files" })
+        }
+        _ => show(&task.inputs[0]),
+    }
+}
+
+/// Report an error, and remember it if it's the batch's first.
+fn note(e: &Error, first: &mut Option<ErrorCode>) {
+    report(e);
+    first.get_or_insert(e.code);
+}
+
+/// The first Ctrl-C cancels: the file being converted finishes, the rest
+/// are skipped, and no partial file is left. A second Ctrl-C quits at once.
+fn cancel_on_ctrl_c() -> CancelToken {
+    let cancel = CancelToken::new();
+    let token = cancel.clone();
+    let _ = ctrlc::set_handler(move || {
+        if token.is_cancelled() {
+            std::process::exit(i32::from(ErrorCode::Cancelled.exit_code()));
+        }
+        token.cancel();
+    });
+    cancel
+}
+
+/// Plan a job, then run it (or, with `--dry-run`, print the plan). Output
+/// follows input order, and the first failure in that order is returned.
 fn run(
     reg: &Registry,
     op: Operation,
@@ -268,39 +311,58 @@ fn run(
         options,
     };
     let plan = job.plan(reg);
-    let mut first_failure = None;
-    for outcome in plan.outcomes() {
-        let failure = match outcome {
-            Err(e) => Some(e.clone()),
-            Ok(task) if out.dry_run => {
-                let from = match op {
-                    Operation::Merge => {
-                        let n = task.inputs.len();
-                        format!("{n} {}", if n == 1 { "file" } else { "files" })
-                    }
-                    _ => show(&task.inputs[0]),
-                };
-                println!("{from} → {}", show(&task.output));
-                None
+    // Input order: a planned task (by index) or a planning error.
+    let mut next_task = 0;
+    let order: Vec<Result<usize, &Error>> = plan
+        .outcomes()
+        .map(|o| match o {
+            Ok(_) => {
+                next_task += 1;
+                Ok(next_task - 1)
             }
-            Ok(task) => {
-                let e = Error::new(
-                    ErrorCode::NotImplemented,
-                    format!("the {} backend isn't built yet", task.backend.as_str()),
-                )
-                .with_fix("use --dry-run to see the plan");
-                Some(match op {
-                    Operation::Merge => e,
-                    _ => e.with_file(&task.inputs[0]),
-                })
+            Err(e) => Err(e),
+        })
+        .collect();
+    let mut first = None;
+
+    if out.dry_run {
+        for slot in &order {
+            match slot {
+                Ok(i) => {
+                    let task = &plan.tasks[*i];
+                    println!("{} → {}", label(op, task), show(&task.output));
+                }
+                Err(e) => note(e, &mut first),
             }
-        };
-        if let Some(e) = failure {
-            report(&e);
-            first_failure.get_or_insert(e.code);
+        }
+    } else {
+        let cancel = cancel_on_ctrl_c();
+        let mut cursor = 0;
+        execute(&job, &plan, &Backends::new(), &cancel, &mut |event| {
+            let Event::Finished { task, result, .. } = event else {
+                return;
+            };
+            // Planning errors that come before this task in input order.
+            while let Some(Err(e)) = order.get(cursor) {
+                note(e, &mut first);
+                cursor += 1;
+            }
+            cursor += 1;
+            match result {
+                Ok(Outcome::Written(path)) => println!("{} → {}", label(op, task), show(path)),
+                Ok(Outcome::NotSmaller) => {
+                    println!("{}: already compact, nothing written", label(op, task))
+                }
+                Err(e) => note(e, &mut first),
+            }
+        });
+        for slot in &order[cursor.min(order.len())..] {
+            if let Err(e) = slot {
+                note(e, &mut first);
+            }
         }
     }
-    match first_failure {
+    match first {
         Some(code) => Err(code),
         None => Ok(()),
     }

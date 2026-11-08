@@ -214,13 +214,14 @@ fn batch_exit_code_is_first_failure() {
 
 #[test]
 fn without_dry_run_is_not_implemented() {
+    // Images → PDF is the PDF backend, which arrives in week 6.
     let c = Corpus::new("not-impl");
-    let out = prsm(&c.dir, ["convert", "--to", "webp", "pixel.png"]);
+    let out = prsm(&c.dir, ["convert", "--to", "pdf", "pixel.png"]);
     assert_eq!(out.status.code(), Some(10));
     let err = stderr(&out);
-    assert!(err.contains("the image backend isn't built yet"), "{err}");
+    assert!(err.contains("the pdf backend isn't built yet"), "{err}");
     assert!(err.contains("fix: use --dry-run to see the plan"), "{err}");
-    assert!(!c.dir.join("pixel.webp").exists());
+    assert!(!c.dir.join("pixel.pdf").exists());
 }
 
 #[test]
@@ -310,4 +311,191 @@ fn large_file_info_is_fast() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(stdout(&out).contains("4.3 GB"), "{}", stdout(&out));
     assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+}
+
+#[cfg(feature = "vips")]
+mod images {
+    use super::*;
+    use persimmon_core::format::{FormatId, sniff};
+
+    /// True when no `.part` temp file is left anywhere in `dir`.
+    fn no_parts(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part"))
+    }
+
+    fn head(p: &Path) -> Vec<u8> {
+        let b = std::fs::read(p).unwrap();
+        b[..b.len().min(512)].to_vec()
+    }
+
+    #[test]
+    fn convert_writes_webp() {
+        let c = Corpus::new("img-webp");
+        let out = prsm(&c.dir, ["convert", "--to", "webp", "pixel.png"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "pixel.png → pixel.webp");
+        assert_eq!(
+            sniff(&head(&c.dir.join("pixel.webp"))),
+            Some(FormatId::Webp)
+        );
+        assert!(no_parts(&c.dir));
+    }
+
+    #[test]
+    fn mismatched_name_is_safe() {
+        let c = Corpus::new("img-mismatch");
+        let out = prsm(&c.dir, ["convert", "--to", "jpeg", "photo.jpg"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "photo.jpg → photo (1).jpg");
+        assert_eq!(
+            sniff(&head(&c.dir.join("photo (1).jpg"))),
+            Some(FormatId::Jpeg)
+        );
+        assert_eq!(
+            sniff(&head(&c.dir.join("photo.jpg"))),
+            Some(FormatId::Png),
+            "the input is untouched"
+        );
+    }
+
+    #[test]
+    fn compress_already_compact() {
+        let c = Corpus::new("img-compact");
+        let out = prsm(&c.dir, ["compress", "pixel.png"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out).trim_end(),
+            "pixel.png: already compact, nothing written"
+        );
+        assert!(!c.dir.join("pixel (compressed).png").exists());
+    }
+
+    #[test]
+    fn max_size_and_strip_flags() {
+        let c = Corpus::new("img-flags");
+        let out = prsm(
+            &c.dir,
+            [
+                "convert",
+                "--to",
+                "png",
+                "--max-size",
+                "100",
+                "--strip-metadata",
+                "images/photo.jpg",
+            ],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let png = std::fs::read(c.dir.join("images/photo.png")).unwrap();
+        let (w, h) = (
+            u32::from_be_bytes(png[16..20].try_into().unwrap()),
+            u32::from_be_bytes(png[20..24].try_into().unwrap()),
+        );
+        assert_eq!((w, h), (100, 75));
+    }
+
+    #[test]
+    fn batch_mixed() {
+        let c = Corpus::new("img-batch");
+        let out = prsm(
+            &c.dir,
+            [
+                "convert",
+                "--to",
+                "webp",
+                "pixel.png",
+                "empty.png",
+                "pixel.gif",
+            ],
+        );
+        assert_eq!(out.status.code(), Some(5));
+        let text = stdout(&out);
+        assert_eq!(
+            text.lines().filter(|l| l.contains('→')).count(),
+            2,
+            "{text}"
+        );
+        assert!(stderr(&out).contains("empty.png: file is empty"));
+    }
+
+    #[test]
+    fn pdf_still_not_implemented() {
+        let c = Corpus::new("img-pdf");
+        assert_eq!(
+            prsm(&c.dir, ["convert", "--to", "pdf", "pixel.png"])
+                .status
+                .code(),
+            Some(10)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_c_leaves_no_part() {
+        use std::io::BufRead;
+        let c = Corpus::new("img-ctrl-c");
+        let work = c.dir.join("many");
+        std::fs::create_dir(&work).unwrap();
+        let heic = std::fs::read(c.path("img-heic")).unwrap();
+        let mut args = vec![
+            "convert".to_string(),
+            "--to".into(),
+            "avif".into(),
+            "--".into(),
+        ];
+        for i in 0..40 {
+            std::fs::write(work.join(format!("p{i:02}.heic")), &heic).unwrap();
+            args.push(format!("p{i:02}.heic"));
+        }
+        let mut child = Command::new(PRSM)
+            .current_dir(&work)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Keep reading stdout to the end: closing the pipe early would make
+        // prsm's next line fail.
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        assert!(first.contains('→'), "{first}");
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut rest).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(130),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let written = std::fs::read_dir(&work)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "avif")
+            })
+            .count();
+        assert!((1..40).contains(&written), "{written} written");
+        assert!(no_parts(&work));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cancelled"));
+    }
+}
+
+#[cfg(not(feature = "vips"))]
+#[test]
+fn no_vips_is_backend_missing() {
+    let c = Corpus::new("no-vips");
+    let out = prsm(&c.dir, ["convert", "--to", "webp", "pixel.png"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(stderr(&out).contains("this build has no image backend"));
 }
