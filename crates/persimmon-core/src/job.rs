@@ -84,6 +84,10 @@ pub struct JobOptions {
     pub quality: Option<Quality>,
     pub preset: Option<String>,
     pub pages: Option<PageRanges>,
+    /// `--max-size`: shrink so the long edge is at most this many pixels.
+    pub max_size: Option<u32>,
+    /// `--strip-metadata`: convert to sRGB, then drop EXIF, XMP and profiles.
+    pub strip_metadata: bool,
 }
 
 /// What the user asked for.

@@ -11,6 +11,11 @@ readme.workspace = true
 keywords.workspace = true
 categories = ["multimedia"]
 
+[features]
+# The libvips image backend (DD-34). Filled in with its dependencies by the
+# backend itself.
+vips = []
+
 [dev-dependencies]
 persimmon-corpus = { path = "../persimmon-corpus" }
 

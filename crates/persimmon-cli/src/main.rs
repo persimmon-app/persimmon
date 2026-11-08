@@ -214,7 +214,7 @@ impl TuneArgs {
         JobOptions {
             quality: self.quality.map(Quality::from),
             preset: self.preset.clone(),
-            pages: None,
+            ..JobOptions::default()
         }
     }
 }

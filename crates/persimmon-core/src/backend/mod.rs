@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Persimmon contributors
+
+//! Backends: the engine components that turn one planned task into one
+//! output. The executor ([`crate::exec`]) handles naming, temp files and
+//! commits; a backend only writes the finished output to the temp path it
+//! is given.
+
+#[cfg(feature = "vips")]
+pub mod image;
+
+use std::path::Path;
+
+use crate::error::{Error, ErrorCode};
+use crate::exec::CancelToken;
+use crate::job::{JobOptions, PlannedTask};
+use crate::registry::Backend;
+
+/// What a backend did with a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Done {
+    /// The output is complete at the temp path.
+    Written,
+    /// Compressing wouldn't make the file smaller; nothing was written.
+    NotSmaller,
+}
+
+/// Something that can carry out planned tasks.
+pub trait Run {
+    /// Write `task`'s output to `temp`. On error, anything at `temp` is
+    /// removed by the caller.
+    fn run(
+        &self,
+        task: &PlannedTask,
+        options: &JobOptions,
+        temp: &Path,
+        cancel: &CancelToken,
+    ) -> Result<Done, Error>;
+}
+
+/// Every backend this build has, dispatched by [`PlannedTask::backend`].
+#[derive(Debug, Default)]
+pub struct Backends {
+    _private: (),
+}
+
+impl Backends {
+    pub fn new() -> Backends {
+        Backends { _private: () }
+    }
+}
+
+impl Run for Backends {
+    fn run(
+        &self,
+        task: &PlannedTask,
+        options: &JobOptions,
+        temp: &Path,
+        cancel: &CancelToken,
+    ) -> Result<Done, Error> {
+        match task.backend {
+            #[cfg(feature = "vips")]
+            Backend::Image => image::ImageBackend::new().run(task, options, temp, cancel),
+            #[cfg(not(feature = "vips"))]
+            Backend::Image => {
+                let _ = (options, temp, cancel);
+                Err(
+                    Error::new(ErrorCode::BackendMissing, "this build has no image backend")
+                        .with_file(&task.inputs[0])
+                        .with_fix("install a build of prsm made with libvips"),
+                )
+            }
+            other => {
+                let e = Error::new(
+                    ErrorCode::NotImplemented,
+                    format!("the {} backend isn't built yet", other.as_str()),
+                )
+                .with_fix("use --dry-run to see the plan");
+                // Many-to-one tasks have no single file to name.
+                Err(match task.inputs.as_slice() {
+                    [one] => e.with_file(one),
+                    _ => e,
+                })
+            }
+        }
+    }
+}

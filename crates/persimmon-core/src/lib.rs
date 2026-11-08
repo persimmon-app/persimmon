@@ -7,8 +7,10 @@
 //! lives only in [`platform`]. Everything else must compile and pass its tests
 //! unchanged on macOS, Windows and Linux.
 
+pub mod backend;
 pub mod detect;
 pub mod error;
+pub mod exec;
 pub mod format;
 pub mod job;
 pub mod output;
