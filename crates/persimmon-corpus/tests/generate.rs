@@ -122,3 +122,78 @@ fn generate_accepts_an_empty_existing_folder() {
     std::fs::create_dir_all(&dir).unwrap();
     assert!(generate(&dir, &Options { large: false }).is_ok());
 }
+
+#[test]
+fn image_samples_are_generated() {
+    let dir = scratch("images");
+    let _ = std::fs::remove_dir_all(&dir);
+    let cases = generate(&dir, &Options { large: false }).unwrap();
+    let get = |id: &str| {
+        cases
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("missing case {id}"))
+    };
+    for id in [
+        "img-jpeg",
+        "img-webp",
+        "img-heic",
+        "img-tiff",
+        "img-avif",
+        "img-bmp",
+        "img-orient-6",
+        "img-cmyk",
+        "img-p3",
+        "img-alpha",
+        "img-deep-16",
+        "img-anim",
+        "img-truncated",
+        "brackets",
+        "comma",
+    ] {
+        assert!(get(id).path.is_file(), "{id} not written");
+    }
+    assert_eq!(get("brackets").path.file_name().unwrap(), "photo [1].png");
+    assert_eq!(get("comma").path.file_name().unwrap(), "a,b.png");
+    assert_eq!(get("img-heic").expect, Expect::Format("heic"));
+
+    let cmyk = std::fs::read(&get("img-cmyk").path).unwrap();
+    assert_eq!(jpeg_components(&cmyk), Some(4));
+    let orient = std::fs::read(&get("img-orient-6").path).unwrap();
+    assert_eq!(exif_segments(&orient), 1);
+    assert_eq!(&orient[2..4], &[0xFF, 0xE0], "JFIF stays first");
+
+    let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+    let total: u64 = std::fs::read_dir(&samples)
+        .unwrap()
+        .map(|e| e.unwrap().metadata().unwrap().len())
+        .sum();
+    assert!(total < 2_000_000, "samples are {total} bytes");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The number of colour components in a JPEG's frame header.
+fn jpeg_components(jpeg: &[u8]) -> Option<u8> {
+    let mut i = 2;
+    while i + 4 <= jpeg.len() && jpeg[i] == 0xFF {
+        let len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+        if matches!(jpeg[i + 1], 0xC0..=0xC2) {
+            return jpeg.get(i + 9).copied();
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+/// How many APP1 EXIF segments precede the image data.
+fn exif_segments(jpeg: &[u8]) -> usize {
+    let (mut n, mut i) = (0, 2);
+    while i + 4 <= jpeg.len() && jpeg[i] == 0xFF && jpeg[i + 1] != 0xDA {
+        let len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+        if jpeg[i + 1] == 0xE1 && jpeg[i + 4..].starts_with(b"Exif\0\0") {
+            n += 1;
+        }
+        i += 2 + len;
+    }
+    n
+}

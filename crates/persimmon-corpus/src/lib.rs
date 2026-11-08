@@ -68,6 +68,89 @@ pub const WAV_HEADER: [u8; 44] = [
 /// The header of a QuickTime file: an `ftyp` box with the `qt  ` brand.
 const MOV_HEADER: &[u8] = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  ";
 
+/// The committed image samples: case id, file name, bytes, expected format.
+/// `img-truncated` detects as JPEG; converting it must fail.
+pub const IMAGE_SAMPLES: [(&str, &str, &[u8], &str); 13] = [
+    (
+        "img-jpeg",
+        "photo.jpg",
+        include_bytes!("../samples/photo.jpg"),
+        "jpeg",
+    ),
+    (
+        "img-webp",
+        "photo.webp",
+        include_bytes!("../samples/photo.webp"),
+        "webp",
+    ),
+    (
+        "img-heic",
+        "photo.heic",
+        include_bytes!("../samples/photo.heic"),
+        "heic",
+    ),
+    (
+        "img-tiff",
+        "photo.tif",
+        include_bytes!("../samples/photo.tif"),
+        "tiff",
+    ),
+    (
+        "img-avif",
+        "photo.avif",
+        include_bytes!("../samples/photo.avif"),
+        "avif",
+    ),
+    (
+        "img-bmp",
+        "photo.bmp",
+        include_bytes!("../samples/photo.bmp"),
+        "bmp",
+    ),
+    (
+        "img-orient-6",
+        "orient-6.jpg",
+        include_bytes!("../samples/orient-6.jpg"),
+        "jpeg",
+    ),
+    (
+        "img-cmyk",
+        "cmyk.jpg",
+        include_bytes!("../samples/cmyk.jpg"),
+        "jpeg",
+    ),
+    (
+        "img-p3",
+        "p3.jpg",
+        include_bytes!("../samples/p3.jpg"),
+        "jpeg",
+    ),
+    (
+        "img-alpha",
+        "alpha.png",
+        include_bytes!("../samples/alpha.png"),
+        "png",
+    ),
+    (
+        "img-deep-16",
+        "deep-16.png",
+        include_bytes!("../samples/deep-16.png"),
+        "png",
+    ),
+    (
+        "img-anim",
+        "anim.gif",
+        include_bytes!("../samples/anim.gif"),
+        "gif",
+    ),
+    (
+        "img-truncated",
+        "truncated.jpg",
+        include_bytes!("../samples/truncated.jpg"),
+        "jpeg",
+    ),
+];
+
 /// A minimal one-page PDF with a correct cross-reference table.
 pub fn minimal_pdf() -> Vec<u8> {
     let objects = [
@@ -164,6 +247,15 @@ pub fn generate(dir: &Path, opts: &Options) -> io::Result<Vec<Case>> {
         Format("png"),
     )?;
     file("leading-dash", "-rf.png", &PNG_1X1, Format("png"))?;
+    // Small real images for the image backend, made once and committed
+    // (`samples/README.md` says how). They live in `images/` so their names
+    // can't clash with the cases above.
+    for (id, name, bytes, fmt) in IMAGE_SAMPLES {
+        file(id, &format!("images/{name}"), bytes, Format(fmt))?;
+    }
+    // Names libvips would read as options if it parsed them.
+    file("brackets", "images/photo [1].png", &PNG_1X1, Format("png"))?;
+    file("comma", "images/a,b.png", &PNG_1X1, Format("png"))?;
     let long = format!("{}.png", "a".repeat(236));
     file("long-name", &long, &PNG_1X1, Format("png"))?;
     // `"` is illegal in Windows file names.
