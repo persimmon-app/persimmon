@@ -351,6 +351,7 @@ pub(crate) mod tests {
 
     /// Set `cancel` after `ms`, as prsm's Ctrl-C handler does on its own
     /// thread, a moment after the terminal's signal reached the child.
+    #[cfg(unix)]
     pub(crate) fn cancel_later(cancel: &CancelToken, ms: u64) {
         let c = cancel.clone();
         std::thread::spawn(move || {

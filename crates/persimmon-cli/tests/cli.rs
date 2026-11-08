@@ -299,20 +299,6 @@ fn unknown_target_format() {
     );
 }
 
-#[test]
-fn large_file_info_is_fast() {
-    if std::env::var("PERSIMMON_CORPUS_LARGE").as_deref() != Ok("1") {
-        return;
-    }
-    let c = Corpus::with("large", true);
-    let started = Instant::now();
-    let out = prsm(&c.dir, ["info".as_ref(), c.path("large-4gb").as_os_str()]);
-    let elapsed = started.elapsed();
-    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert!(stdout(&out).contains("4.3 GB"), "{}", stdout(&out));
-    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
-}
-
 #[cfg(feature = "vips")]
 mod images {
     use super::*;
@@ -581,6 +567,33 @@ mod media {
         let path = dir.join(src.file_name().unwrap());
         std::fs::copy(&src, &path).unwrap();
         Some((TempDir(dir), path))
+    }
+
+    /// A real clip padded to 4 GB with a sparse tail, so `info` has media
+    /// to probe. The corpus's own 4 GB case is a header and zeros, which
+    /// `info` rightly calls unreadable.
+    #[test]
+    fn large_file_info_is_fast() {
+        if std::env::var("PERSIMMON_CORPUS_LARGE").as_deref() != Ok("1") {
+            return;
+        }
+        let Some((dir, path)) = sample("info-large", "vid-mov") else {
+            return;
+        };
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(4 << 30)
+            .unwrap();
+        let started = Instant::now();
+        let out = prsm(&dir, ["info", "clip.mov"]);
+        let elapsed = started.elapsed();
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let text = stdout(&out);
+        assert!(text.contains("4.3 GB"), "{text}");
+        assert!(text.contains("duration 0:02\n"), "{text}");
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     }
 
     #[test]
