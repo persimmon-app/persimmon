@@ -197,3 +197,20 @@ fn exif_segments(jpeg: &[u8]) -> usize {
     }
     n
 }
+
+#[test]
+fn media_samples_are_generated() {
+    use persimmon_corpus::media::{MEDIA_SAMPLES, media_sample};
+    let Some(mp4) = media_sample("vid-mp4") else {
+        eprintln!("skipped: no ffmpeg");
+        return;
+    };
+    for (id, name) in MEDIA_SAMPLES {
+        let path = media_sample(id).unwrap();
+        assert_eq!(path.file_name().unwrap().to_str(), Some(name), "{id}");
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len > 0, "{id} is empty");
+    }
+    let truncated = media_sample("vid-truncated").unwrap();
+    assert!(std::fs::metadata(truncated).unwrap().len() < std::fs::metadata(mp4).unwrap().len());
+}

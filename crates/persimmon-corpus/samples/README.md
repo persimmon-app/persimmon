@@ -29,3 +29,7 @@ The base image is a 320×240 synthetic photo:
 | `truncated.jpg` | The first half of `photo.jpg` | Rejecting truncated files |
 
 PNG and GIF input are covered by the corpus's 1×1 files.
+
+## Audio and video
+
+Audio and video samples are not committed. `persimmon_corpus::media` makes them at test time with FFmpeg's own test sources (`testsrc2` and `sine`), using the `ffmpeg` on `PATH`. Without one, the tests that need them skip, unless `PERSIMMON_REQUIRE_FFMPEG=1` is set, as it is in CI.
