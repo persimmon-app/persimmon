@@ -12,6 +12,7 @@ pub mod image;
 pub mod ffmpeg;
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::error::{Error, ErrorCode};
 use crate::exec::CancelToken;
@@ -45,14 +46,16 @@ pub trait Run {
 }
 
 /// Every backend this build has, dispatched by [`PlannedTask::backend`].
+/// FFmpeg is found once, on the first audio or video task, using that
+/// task's `--ffmpeg`.
 #[derive(Debug, Default)]
 pub struct Backends {
-    _private: (),
+    ffmpeg: OnceLock<Result<ffmpeg::FfmpegBackend, Error>>,
 }
 
 impl Backends {
     pub fn new() -> Backends {
-        Backends { _private: () }
+        Backends::default()
     }
 }
 
@@ -76,6 +79,16 @@ impl Run for Backends {
                         .with_file(&task.inputs[0])
                         .with_fix("install a build of prsm made with libvips"),
                 )
+            }
+            Backend::Ffmpeg => {
+                let found = self.ffmpeg.get_or_init(|| {
+                    ffmpeg::Ffmpeg::locate(options.ffmpeg.as_deref())
+                        .map(ffmpeg::FfmpegBackend::new)
+                });
+                match found {
+                    Ok(backend) => backend.run(task, options, temp, cancel, progress),
+                    Err(e) => Err(e.clone().with_file(&task.inputs[0])),
+                }
             }
             other => {
                 let e = Error::new(
