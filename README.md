@@ -20,11 +20,11 @@ This boundary is a decision, not an oversight.
 
 You need Rust; the version is pinned in [`rust-toolchain.toml`](rust-toolchain.toml) and `rustup` installs it on first use.
 
-Images go through [libvips](https://www.libvips.org/), which must be installed first:
+Images go through [libvips](https://www.libvips.org/) 8.15 or later, which must be installed first. On Debian and Ubuntu, the libheif plugins read HEIC and AVIF and write AVIF:
 
 ```sh
 brew install vips                    # macOS
-sudo apt-get install libvips-dev     # Debian and Ubuntu
+sudo apt-get install libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc   # Debian and Ubuntu
 ```
 
 Then:

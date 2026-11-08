@@ -151,7 +151,7 @@ fn main() -> ExitCode {
     let reg = Registry::builtin();
     let result = match cli.command {
         Command::Formats => {
-            print!("{}", render::formats(&reg));
+            say(&render::formats(&reg));
             Ok(())
         }
         Command::Info { file } => info(&reg, file).map_err(fail),
@@ -230,9 +230,23 @@ impl TuneArgs {
     }
 }
 
-/// Print an error the way every `prsm` error looks.
+/// Write to stdout, ignoring a closed pipe: `prsm … | head -1` must still
+/// convert every file and keep its exit code, so output is best-effort.
+fn say(text: &str) {
+    use std::io::Write;
+    let _ = std::io::stdout().lock().write_all(text.as_bytes());
+}
+
+/// [`say`] one line.
+fn line(text: impl std::fmt::Display) {
+    say(&format!("{text}\n"));
+}
+
+/// Print an error the way every `prsm` error looks. Like [`say`], a closed
+/// stderr never stops the batch.
 fn report(e: &Error) {
-    eprintln!("prsm: {e}");
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "prsm: {e}");
 }
 
 /// Print an error and return its code.
@@ -254,7 +268,7 @@ fn parse_target(reg: &Registry, name: &str) -> Result<FormatId, Error> {
 fn info(reg: &Registry, file: PathBuf) -> Result<(), Error> {
     let detected = detect(&file, reg.formats())?;
     let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-    print!("{}", render::info(reg, &file, detected, bytes));
+    say(&render::info(reg, &file, detected, bytes));
     Ok(())
 }
 
@@ -330,7 +344,7 @@ fn run(
             match slot {
                 Ok(i) => {
                     let task = &plan.tasks[*i];
-                    println!("{} → {}", label(op, task), show(&task.output));
+                    line(format_args!("{} → {}", label(op, task), show(&task.output)));
                 }
                 Err(e) => note(e, &mut first),
             }
@@ -349,10 +363,13 @@ fn run(
             }
             cursor += 1;
             match result {
-                Ok(Outcome::Written(path)) => println!("{} → {}", label(op, task), show(path)),
-                Ok(Outcome::NotSmaller) => {
-                    println!("{}: already compact, nothing written", label(op, task))
+                Ok(Outcome::Written(path)) => {
+                    line(format_args!("{} → {}", label(op, task), show(path)))
                 }
+                Ok(Outcome::NotSmaller) => line(format_args!(
+                    "{}: already compact, nothing written",
+                    label(op, task)
+                )),
                 Err(e) => note(e, &mut first),
             }
         });

@@ -433,6 +433,48 @@ mod images {
 
     #[cfg(unix)]
     #[test]
+    fn closed_stdout_still_converts_every_file() {
+        use std::io::BufRead;
+        let c = Corpus::new("img-pipe");
+        let work = c.dir.join("pipe");
+        std::fs::create_dir(&work).unwrap();
+        let jpg = std::fs::read(c.path("img-jpeg")).unwrap();
+        let mut args = vec!["convert".to_string(), "--to".into(), "webp".into()];
+        for i in 0..6 {
+            std::fs::write(work.join(format!("p{i}.jpg")), &jpg).unwrap();
+            args.push(format!("p{i}.jpg"));
+        }
+        let mut child = Command::new(PRSM)
+            .current_dir(&work)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Read one line and close the pipe, as `| head -1` does.
+        {
+            let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for i in 0..6 {
+            assert!(
+                work.join(format!("p{i}.webp")).exists(),
+                "p{i}.webp missing"
+            );
+        }
+        assert!(no_parts(&work));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn ctrl_c_leaves_no_part() {
         use std::io::BufRead;
         let c = Corpus::new("img-ctrl-c");

@@ -2,18 +2,19 @@
 // Copyright (C) 2026 Persimmon contributors
 
 //! The libvips image backend (DD-34).
-
 //!
-//! Every input opens through a [`VipsSource`], never a file name, because
-//! libvips would read `[…]` in a name as load options. Every output is
-//! written by the saver for its format, never chosen from the file name,
-//! because the executor's temp files end in `.part`. BMP is decoded here,
-//! not by libvips, which would hand it to ImageMagick.
+//! Every input opens through a [`VipsSource`] and the loader for its
+//! detected format, never through a file name or libvips's own format
+//! guessing: libvips would read `[…]` in a name as load options, and its
+//! guessing falls back to ImageMagick for files its own loaders refuse.
+//! Every output is written by the saver for its format, because the
+//! executor's temp files end in `.part`. BMP is decoded here, since
+//! libvips has no BMP loader of its own.
 
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::Once;
+use std::sync::OnceLock;
 
 use image::ImageDecoder;
 use image::codecs::bmp::BmpDecoder;
@@ -30,7 +31,10 @@ use crate::job::{JobOptions, PlannedTask, Quality};
 /// The default pixel limit: 500 megapixels.
 const MAX_PIXELS: u64 = 500_000_000;
 
-/// The saver settings for one `--quality` level (DD-34 plan, decision 5).
+/// The widest or tallest image WebP can hold.
+const WEBP_MAX: i32 = 16383;
+
+/// The saver settings for one `--quality` level.
 struct Q {
     jpeg: i32,
     webp: i32,
@@ -72,23 +76,77 @@ pub(crate) fn megapixels(pixels: u64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// libvips's message on one line, without its trailing noise.
+/// The useful part of a libvips failure: the first line libvips itself
+/// wrote, without the bindings' wrapper text or any temp-file path.
 fn message(e: &dyn std::fmt::Display) -> String {
     let text = e.to_string();
-    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut short: String = joined.chars().take(200).collect();
-    if short.len() < joined.len() {
+    // rs-vips formats errors as "vips error: <Kind> - <its own sentence>. <libvips's buffer>".
+    let body = text
+        .split_once(" - ")
+        .map_or(text.as_str(), |(_, rest)| rest);
+    let libvips = body.split_once(". ").map_or(body, |(_, rest)| rest);
+    let first = libvips
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or(body.trim());
+    let cleaned: Vec<&str> = first
+        .split_whitespace()
+        .filter(|w| !w.contains(".part"))
+        .collect();
+    let mut short: String = cleaned.join(" ").chars().take(160).collect();
+    if short.len() < cleaned.join(" ").len() {
         short.push('…');
     }
     short
 }
 
-fn init() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // A failure here surfaces as an error on the first operation.
-        let _ = Vips::init("persimmon");
-    });
+/// Whether a libvips version string (`8.15.1`) is new enough: 8.15 added
+/// the `keep` option that `--strip-metadata` relies on.
+fn version_supported(version: &str) -> bool {
+    let mut parts = version.split('.').map(|p| p.trim().parse::<u32>());
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= (8, 15),
+        _ => false,
+    }
+}
+
+/// Start libvips once. An error means image tasks can't run in this process.
+fn init() -> Result<(), String> {
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    INIT.get_or_init(|| {
+        Vips::init("persimmon")
+            .map_err(|e| format!("libvips failed to start ({})", message(&e)))?;
+        let version = Vips::version_string().unwrap_or_default();
+        if version_supported(&version) {
+            Ok(())
+        } else {
+            Err(format!(
+                "libvips {version} is too old; 8.15 or later is needed"
+            ))
+        }
+    })
+    .clone()
+}
+
+/// Open `input` with the libvips loader for `from`, never by guessing.
+fn load(input: &Path, from: FormatId, access: &str) -> Result<VipsImage, rs_vips::error::Error> {
+    let src = VipsSource::new_from_file(input)?;
+    let opts = || {
+        VOption::new()
+            .set("access", access)
+            .set("fail_on", "truncated")
+    };
+    match from {
+        FormatId::Jpeg => VipsImage::jpegload_source_with_opts(&src, opts()),
+        FormatId::Png => VipsImage::pngload_source_with_opts(&src, opts()),
+        FormatId::Webp => VipsImage::webpload_source_with_opts(&src, opts()),
+        FormatId::Heic | FormatId::Avif => VipsImage::heifload_source_with_opts(&src, opts()),
+        FormatId::Tiff => VipsImage::tiffload_source_with_opts(&src, opts()),
+        FormatId::Gif => VipsImage::gifload_source_with_opts(&src, opts()),
+        // Every other format is routed to another backend by the planner.
+        _ => VipsImage::new_from_source_with_opts(&src, "", opts()),
+    }
 }
 
 /// Converts and compresses the DD-28 image formats through libvips.
@@ -110,7 +168,7 @@ impl ImageBackend {
 
     /// A backend that refuses images over `max_pixels` before decoding them.
     pub fn with_max_pixels(max_pixels: u64) -> ImageBackend {
-        init();
+        let _ = init();
         ImageBackend { max_pixels }
     }
 
@@ -130,23 +188,17 @@ impl ImageBackend {
 
     /// Whether the input decodes completely. libvips decodes lazily, so a
     /// truncated file only fails once the saver pulls its pixels; after a
-    /// failed save this tells a bad input from a failed write, without
-    /// reading libvips's error text, which is shared between threads.
+    /// failed save this tells a bad input from a failed write.
     fn input_decodes(&self, input: &Path, from: FormatId) -> bool {
         if from == FormatId::Bmp {
             // Already decoded in full by `open`.
             return true;
         }
-        VipsSource::new_from_file(input)
-            .and_then(|src| {
-                VipsImage::new_from_source_with_opts(
-                    &src,
-                    "",
-                    VOption::new().set("fail_on", "truncated"),
-                )
-            })
+        let ok = load(input, from, "random")
             .and_then(|img| img.avg())
-            .is_ok()
+            .is_ok();
+        Vips::error_clear();
+        ok
     }
 
     /// Open the input with the pixel limit checked before any decoding.
@@ -165,9 +217,9 @@ impl ImageBackend {
             self.too_large(input, w.into(), h.into())?;
             let img = image::DynamicImage::from_decoder(decoder).map_err(|e| corrupt(&e))?;
             let (buf, bands) = if img.color().has_alpha() {
-                (img.to_rgba8().into_raw(), 4)
+                (img.into_rgba8().into_raw(), 4)
             } else {
-                (img.to_rgb8().into_raw(), 3)
+                (img.into_rgb8().into_raw(), 3)
             };
             return VipsImage::new_from_memory_copy(
                 &buf,
@@ -178,22 +230,13 @@ impl ImageBackend {
             )
             .map_err(|e| corrupt(&e));
         }
-        let source = |access: &str| -> Result<VipsImage, Error> {
-            let src = VipsSource::new_from_file(input).map_err(|e| corrupt(&e))?;
-            VipsImage::new_from_source_with_opts(
-                &src,
-                "",
-                VOption::new()
-                    .set("access", access)
-                    .set("fail_on", "truncated"),
-            )
-            .map_err(|e| corrupt(&e))
-        };
-        let img = source("sequential")?;
+        let img = load(input, from, "sequential").map_err(|e| corrupt(&e))?;
         self.too_large(input, img.get_width() as u64, img.get_height() as u64)?;
         if img.get_orientation() > 1 {
             // Rotating needs random access to the pixels.
-            return source("random")?.autorot().map_err(|e| corrupt(&e));
+            return load(input, from, "random")
+                .and_then(|img| img.autorot())
+                .map_err(|e| corrupt(&e));
         }
         Ok(img)
     }
@@ -206,6 +249,27 @@ impl Run for ImageBackend {
         options: &JobOptions,
         temp: &Path,
         _cancel: &CancelToken,
+    ) -> Result<Done, Error> {
+        let input = &task.inputs[0];
+        init().map_err(|reason| {
+            Error::new(ErrorCode::BackendMissing, reason)
+                .with_file(input)
+                .with_fix("install or update libvips (brew upgrade vips, or a newer libvips-dev)")
+        })?;
+        // libvips keeps one error buffer per process; start each task clean.
+        Vips::error_clear();
+        let result = self.convert(task, options, temp);
+        Vips::error_clear();
+        result
+    }
+}
+
+impl ImageBackend {
+    fn convert(
+        &self,
+        task: &PlannedTask,
+        options: &JobOptions,
+        temp: &Path,
     ) -> Result<Done, Error> {
         let input = &task.inputs[0];
         let from = task.from[0];
@@ -236,17 +300,31 @@ impl Run for ImageBackend {
                 .icc_transform_with_opts("srgb", VOption::new().set("embedded", true))
                 .map_err(|e| read_fail(&e))?;
         }
-        let bands = img.get_bands();
-        if target == FormatId::Jpeg && (bands == 2 || bands == 4) {
-            // JPEG has no alpha: flatten onto white.
-            let white: &[f64] = if bands == 2 {
-                &[255.0]
-            } else {
-                &[255.0, 255.0, 255.0]
+        if target == FormatId::Jpeg && img.hasalpha() {
+            // JPEG has no alpha: flatten onto white, at the image's depth.
+            // (A CMYK image also has four bands; it has no alpha.)
+            let white = match img.get_format() {
+                Ok(BandFormat::Ushort) => 65535.0,
+                _ => 255.0,
             };
+            let background = vec![white; (img.get_bands() - 1).max(1) as usize];
             img = img
-                .flatten_with_opts(VOption::new().set("background", white))
+                .flatten_with_opts(VOption::new().set("background", background.as_slice()))
                 .map_err(|e| read_fail(&e))?;
+        }
+        if target == FormatId::Webp && img.get_width().max(img.get_height()) > WEBP_MAX {
+            return Err(Error::new(
+                ErrorCode::UnsupportedConversion,
+                format!(
+                    "WebP can't be wider or taller than {WEBP_MAX} pixels (this image is {}×{})",
+                    img.get_width(),
+                    img.get_height()
+                ),
+            )
+            .with_file(input)
+            .with_fix(format!(
+                "add --max-size {WEBP_MAX}, or convert to png or jpeg"
+            )));
         }
 
         let q = quality(options.quality.unwrap_or(if compress {
@@ -293,8 +371,8 @@ impl Run for ImageBackend {
             }
         };
         if let Err(e) = saved {
-            let _ = std::fs::remove_file(temp);
             let msg = message(&e);
+            let _ = std::fs::remove_file(temp);
             return Err(if !self.input_decodes(input, from) {
                 Error::new(
                     ErrorCode::CorruptInput,
@@ -412,8 +490,14 @@ mod tests {
         (img.get_width(), img.get_height())
     }
 
+    /// A pixel in 8-bit sRGB (plus alpha), whatever the file stores:
+    /// a CMYK JPEG or a 16-bit PNG is converted first.
     fn pixel(p: &Path, x: i32, y: i32) -> Vec<f64> {
-        open(p).getpoint(x, y).unwrap()
+        open(p)
+            .colourspace(rs_vips::enums::Interpretation::Srgb)
+            .unwrap()
+            .getpoint(x, y)
+            .unwrap()
     }
 
     fn near(px: &[f64], target: [f64; 3], tol: f64) -> bool {
@@ -613,6 +697,132 @@ mod tests {
                 < std::fs::metadata(case("img-cmyk")).unwrap().len()
         );
         assert_eq!(sniff(&head(&temp)), Some(FormatId::Jpeg));
+    }
+
+    /// Write `img` as PNG into the test output folder and return the path.
+    fn save_png(img: &VipsImage, name: &str) -> PathBuf {
+        let p = out_dir().join(name);
+        img.pngsave_with_opts(p.to_str().unwrap(), rs_vips::voption::VOption::new())
+            .unwrap();
+        p
+    }
+
+    /// Run the backend on an arbitrary file.
+    fn run_file(
+        path: &Path,
+        from: FormatId,
+        to: FormatId,
+    ) -> (Result<Done, crate::error::Error>, PathBuf) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = out_dir().join(format!(".file-{n}.part"));
+        let task = PlannedTask {
+            inputs: vec![path.to_path_buf()],
+            from: vec![from],
+            to: Some(to),
+            backend: Backend::Image,
+            output: temp.with_extension("out"),
+        };
+        (
+            ImageBackend::new().run(&task, &JobOptions::default(), &temp, &CancelToken::new()),
+            temp,
+        )
+    }
+
+    #[test]
+    fn cmyk_to_jpeg_keeps_colour() {
+        for (to, label) in [(Some(FormatId::Jpeg), "convert"), (None, "compress")] {
+            let (r, temp) = run_to("img-cmyk", to, &JobOptions::default());
+            assert_eq!(r, Ok(Done::Written), "{label}");
+            let p = pixel(&temp, 20, 20);
+            assert!(
+                p[0] > 180.0 && p[1] < 90.0 && p[2] < 90.0,
+                "{label}: red patch {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transparent_16_bit_to_jpeg_is_white() {
+        // A fully transparent 16-bit RGBA image.
+        let img =
+            VipsImage::black_with_opts(8, 8, rs_vips::voption::VOption::new().set("bands", 4))
+                .unwrap()
+                .cast(rs_vips::enums::BandFormat::Ushort)
+                .unwrap()
+                .copy_with_opts(rs_vips::voption::VOption::new().set("interpretation", "rgb16"))
+                .unwrap();
+        let png = save_png(&img, "clear16.png");
+        let (r, temp) = run_file(&png, FormatId::Png, FormatId::Jpeg);
+        assert_eq!(r, Ok(Done::Written));
+        let p = pixel(&temp, 4, 4);
+        assert!(p.iter().take(3).all(|v| *v > 250.0), "background {p:?}");
+    }
+
+    #[test]
+    fn errors_do_not_carry_earlier_files() {
+        let backend = ImageBackend::new();
+        let opts = JobOptions::default();
+        let (first, first_temp) = run_with(&backend, "img-truncated", Some(FormatId::Png), &opts);
+        let (second, _) = run_with(&backend, "img-truncated", Some(FormatId::Png), &opts);
+        let (a, b) = (first.unwrap_err().reason, second.unwrap_err().reason);
+        let first_name = first_temp
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            !b.contains(&first_name),
+            "second error mentions the first file: {b}"
+        );
+        for reason in [&a, &b] {
+            assert!(!reason.contains(".part"), "temp path leaked: {reason}");
+            assert!(
+                !reason.contains("OperationError"),
+                "binding noise leaked: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn webp_size_limit_is_unsupported() {
+        let img = VipsImage::black(17000, 8).unwrap();
+        let png = save_png(&img, "wide.png");
+        let (r, temp) = run_file(&png, FormatId::Png, FormatId::Webp);
+        let e = r.unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnsupportedConversion);
+        assert_eq!(
+            e.reason,
+            "WebP can't be wider or taller than 16383 pixels (this image is 17000×8)"
+        );
+        assert_eq!(
+            e.fix.as_deref(),
+            Some("add --max-size 16383, or convert to png or jpeg")
+        );
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn imagemagick_is_never_used() {
+        // A TIFF cut short: libvips's own TIFF loader refuses it, and
+        // without the loader check libvips would fall back to ImageMagick.
+        let bytes = std::fs::read(case("img-tiff")).unwrap();
+        let bad = out_dir().join("cut.tif");
+        std::fs::write(&bad, &bytes[..15000]).unwrap();
+        let (r, _) = run_file(&bad, FormatId::Tiff, FormatId::Jpeg);
+        let e = r.unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput);
+        assert!(!e.reason.to_lowercase().contains("magick"), "{}", e.reason);
+    }
+
+    #[test]
+    fn libvips_8_15_or_later_is_required() {
+        assert!(version_supported("8.15.0"));
+        assert!(version_supported("8.18.7"));
+        assert!(version_supported("9.0.1"));
+        assert!(!version_supported("8.14.2"));
+        assert!(!version_supported("8.12.1"));
+        assert!(!version_supported("garbage"));
     }
 
     #[test]
