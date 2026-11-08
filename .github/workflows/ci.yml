@@ -23,6 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
+        # The image backend links libvips (DD-34). Windows builds without it
+        # until the port: linking libvips there is Phase 5 work.
+        include:
+          - os: windows-latest
+            features: --no-default-features
     steps:
       - uses: actions/checkout@v6
 
@@ -33,13 +38,28 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Install libvips (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vips
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+      # The libheif plugins decode HEIC (libde265) and AVIF (dav1d), and
+      # encode AVIF (aom).
+      - name: Install libvips (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc
+
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked ${{ matrix.features }} -- -D warnings
 
       # The 4 GB sparse corpus file runs where the filesystem keeps it
       # sparse: APFS and ext4, not NTFS.
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked ${{ matrix.features }}
         env:
           PERSIMMON_CORPUS_LARGE: ${{ runner.os != 'Windows' && '1' || '' }}
 
@@ -59,7 +79,7 @@ jobs:
         run: cargo deny check licenses
 
       - name: Build release
-        run: cargo build --workspace --release --locked
+        run: cargo build --workspace --release --locked ${{ matrix.features }}
 
       - name: Smoke test
         shell: bash
