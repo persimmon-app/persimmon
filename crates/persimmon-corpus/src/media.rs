@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 /// Every media sample: `(id, file name)`.
-pub const MEDIA_SAMPLES: [(&str, &str); 19] = [
+pub const MEDIA_SAMPLES: [(&str, &str); 20] = [
     ("vid-mov", "clip.mov"),
     ("vid-mp4", "clip.mp4"),
     ("vid-mkv", "clip.mkv"),
@@ -24,6 +24,7 @@ pub const MEDIA_SAMPLES: [(&str, &str); 19] = [
     ("vid-long", "long.mp4"),
     ("vid-compact", "compact.mp4"),
     ("vid-truncated", "truncated.mp4"),
+    ("vid-surround", "surround.mkv"),
     ("aud-mp3", "tone.mp3"),
     ("aud-m4a", "tone.m4a"),
     ("aud-wav", "tone.wav"),
@@ -57,15 +58,39 @@ pub fn media_sample(id: &str) -> Option<PathBuf> {
         .unwrap_or_else(|| panic!("unknown media sample {id}"))
         .1;
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    let dir = DIR
-        .get_or_init(|| {
-            let ffmpeg = test_ffmpeg()?;
-            let dir = std::env::temp_dir().join(format!("prsm-media-{}", std::process::id()));
-            generate(&ffmpeg, &dir);
-            Some(dir)
-        })
-        .as_ref()?;
+    let dir = DIR.get_or_init(|| Some(cached(&test_ffmpeg()?))).as_ref()?;
     Some(dir.join(name))
+}
+
+/// Bump when a sample changes, so stale caches aren't reused.
+pub const MEDIA_VERSION: u32 = 2;
+
+/// The shared sample folder, `prsm-media-v{MEDIA_VERSION}` in the temp
+/// folder, made once and reused by every test process after it. A process
+/// builds its own copy and renames it into place, so a half-made folder is
+/// never used; if another process got there first, its copy is used.
+fn cached(ffmpeg: &Path) -> PathBuf {
+    let tmp = std::env::temp_dir();
+    let dir = tmp.join(format!("prsm-media-v{MEDIA_VERSION}"));
+    let done = |d: &Path| d.join(".complete").is_file();
+    if done(&dir) {
+        return dir;
+    }
+    let work = tmp.join(format!(
+        "prsm-media-v{MEDIA_VERSION}-{}",
+        std::process::id()
+    ));
+    generate(ffmpeg, &work);
+    std::fs::write(work.join(".complete"), b"").expect("mark the samples complete");
+    if dir.exists() && !done(&dir) {
+        // Left by a process that died midway.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    if std::fs::rename(&work, &dir).is_err() {
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    assert!(done(&dir), "no complete media samples at {}", dir.display());
+    dir
 }
 
 const VIDEO: &str = "testsrc2=size=320x240:rate=25:duration=2";
@@ -174,6 +199,30 @@ fn generate(ffmpeg: &Path, dir: &Path) {
     go(
         av("-c:v libx264 -pix_fmt yuv420p -crf 45", "-c:a aac -b:a 32k"),
         "compact.mp4",
+    );
+    // 5.1(side), the layout AC-3, E-AC-3 and DTS decode to; libopus
+    // rejects it as it is.
+    run(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            VIDEO,
+            "-f",
+            "lavfi",
+            "-i",
+            TONE,
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-af",
+            "aformat=channel_layouts=5.1(side)",
+            "-c:a",
+            "ac3",
+            "-shortest",
+        ],
+        "surround.mkv",
     );
     let bytes = std::fs::read(dir.join("clip.mp4")).expect("read clip.mp4");
     std::fs::write(dir.join("truncated.mp4"), &bytes[..bytes.len() * 6 / 10])

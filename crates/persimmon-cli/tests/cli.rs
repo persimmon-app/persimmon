@@ -547,8 +547,30 @@ mod media {
     use super::*;
     use persimmon_corpus::media::media_sample;
 
+    /// A test's own folder, removed when the test ends.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempDir {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// A sample copied into a fresh folder for this test, or `None` (skip).
-    fn sample(test: &str, id: &str) -> Option<(PathBuf, PathBuf)> {
+    fn sample(test: &str, id: &str) -> Option<(TempDir, PathBuf)> {
         let Some(src) = media_sample(id) else {
             eprintln!("skipped: no ffmpeg");
             return None;
@@ -558,7 +580,7 @@ mod media {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(src.file_name().unwrap());
         std::fs::copy(&src, &path).unwrap();
-        Some((dir, path))
+        Some((TempDir(dir), path))
     }
 
     #[test]
@@ -586,10 +608,22 @@ mod media {
         assert!(dir.join("clip.mp4").is_file());
     }
 
+    /// The FFmpeg processes a prsm started: its command line names prsm's
+    /// temp files, `.prsm-{pid}-…`. (prsm runs with relative paths, so the
+    /// folder never appears there.)
+    #[cfg(unix)]
+    fn ffmpeg_of(prsm: u32) -> String {
+        let out = Command::new("pgrep")
+            .args(["-fl", &format!("\\.prsm-{prsm}-")])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     /// Start `prsm convert long.mp4 --to webm` in its own process group and
     /// wait until FFmpeg is writing. Returns the child and its folder.
     #[cfg(unix)]
-    fn start_long_video(test: &str) -> Option<(std::process::Child, PathBuf)> {
+    fn start_long_video(test: &str) -> Option<(std::process::Child, TempDir)> {
         use std::os::unix::process::CommandExt;
         let (dir, _) = sample(test, "vid-long")?;
         let child = Command::new(PRSM)
@@ -608,6 +642,11 @@ mod media {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        // The check in assert_cancelled_cleanly must be able to fail.
+        assert!(
+            ffmpeg_of(child.id()).contains("ffmpeg"),
+            "can't see the running ffmpeg"
+        );
         Some((child, dir))
     }
 
@@ -621,22 +660,53 @@ mod media {
     /// After a cancel: exit 130, no `.part`, no output, no ffmpeg left.
     #[cfg(unix)]
     fn assert_cancelled_cleanly(child: std::process::Child, dir: &Path) {
+        let pid = child.id();
         let out = child.wait_with_output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(130), "{err}");
         assert!(!has_part(dir), "a .part was left");
         assert!(!dir.join("long.webm").exists());
         assert!(!err.contains("CORRUPT") && !err.contains("can't"), "{err}");
-        let left = Command::new("pgrep")
-            .args(["-f", &dir.display().to_string()])
-            .output()
+        assert_eq!(ffmpeg_of(pid), "", "ffmpeg still running");
+    }
+
+    /// A batch of short files: Ctrl-C often lands while ffprobe runs.
+    #[cfg(unix)]
+    #[test]
+    fn terminal_ctrl_c_cancels_audio_batch() {
+        use std::io::BufRead;
+        use std::os::unix::process::CommandExt;
+        let Some((dir, first)) = sample("audio-batch-ctrl-c", "aud-flac") else {
+            return;
+        };
+        let mut args = vec!["convert".to_string(), "--to".into(), "wav".into()];
+        for i in 0..60 {
+            let name = format!("t{i:02}.flac");
+            std::fs::copy(&first, dir.join(&name)).unwrap();
+            args.push(name);
+        }
+        let mut child = Command::new(PRSM)
+            .current_dir(&dir)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
             .unwrap();
-        assert_eq!(
-            left.status.code(),
-            Some(1),
-            "still running: {}",
-            String::from_utf8_lossy(&left.stdout)
-        );
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        Command::new("kill")
+            .args(["-INT", &format!("-{}", child.id())])
+            .status()
+            .unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut rest).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(130), "{err}");
+        assert!(!err.contains("can't read"), "{err}");
+        assert!(!has_part(&dir), "a .part was left");
     }
 
     #[cfg(unix)]

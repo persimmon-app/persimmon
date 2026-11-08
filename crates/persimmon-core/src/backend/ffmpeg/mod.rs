@@ -5,7 +5,7 @@
 //! process (DD-09), never linked.
 
 mod args;
-mod child;
+pub(crate) mod child;
 mod locate;
 mod probe;
 
@@ -43,7 +43,7 @@ impl Run for FfmpegBackend {
         progress: &mut dyn FnMut(f32),
     ) -> Result<Done, Error> {
         let input = &task.inputs[0];
-        let info = self.ff.probe(input)?;
+        let info = self.ff.probe_with(input, cancel)?;
         let args = args::build_args(task, &info, options, temp, &|e| self.ff.has_encoder(e))?;
         child::run_ffmpeg(&self.ff, &args, info.duration, cancel, progress).map_err(|f| {
             let why = if f.message.is_empty() {
@@ -67,6 +67,7 @@ impl Run for FfmpegBackend {
         if task.to.is_none() {
             let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
             if size(temp) >= size(input) {
+                let _ = std::fs::remove_file(temp);
                 return Ok(Done::NotSmaller);
             }
         }
@@ -357,6 +358,16 @@ mod backend_tests {
     }
 
     #[test]
+    fn surround_converts_to_webm_and_opus() {
+        let Some(ff) = ff() else { return };
+        for to in [Webm, Opus] {
+            let info = ok(&ff, "vid-surround", Some(to), &JobOptions::default());
+            let a = info.audio()[0];
+            assert_eq!((a.codec.as_str(), a.channels), ("opus", Some(6)), "{to:?}");
+        }
+    }
+
+    #[test]
     fn deep_flac_to_wav_is_24_bit() {
         let Some(ff) = ff() else { return };
         let info = ok(&ff, "aud-flac-24", Some(Wav), &JobOptions::default());
@@ -377,8 +388,9 @@ mod backend_tests {
     fn compress_compact_is_not_smaller() {
         let Some(ff) = ff() else { return };
         let input = media_sample("vid-compact").unwrap();
-        let (r, _) = convert(&ff, &input, None, &JobOptions::default());
+        let (r, t) = convert(&ff, &input, None, &JobOptions::default());
         assert_eq!(r.unwrap(), Done::NotSmaller);
+        assert!(!t.exists(), "the larger result was left behind");
     }
 
     #[test]
@@ -453,5 +465,41 @@ mod backend_tests {
         assert_eq!(e.code, ErrorCode::BackendMissing);
         assert_eq!(e.file.as_deref(), Some(clip.as_path()));
         assert_eq!(e.reason, "no ffmpeg at /nonexistent/ffmpeg");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_killed_by_ctrl_c_is_cancelled() {
+        let Some(real) = ff() else { return };
+        let ff = super::child::tests::fake(&real, "ffprobe", "kill -INT $$");
+        let input = media_sample("aud-flac").unwrap();
+        let cancel = CancelToken::new();
+        super::child::tests::cancel_later(&cancel, 100);
+        let e = FfmpegBackend::new(ff)
+            .run(
+                &task(&input, Some(Wav)),
+                &JobOptions::default(),
+                &temp(),
+                &cancel,
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Cancelled, "{e}");
+        assert_eq!(e.file.as_deref(), Some(input.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_crash_has_a_reason() {
+        let Some(real) = ff() else { return };
+        let ff = super::child::tests::fake(&real, "ffprobe", "kill -SEGV $$");
+        let input = media_sample("aud-flac").unwrap();
+        let e = ff.probe(&input).unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput);
+        assert!(
+            e.reason.starts_with("ffprobe stopped unexpectedly"),
+            "{}",
+            e.reason
+        );
     }
 }

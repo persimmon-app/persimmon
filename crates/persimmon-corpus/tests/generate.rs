@@ -214,3 +214,19 @@ fn media_samples_are_generated() {
     let truncated = media_sample("vid-truncated").unwrap();
     assert!(std::fs::metadata(truncated).unwrap().len() < std::fs::metadata(mp4).unwrap().len());
 }
+
+#[test]
+fn media_samples_are_shared_between_runs() {
+    use persimmon_corpus::media::{MEDIA_VERSION, media_sample};
+    let Some(mp4) = media_sample("vid-mp4") else {
+        eprintln!("skipped: no ffmpeg");
+        return;
+    };
+    // One cached folder for every test process, not one per process.
+    let dir = mp4.parent().unwrap();
+    assert_eq!(
+        dir.file_name().unwrap().to_str(),
+        Some(format!("prsm-media-v{MEDIA_VERSION}").as_str())
+    );
+    assert!(dir.join(".complete").is_file());
+}

@@ -8,10 +8,10 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Ffmpeg, message};
 use crate::error::ErrorCode;
@@ -97,24 +97,23 @@ pub(crate) fn run_ffmpeg(
     };
     let _ = reader.join();
     let stderr = drain.join().unwrap_or_default();
-    let cancelled = cancel.is_cancelled();
-    if !cancelled {
+    if !cancel.is_cancelled() {
         while let Ok(f) = rx.try_recv() {
             forward(f, progress);
         }
     }
-    if let Some(status) = status
-        && status.success()
-        && !cancelled
-    {
+    if status.is_some_and(|s| s.success()) && !cancel.is_cancelled() {
         if duration.is_some() {
             forward(1.0, progress);
         }
         return Ok(());
     }
+    let cancelled = was_cancelled(status.as_ref(), cancel);
     let code = classify(status.and_then(|s| s.code()), cancelled, &stderr);
     let message = if code == ErrorCode::Cancelled {
         "cancelled".to_string()
+    } else if status.is_none_or(|s| s.code().is_none()) {
+        stopped("ffmpeg", status.as_ref())
     } else {
         // Paths passed as file: URLs are left out of the message.
         let paths: Vec<PathBuf> = args
@@ -122,9 +121,39 @@ pub(crate) fn run_ffmpeg(
             .filter_map(|a| a.to_str()?.strip_prefix("file:").map(PathBuf::from))
             .collect();
         let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        message(&stderr, &paths)
+        let why = message(&stderr, &paths);
+        if why.is_empty() {
+            format!("ffmpeg exited with {}", describe(status.as_ref()))
+        } else {
+            why
+        }
     };
     Err(Failure { code, message })
+}
+
+/// Whether a child that stopped with `status` was cancelled. A terminal's
+/// Ctrl-C reaches the child and prsm together, but prsm's handler sets the
+/// token on its own thread, so a death by signal or FFmpeg's exit 255 waits
+/// a moment for it. Without the token, it's a real failure: a crash, an
+/// out-of-memory kill, an error.
+pub(crate) fn was_cancelled(status: Option<&ExitStatus>, cancel: &CancelToken) -> bool {
+    let interrupted = status.is_none_or(|s| s.code().is_none() || s.code() == Some(255));
+    if interrupted {
+        let start = Instant::now();
+        while !cancel.is_cancelled() && start.elapsed() < Duration::from_millis(250) {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    cancel.is_cancelled()
+}
+
+/// `"{tool} stopped unexpectedly (signal: 11 (SIGSEGV))"`: a crash.
+pub(crate) fn stopped(tool: &str, status: Option<&ExitStatus>) -> String {
+    format!("{tool} stopped unexpectedly ({})", describe(status))
+}
+
+fn describe(status: Option<&ExitStatus>) -> String {
+    status.map_or_else(|| "no exit status".to_string(), |s| s.to_string())
 }
 
 /// The fraction done from one `-progress` line, given the input's
@@ -142,12 +171,16 @@ pub(crate) fn progress_fraction(line: &str, duration: f64) -> Option<f32> {
     }
 }
 
-/// What a failed FFmpeg run means. A cancel, a death by signal and exit
-/// 255 (FFmpeg's answer to Ctrl-C, which a terminal sends it as well as
-/// prsm) are all `CANCELLED`, never a corrupt input.
+/// What a failed FFmpeg run means. `cancelled` comes from
+/// [`was_cancelled`]: a cancelled run is `CANCELLED` whatever its exit,
+/// never a corrupt input. A crash (no exit code) is `CORRUPT_INPUT`: it was
+/// this input that FFmpeg couldn't get through.
 pub(crate) fn classify(exit: Option<i32>, cancelled: bool, stderr: &str) -> ErrorCode {
-    if cancelled || exit.is_none() || exit == Some(255) {
+    if cancelled {
         return ErrorCode::Cancelled;
+    }
+    if exit.is_none() {
+        return ErrorCode::CorruptInput;
     }
     let has = |s: &str| stderr.contains(s);
     if has("No space left on device") || has("Permission denied") || has("Read-only file system") {
@@ -160,7 +193,7 @@ pub(crate) fn classify(exit: Option<i32>, cancelled: bool, stderr: &str) -> Erro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::backend::ffmpeg::Ffmpeg;
     use crate::error::ErrorCode;
@@ -183,9 +216,12 @@ mod tests {
 
     #[test]
     fn classify_cases() {
-        assert_eq!(classify(Some(255), false, ""), ErrorCode::Cancelled);
-        assert_eq!(classify(None, false, ""), ErrorCode::Cancelled);
+        assert_eq!(classify(Some(255), true, ""), ErrorCode::Cancelled);
+        assert_eq!(classify(None, true, ""), ErrorCode::Cancelled);
         assert_eq!(classify(Some(1), true, "anything"), ErrorCode::Cancelled);
+        // Without a cancel, a crash or exit 255 is a real failure.
+        assert_eq!(classify(Some(255), false, ""), ErrorCode::CorruptInput);
+        assert_eq!(classify(None, false, ""), ErrorCode::CorruptInput);
         assert_eq!(
             classify(
                 Some(1),
@@ -288,5 +324,63 @@ mod tests {
         let e = run_ffmpeg(&ff, &args, None, &CancelToken::new(), &mut |_| {}).unwrap_err();
         assert_eq!(e.code, ErrorCode::CorruptInput);
         assert!(e.message.contains("No such file"), "{}", e.message);
+    }
+
+    /// A real FFmpeg whose binary is replaced by a shell script.
+    #[cfg(unix)]
+    pub(crate) fn fake(ff: &Ffmpeg, which: &str, body: &str) -> Ffmpeg {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "prsm-fake-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(which);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut ff = ff.clone();
+        match which {
+            "ffmpeg" => ff.ffmpeg = path,
+            _ => ff.ffprobe = path,
+        }
+        ff
+    }
+
+    /// Set `cancel` after `ms`, as prsm's Ctrl-C handler does on its own
+    /// thread, a moment after the terminal's signal reached the child.
+    pub(crate) fn cancel_later(cancel: &CancelToken, ms: u64) {
+        let c = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(ms));
+            c.cancel();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crash_without_cancel_is_not_cancelled() {
+        let Some(ff) = ff() else { return };
+        let ff = fake(&ff, "ffmpeg", "kill -SEGV $$");
+        let e = run_ffmpeg(&ff, &[], None, &CancelToken::new(), &mut |_| {}).unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput);
+        assert!(
+            e.message.starts_with("ffmpeg stopped unexpectedly"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_death_with_late_cancel_is_cancelled() {
+        let Some(ff) = ff() else { return };
+        let ff = fake(&ff, "ffmpeg", "kill -INT $$");
+        let cancel = CancelToken::new();
+        cancel_later(&cancel, 100);
+        let e = run_ffmpeg(&ff, &[], None, &cancel, &mut |_| {}).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Cancelled);
     }
 }

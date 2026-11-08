@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::{Ffmpeg, file_url, message};
+use super::{Ffmpeg, child, file_url, message};
 use crate::error::{Error, ErrorCode};
+use crate::exec::CancelToken;
 
 /// The entries `ffprobe` is asked for.
 const ENTRIES: &str = "format=duration:stream=index,codec_type,codec_name,codec_tag_string,width,height,pix_fmt,avg_frame_rate,channels,sample_rate,bits_per_raw_sample:stream_disposition=attached_pic";
@@ -88,6 +89,12 @@ impl Stream {
 impl Ffmpeg {
     /// Probe `path`. A file `ffprobe` can't read is `CORRUPT_INPUT`.
     pub fn probe(&self, path: &Path) -> Result<MediaInfo, Error> {
+        self.probe_with(path, &CancelToken::new())
+    }
+
+    /// [`Ffmpeg::probe`], where an ffprobe stopped by a cancel (a
+    /// terminal's Ctrl-C reaches it too) is `CANCELLED`.
+    pub fn probe_with(&self, path: &Path, cancel: &CancelToken) -> Result<MediaInfo, Error> {
         let out = Command::new(&self.ffprobe)
             .args(["-v", "error", "-show_entries", ENTRIES, "-of", "flat"])
             .arg(file_url(path))
@@ -102,12 +109,20 @@ impl Ffmpeg {
                 .with_fix(crate::platform::ffmpeg_install())
             })?;
         if !out.status.success() {
-            let why = message(&String::from_utf8_lossy(&out.stderr), &[path]);
-            return Err(Error::new(
-                ErrorCode::CorruptInput,
-                format!("ffmpeg can't read it: {why}"),
-            )
-            .with_file(path));
+            if child::was_cancelled(Some(&out.status), cancel) {
+                return Err(Error::new(ErrorCode::Cancelled, "cancelled").with_file(path));
+            }
+            let reason = if out.status.code().is_none() {
+                child::stopped("ffprobe", Some(&out.status))
+            } else {
+                let why = message(&String::from_utf8_lossy(&out.stderr), &[path]);
+                if why.is_empty() {
+                    format!("ffmpeg can't read it: ffprobe exited with {}", out.status)
+                } else {
+                    format!("ffmpeg can't read it: {why}")
+                }
+            };
+            return Err(Error::new(ErrorCode::CorruptInput, reason).with_file(path));
         }
         Ok(parse_flat(&String::from_utf8_lossy(&out.stdout)))
     }

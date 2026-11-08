@@ -208,6 +208,9 @@ fn video_target(
         } else {
             a.need(encoder, label)?;
             a.push(&format!("-c:a:{i} {encoder} -b:a:{i} {bitrate}"));
+            if webm {
+                a.push(&format!("-filter:a:{i} {OPUS_LAYOUTS}"));
+            }
         }
     }
     Ok(())
@@ -261,6 +264,9 @@ fn encode_video(a: &mut Args, v: &Stream, codec: Video, options: &JobOptions) ->
     Ok(())
 }
 
+/// A palette per frame (`stats_mode=single`, `new=1`), so memory stays flat
+/// however long the video: one palette for the whole clip would hold every
+/// frame until the end.
 fn gif_target(a: &mut Args, info: &MediaInfo, options: &JobOptions) -> Result<(), Error> {
     let v = info.video().ok_or_else(|| no_video(a.input))?;
     a.need("gif", "GIF")?;
@@ -269,12 +275,16 @@ fn gif_target(a: &mut Args, info: &MediaInfo, options: &JobOptions) -> Result<()
     let cap = options.max_size.unwrap_or([320, 480, 640, 960][q]);
     a.push("-filter_complex");
     a.arg(format!(
-        "[0:{}]fps={fps},scale='if(gte(iw,ih),min(iw,{cap}),-1)':'if(gte(iw,ih),-1,min(ih,{cap}))':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5[g]",
+        "[0:{}]fps={fps},scale='if(gte(iw,ih),min(iw,{cap}),-1)':'if(gte(iw,ih),-1,min(ih,{cap}))':flags=lanczos,split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1:dither=bayer:bayer_scale=5[g]",
         v.index
     ));
     a.push("-map [g] -loop 0");
     Ok(())
 }
+
+/// libopus takes 5.1 and 7.1 but not 5.1(side), the layout AC-3, E-AC-3
+/// and DTS surround decode to; this lets FFmpeg relabel such audio.
+const OPUS_LAYOUTS: &str = "aformat=channel_layouts=7.1|5.1|stereo|mono";
 
 /// Whether a codec loses nothing, so its bit depth is worth keeping.
 fn lossless(codec: &str) -> bool {
@@ -336,6 +346,7 @@ fn audio_target(
                 "-c:a libopus -b:a {}",
                 ["64k", "96k", "128k", "192k"][q.unwrap_or(2)]
             ));
+            a.push(&format!("-af {OPUS_LAYOUTS}"));
         }
         Flac if s.codec == "flac" => a.push("-c:a copy"),
         Flac => {
@@ -612,6 +623,21 @@ mod tests {
     }
 
     #[test]
+    fn surround_to_opus_gets_a_layout_libopus_takes() {
+        let mut info = clip("h264", "ac3");
+        info.streams[1].channels = Some(6);
+        let a = args(Mkv, Some(Webm), &info, &JobOptions::default());
+        assert!(
+            a.contains(
+                "-c:a:0 libopus -b:a:0 128k -filter:a:0 aformat=channel_layouts=7.1|5.1|stereo|mono"
+            ),
+            "{a}"
+        );
+        let a = args(Mkv, Some(Mp4), &info, &JobOptions::default());
+        assert!(!a.contains("aformat"), "{a}");
+    }
+
+    #[test]
     fn small_webm_is_av1_with_libaom_fallback() {
         let t = task(Mov, Some(Webm));
         let o = preset(Preset::Small);
@@ -653,7 +679,7 @@ mod tests {
         assert!(a.contains("-c:a pcm_s16le"), "{a}");
         let a = args(Wav, Some(Opus), &tone("pcm_s16le"), &d);
         assert!(
-            a.contains("-c:a libopus -b:a 128k -map_metadata 0 -f opus"),
+            a.contains("-c:a libopus -b:a 128k -af aformat=channel_layouts=7.1|5.1|stereo|mono -map_metadata 0 -f opus"),
             "{a}"
         );
         let a = args(Webm, Some(Opus), &clip("vp9", "opus"), &d);
@@ -709,7 +735,7 @@ mod tests {
     fn gif_graph() {
         let a = args(Mov, Some(Gif), &clip("h264", "aac"), &JobOptions::default());
         assert!(
-            a.contains("-filter_complex [0:0]fps=15,scale='if(gte(iw,ih),min(iw,640),-1)':'if(gte(iw,ih),-1,min(ih,640))':flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5[g] -map [g]"),
+            a.contains("-filter_complex [0:0]fps=15,scale='if(gte(iw,ih),min(iw,640),-1)':'if(gte(iw,ih),-1,min(ih,640))':flags=lanczos,split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1:dither=bayer:bayer_scale=5[g] -map [g]"),
             "{a}"
         );
         assert!(a.contains("-loop 0"), "{a}");
