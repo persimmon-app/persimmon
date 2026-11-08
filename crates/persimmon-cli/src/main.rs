@@ -16,10 +16,11 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use persimmon_core::backend::Backends;
+use persimmon_core::backend::ffmpeg::Ffmpeg;
 use persimmon_core::detect::detect;
 use persimmon_core::error::{Error, ErrorCode};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
-use persimmon_core::format::FormatId;
+use persimmon_core::format::{FormatId, MediaKind};
 use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Quality};
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::registry::{Operation, Registry};
@@ -92,6 +93,9 @@ enum Command {
     Info {
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        /// The ffmpeg binary to use instead of the one on PATH.
+        #[arg(long, value_name = "PATH")]
+        ffmpeg: Option<PathBuf>,
     },
     /// List every format and what it can become.
     Formats,
@@ -154,7 +158,7 @@ fn main() -> ExitCode {
             say(&render::formats(&reg));
             Ok(())
         }
-        Command::Info { file } => info(&reg, file).map_err(fail),
+        Command::Info { file, ffmpeg } => info(&reg, file, ffmpeg).map_err(fail),
         Command::Convert {
             files,
             to,
@@ -265,11 +269,30 @@ fn parse_target(reg: &Registry, name: &str) -> Result<FormatId, Error> {
     })
 }
 
-fn info(reg: &Registry, file: PathBuf) -> Result<(), Error> {
+/// `prsm info`. Audio and video also get duration and codecs from
+/// ffprobe; without FFmpeg, a `details` row says how to get them.
+fn info(reg: &Registry, file: PathBuf, ffmpeg: Option<PathBuf>) -> Result<(), Error> {
     let detected = detect(&file, reg.formats())?;
     let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-    say(&render::info(reg, &file, detected, bytes));
-    Ok(())
+    let mut media = Vec::new();
+    let mut failure = None;
+    if matches!(
+        reg.format(detected.format).kind,
+        MediaKind::Video | MediaKind::Audio
+    ) {
+        match Ffmpeg::locate(ffmpeg.as_deref()) {
+            Ok(ff) => match ff.probe(&file) {
+                Ok(probed) => media = render::media_rows(&probed),
+                Err(e) => failure = Some(e),
+            },
+            Err(e) => {
+                let fix = e.fix.map(|f| format!(" ({f})")).unwrap_or_default();
+                media.push(("details", format!("{}{fix}", e.reason)));
+            }
+        }
+    }
+    say(&render::info(reg, &file, detected, bytes, &media));
+    failure.map_or(Ok(()), Err)
 }
 
 /// How a task's input is named in output lines: the file, or for a merge,

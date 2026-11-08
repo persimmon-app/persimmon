@@ -204,26 +204,39 @@ fn generate(ffmpeg: &Path, dir: &Path) {
         ],
         "deep.flac",
     );
+    // The cover is made first: a still image input ends after one frame
+    // without cutting the audio short, as -frames:v 1 would.
+    run(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:size=64x64",
+            "-frames:v",
+            "1",
+        ],
+        "cover.png",
+    );
+    let cover = dir.join("cover.png");
+    let cover = cover.to_str().expect("a UTF-8 temp path");
     run(
         &[
             "-f",
             "lavfi",
             "-i",
             TONE,
-            "-f",
-            "lavfi",
             "-i",
-            "color=c=red:size=64x64:duration=1",
+            cover,
             "-map",
             "0:a",
             "-map",
             "1:v",
-            "-frames:v",
-            "1",
+            "-ac",
+            "2",
             "-c:a",
             "libmp3lame",
             "-c:v",
-            "png",
+            "copy",
             "-disposition:v",
             "attached_pic",
             "-id3v2_version",

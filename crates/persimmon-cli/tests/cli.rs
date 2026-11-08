@@ -541,3 +541,72 @@ fn no_vips_is_backend_missing() {
     assert_eq!(out.status.code(), Some(4));
     assert!(stderr(&out).contains("this build has no image backend"));
 }
+
+/// Tests that need FFmpeg; each skips without one (see `test_ffmpeg`).
+mod media {
+    use super::*;
+    use persimmon_corpus::media::media_sample;
+
+    /// A sample copied into a fresh folder for this test, or `None` (skip).
+    fn sample(test: &str, id: &str) -> Option<(PathBuf, PathBuf)> {
+        let Some(src) = media_sample(id) else {
+            eprintln!("skipped: no ffmpeg");
+            return None;
+        };
+        let dir = std::env::temp_dir().join(format!("prsm-cli-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(src.file_name().unwrap());
+        std::fs::copy(&src, &path).unwrap();
+        Some((dir, path))
+    }
+
+    #[test]
+    fn info_shows_media_details() {
+        let Some((dir, _)) = sample("info-media", "vid-mov") else {
+            return;
+        };
+        let out = prsm(&dir, ["info", "clip.mov"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let text = stdout(&out);
+        assert!(text.contains("duration 0:02\n"), "{text}");
+        assert!(text.contains("video    H.264, 320×240, 25 fps\n"), "{text}");
+        assert!(text.contains("audio    AAC, stereo, 48 kHz\n"), "{text}");
+    }
+
+    #[test]
+    fn info_truncated_is_exit_5() {
+        let Some((dir, _)) = sample("info-truncated", "vid-truncated") else {
+            return;
+        };
+        let out = prsm(&dir, ["info", "truncated.mp4"]);
+        assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+        assert!(stdout(&out).contains("format   MP4"), "{}", stdout(&out));
+        assert!(
+            stderr(&out).contains("ffmpeg can't read it"),
+            "{}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn info_without_ffmpeg_hints() {
+    let dir = std::env::temp_dir().join(format!("prsm-cli-info-noff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Just an ISO BMFF `ftyp` box: detected as MP4, never decoded.
+    std::fs::write(
+        dir.join("clip.mp4"),
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2",
+    )
+    .unwrap();
+    let out = prsm(
+        &dir,
+        ["info", "--ffmpeg", "/nonexistent/ffmpeg", "clip.mp4"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("format   MP4"), "{text}");
+    assert!(text.lines().any(|l| l.starts_with("details  ")), "{text}");
+}

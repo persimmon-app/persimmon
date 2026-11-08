@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use persimmon_core::backend::ffmpeg::{MediaInfo, Stream};
 use persimmon_core::detect::Detected;
 use persimmon_core::format::FormatId;
 use persimmon_core::registry::{Operation, Registry};
@@ -63,8 +64,15 @@ pub fn formats(reg: &Registry) -> String {
     out
 }
 
-/// `prsm info`: label/value rows.
-pub fn info(reg: &Registry, path: &Path, detected: Detected, bytes: u64) -> String {
+/// `prsm info`: label/value rows. `media` rows (from [`media_rows`]) go
+/// after the size.
+pub fn info(
+    reg: &Registry,
+    path: &Path,
+    detected: Detected,
+    bytes: u64,
+    media: &[(&'static str, String)],
+) -> String {
     let format = reg.format(detected.format);
     let mut becomes = ids(&reg.targets(Operation::Convert, detected.format));
     if becomes.is_empty() {
@@ -84,8 +92,9 @@ pub fn info(reg: &Registry, path: &Path, detected: Detected, bytes: u64) -> Stri
             format!("{} ({})", format.name, format.id.as_str()),
         ),
         ("size", format!("{} ({bytes} bytes)", human_size(bytes))),
-        ("becomes", becomes),
     ];
+    rows.extend(media.iter().cloned());
+    rows.push(("becomes", becomes));
     if detected.extension_mismatch {
         let ext = path
             .extension()
@@ -104,6 +113,111 @@ pub fn info(reg: &Registry, path: &Path, detected: Detected, bytes: u64) -> Stri
         .collect()
 }
 
+/// `info`'s rows for a probed audio or video file: duration, the video
+/// stream, the audio streams and any cover art.
+pub fn media_rows(info: &MediaInfo) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    if let Some(d) = info.duration {
+        rows.push(("duration", fmt_duration(d)));
+    }
+    if let Some(v) = info.video() {
+        let mut parts = vec![codec_label(&v.codec)];
+        parts.extend(size(v));
+        parts.extend(v.frame_rate.map(|r| format!("{} fps", trim(r))));
+        rows.push(("video", parts.join(", ")));
+    }
+    let audio = info.audio();
+    if let Some(a) = audio.first() {
+        let mut parts = vec![codec_label(&a.codec)];
+        parts.extend(a.channels.map(channels_label));
+        parts.extend(
+            a.sample_rate
+                .map(|r| format!("{} kHz", trim(f64::from(r) / 1000.0))),
+        );
+        let mut value = parts.join(", ");
+        if audio.len() > 1 {
+            value.push_str(&format!(" (+{} more)", audio.len() - 1));
+        }
+        rows.push(("audio", value));
+    }
+    if let Some(c) = info.cover() {
+        let label = match c.codec.as_str() {
+            "mjpeg" => "JPEG".to_string(),
+            other => codec_label(other),
+        };
+        let mut parts = vec![label];
+        parts.extend(size(c));
+        rows.push(("cover", parts.join(", ")));
+    }
+    rows
+}
+
+fn size(s: &Stream) -> Option<String> {
+    Some(format!("{}×{}", s.width?, s.height?))
+}
+
+/// At most two decimals, trailing zeros trimmed: `25`, `29.97`, `44.1`.
+fn trim(x: f64) -> String {
+    let s = format!("{x:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Seconds as `m:ss`, or `h:mm:ss` from an hour, rounded to the second.
+pub fn fmt_duration(secs: f64) -> String {
+    let total = secs.round() as u64;
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// A codec as people know it: `h264` → `H.264`, `pcm_s24le` → `PCM 24-bit`.
+pub fn codec_label(codec: &str) -> String {
+    let known = match codec {
+        "h264" => "H.264",
+        "hevc" => "HEVC",
+        "vp9" => "VP9",
+        "vp8" => "VP8",
+        "av1" => "AV1",
+        "prores" => "ProRes",
+        "mpeg4" => "MPEG-4",
+        "mjpeg" => "Motion JPEG",
+        "ffv1" => "FFV1",
+        "png" => "PNG",
+        "gif" => "GIF",
+        "aac" => "AAC",
+        "mp3" => "MP3",
+        "opus" => "Opus",
+        "vorbis" => "Vorbis",
+        "flac" => "FLAC",
+        "alac" => "ALAC",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.to_string();
+    }
+    if let Some(rest) = codec.strip_prefix("pcm_") {
+        let bits: String = rest.chars().filter(char::is_ascii_digit).collect();
+        if !bits.is_empty() {
+            return format!("PCM {bits}-bit");
+        }
+    }
+    codec.to_string()
+}
+
+/// `1` → `mono`, `2` → `stereo`, `6` → `5.1`, `8` → `7.1`.
+pub fn channels_label(n: u32) -> String {
+    match n {
+        1 => "mono".into(),
+        2 => "stereo".into(),
+        6 => "5.1".into(),
+        8 => "7.1".into(),
+        n => format!("{n} channels"),
+    }
+}
+
 fn ids(formats: &[FormatId]) -> String {
     formats
         .iter()
@@ -115,6 +229,7 @@ fn ids(formats: &[FormatId]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use persimmon_core::backend::ffmpeg::StreamKind;
 
     #[test]
     fn human_size_values() {
@@ -130,5 +245,89 @@ mod tests {
     fn show_drops_leading_dot() {
         assert_eq!(show(Path::new("./a.webp")), "a.webp");
         assert_eq!(show(Path::new("../a.webp")), "../a.webp");
+    }
+
+    #[test]
+    fn fmt_duration_values() {
+        assert_eq!(fmt_duration(2.0), "0:02");
+        assert_eq!(fmt_duration(1.6), "0:02");
+        assert_eq!(fmt_duration(65.4), "1:05");
+        assert_eq!(fmt_duration(3725.0), "1:02:05");
+        assert_eq!(fmt_duration(0.024), "0:00");
+    }
+
+    fn stream(kind: StreamKind, codec: &str) -> Stream {
+        Stream {
+            kind,
+            codec: codec.into(),
+            ..Stream::default()
+        }
+    }
+
+    #[test]
+    fn media_rows_for_a_clip() {
+        let info = MediaInfo {
+            duration: Some(2.0),
+            streams: vec![
+                Stream {
+                    width: Some(320),
+                    height: Some(240),
+                    frame_rate: Some(25.0),
+                    ..stream(StreamKind::Video, "h264")
+                },
+                Stream {
+                    channels: Some(2),
+                    sample_rate: Some(48000),
+                    ..stream(StreamKind::Audio, "aac")
+                },
+            ],
+        };
+        assert_eq!(
+            media_rows(&info),
+            vec![
+                ("duration", "0:02".to_string()),
+                ("video", "H.264, 320×240, 25 fps".to_string()),
+                ("audio", "AAC, stereo, 48 kHz".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn media_rows_details() {
+        let info = MediaInfo {
+            duration: None,
+            streams: vec![
+                Stream {
+                    channels: Some(6),
+                    sample_rate: Some(44100),
+                    ..stream(StreamKind::Audio, "pcm_s24le")
+                },
+                Stream {
+                    channels: Some(1),
+                    ..stream(StreamKind::Audio, "opus")
+                },
+                Stream {
+                    width: Some(64),
+                    height: Some(64),
+                    attached_pic: true,
+                    ..stream(StreamKind::Video, "mjpeg")
+                },
+                Stream {
+                    frame_rate: Some(30000.0 / 1001.0),
+                    ..stream(StreamKind::Video, "prores")
+                },
+            ],
+        };
+        assert_eq!(
+            media_rows(&info),
+            vec![
+                ("video", "ProRes, 29.97 fps".to_string()),
+                ("audio", "PCM 24-bit, 5.1, 44.1 kHz (+1 more)".to_string()),
+                ("cover", "JPEG, 64×64".to_string()),
+            ]
+        );
+        assert_eq!(codec_label("weird_codec"), "weird_codec");
+        assert_eq!(channels_label(8), "7.1");
+        assert_eq!(channels_label(3), "3 channels");
     }
 }
