@@ -22,7 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Linux is pinned to 26.04: FFmpeg must be 7 or later (DD-29), and
+        # 24.04's apt FFmpeg is 6.1.
+        os: [macos-latest, windows-latest, ubuntu-26.04]
         # The image backend links libvips (DD-34). Windows builds without it
         # until the port: linking libvips there is Phase 5 work.
         include:
@@ -38,30 +40,50 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Install libvips (macOS)
+      - name: Install libvips and FFmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install vips
+        run: brew install vips ffmpeg
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
       # The libheif plugins decode HEIC (libde265) and AVIF (dav1d), and
       # encode AVIF (aom).
-      - name: Install libvips (Linux)
+      - name: Install libvips and FFmpeg (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc
+          sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc ffmpeg
+
+      # Chocolatey puts a shim on PATH that starts the real ffmpeg.exe.
+      # Killing the shim (as a cancel does) would leave FFmpeg running, so
+      # the real binary's folder goes on PATH ahead of the shims.
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg-full -y --no-progress
+          $exe = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg-full -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe not found under the ffmpeg-full package" }
+          $exe.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: FFmpeg version
+        shell: bash
+        run: |
+          command -v ffmpeg
+          ffmpeg -hide_banner -version | head -1
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked ${{ matrix.features }} -- -D warnings
 
       # The 4 GB sparse corpus file runs where the filesystem keeps it
       # sparse: APFS and ext4, not NTFS.
+      # PERSIMMON_REQUIRE_FFMPEG turns "no ffmpeg, skip" into a failure.
       - name: Test
         run: cargo test --workspace --locked ${{ matrix.features }}
         env:
           PERSIMMON_CORPUS_LARGE: ${{ runner.os != 'Windows' && '1' || '' }}
+          PERSIMMON_REQUIRE_FFMPEG: "1"
 
       # The licence guard (DD-04): every Rust dependency, direct or
       # transitive, must carry a licence on the deny.toml list. Once is
