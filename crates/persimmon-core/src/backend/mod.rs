@@ -30,13 +30,17 @@ pub enum Done {
 /// Something that can carry out planned tasks.
 pub trait Run {
     /// Write `task`'s output to `temp`. On error, anything at `temp` is
-    /// removed by the caller.
+    /// removed by the caller. `progress` takes fractions of the task done,
+    /// from 0 to 1, never decreasing; a backend that can't tell never
+    /// calls it. A backend that can stop mid-task returns `CANCELLED` once
+    /// `cancel` is set.
     fn run(
         &self,
         task: &PlannedTask,
         options: &JobOptions,
         temp: &Path,
         cancel: &CancelToken,
+        progress: &mut dyn FnMut(f32),
     ) -> Result<Done, Error>;
 }
 
@@ -59,13 +63,14 @@ impl Run for Backends {
         options: &JobOptions,
         temp: &Path,
         cancel: &CancelToken,
+        progress: &mut dyn FnMut(f32),
     ) -> Result<Done, Error> {
         match task.backend {
             #[cfg(feature = "vips")]
-            Backend::Image => image::ImageBackend::new().run(task, options, temp, cancel),
+            Backend::Image => image::ImageBackend::new().run(task, options, temp, cancel, progress),
             #[cfg(not(feature = "vips"))]
             Backend::Image => {
-                let _ = (options, temp, cancel);
+                let _ = (options, temp, cancel, progress);
                 Err(
                     Error::new(ErrorCode::BackendMissing, "this build has no image backend")
                         .with_file(&task.inputs[0])

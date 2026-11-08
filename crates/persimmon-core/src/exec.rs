@@ -5,7 +5,8 @@
 //! [`PendingOutput`] and is committed only when complete, so a failed or
 //! cancelled task never leaves a partial file under the final name.
 //! Cancellation is co-operative: it is checked before each task, and a
-//! task already running finishes.
+//! backend that can stop mid-file, such as FFmpeg, does; others finish
+//! the task they're on.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,13 +43,21 @@ pub enum Outcome {
     NotSmaller,
 }
 
-/// Progress, reported around each task.
+/// Progress: each task starts, may report how far it is, and finishes.
+/// `index` counts from 0; `total` is the number of tasks.
 #[derive(Debug)]
 pub enum Event<'a> {
     Started {
         index: usize,
         total: usize,
         task: &'a PlannedTask,
+    },
+    /// How much of the task is done, from 0 to 1, never decreasing.
+    Progress {
+        index: usize,
+        total: usize,
+        task: &'a PlannedTask,
+        fraction: f32,
     },
     Finished {
         index: usize,
@@ -78,7 +87,21 @@ pub fn execute(
         } else {
             on_event(Event::Started { index, total, task });
             let pending = PendingOutput::new(task.output.clone());
-            match runner.run(task, &job.options, pending.temp_path(), cancel) {
+            let mut progress = |fraction| {
+                on_event(Event::Progress {
+                    index,
+                    total,
+                    task,
+                    fraction,
+                })
+            };
+            match runner.run(
+                task,
+                &job.options,
+                pending.temp_path(),
+                cancel,
+                &mut progress,
+            ) {
                 Ok(Done::Written) => pending.commit(job.output.overwrite).map(Outcome::Written),
                 Ok(Done::NotSmaller) => Ok(Outcome::NotSmaller),
                 // Dropping `pending` removes the temp file.
@@ -139,6 +162,8 @@ mod tests {
         fail_at: Option<usize>,
         cancel_at: Option<usize>,
         not_smaller: bool,
+        /// Reported once as progress while running.
+        progress: Option<f32>,
         calls: Cell<usize>,
     }
 
@@ -148,6 +173,7 @@ mod tests {
                 fail_at: None,
                 cancel_at: None,
                 not_smaller: false,
+                progress: None,
                 calls: Cell::new(0),
             }
         }
@@ -160,7 +186,11 @@ mod tests {
             _: &JobOptions,
             temp: &Path,
             cancel: &CancelToken,
+            progress: &mut dyn FnMut(f32),
         ) -> Result<Done, crate::error::Error> {
+            if let Some(f) = self.progress {
+                progress(f);
+            }
             let i = self.calls.get();
             self.calls.set(i + 1);
             if self.cancel_at == Some(i) {
@@ -195,6 +225,9 @@ mod tests {
         let results = execute(j, &plan, fake, cancel, &mut |e| {
             events.push(match e {
                 Event::Started { index, .. } => format!("Started {index}"),
+                Event::Progress {
+                    index, fraction, ..
+                } => format!("Progress {index} {fraction}"),
                 Event::Finished { index, .. } => format!("Finished {index}"),
             })
         });
@@ -281,10 +314,28 @@ mod tests {
         let plan = j.plan(&Registry::builtin());
         let temp = dir.join("t.part");
         let e = Backends::new()
-            .run(&plan.tasks[0], &j.options, &temp, &CancelToken::new())
+            .run(
+                &plan.tasks[0],
+                &j.options,
+                &temp,
+                &CancelToken::new(),
+                &mut |_| {},
+            )
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::NotImplemented);
         assert_eq!(e.reason, "the pdf backend isn't built yet");
         assert_eq!(e.fix.as_deref(), Some("use --dry-run to see the plan"));
+    }
+
+    #[test]
+    fn progress_events_carry_index() {
+        let dir = scratch("progress");
+        let j = job(&dir, 1);
+        let fake = Fake {
+            progress: Some(0.5),
+            ..Fake::new()
+        };
+        let (_, events) = run(&j, &fake, &CancelToken::new());
+        assert_eq!(events, ["Started 0", "Progress 0 0.5", "Finished 0"]);
     }
 }

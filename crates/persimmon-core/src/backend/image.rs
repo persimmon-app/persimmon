@@ -249,6 +249,7 @@ impl Run for ImageBackend {
         options: &JobOptions,
         temp: &Path,
         _cancel: &CancelToken,
+        _progress: &mut dyn FnMut(f32),
     ) -> Result<Done, Error> {
         let input = &task.inputs[0];
         init().map_err(|reason| {
@@ -469,7 +470,10 @@ mod tests {
             backend: Backend::Image,
             output: temp.with_extension("out"),
         };
-        (backend.run(&task, opts, &temp, &CancelToken::new()), temp)
+        (
+            backend.run(&task, opts, &temp, &CancelToken::new(), &mut |_| {}),
+            temp,
+        )
     }
 
     fn run_to(
@@ -724,7 +728,13 @@ mod tests {
             output: temp.with_extension("out"),
         };
         (
-            ImageBackend::new().run(&task, &JobOptions::default(), &temp, &CancelToken::new()),
+            ImageBackend::new().run(
+                &task,
+                &JobOptions::default(),
+                &temp,
+                &CancelToken::new(),
+                &mut |_| {},
+            ),
             temp,
         )
     }

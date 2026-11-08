@@ -7,6 +7,8 @@
 // The backend that calls it lands in a later commit.
 #[allow(dead_code)]
 mod args;
+#[allow(dead_code)]
+mod child;
 mod locate;
 mod probe;
 
