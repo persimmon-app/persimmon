@@ -9,6 +9,8 @@
 #[cfg(feature = "vips")]
 pub mod image;
 
+pub mod ffmpeg;
+
 use std::path::Path;
 
 use crate::error::{Error, ErrorCode};
