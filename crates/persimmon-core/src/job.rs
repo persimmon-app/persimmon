@@ -24,6 +24,15 @@ pub enum Quality {
     Max,
 }
 
+/// `--preset`: how video is encoded, per container (DD-35).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    /// H.264 (MP4, MOV) or VP9 (WebM), 8-bit 4:2:0: plays anywhere.
+    Compatible,
+    /// HEVC (MP4, MOV) or AV1 (WebM): smaller files, slower to make.
+    Small,
+}
+
 /// `--pages`: 1-based, inclusive ranges. `(7, None)` is "7 to the end".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageRanges(pub Vec<(u32, Option<u32>)>);
@@ -82,12 +91,15 @@ impl fmt::Display for PageRanges {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JobOptions {
     pub quality: Option<Quality>,
-    pub preset: Option<String>,
+    pub preset: Option<Preset>,
     pub pages: Option<PageRanges>,
     /// `--max-size`: shrink so the long edge is at most this many pixels.
     pub max_size: Option<u32>,
-    /// `--strip-metadata`: convert to sRGB, then drop EXIF, XMP and profiles.
+    /// `--strip-metadata`: drop EXIF, XMP, tags and colour profiles
+    /// (images convert to sRGB first).
     pub strip_metadata: bool,
+    /// `--ffmpeg`: the FFmpeg to use instead of the one on `PATH`.
+    pub ffmpeg: Option<PathBuf>,
 }
 
 /// What the user asked for.
@@ -209,6 +221,8 @@ impl Job {
         let cap = reg
             .find(self.op, from, to)
             .ok_or_else(|| unsupported(reg, self.op, from, to).with_file(input))?;
+        self.check_options(cap.backend, to.unwrap_or(from))
+            .map_err(|e| e.with_file(input))?;
         let dir = self.output.output_dir(input)?;
         let stem = stem_of(input, reg);
         let ow = self.output.overwrite;
@@ -230,6 +244,27 @@ impl Job {
             backend: cap.backend,
             output,
         })
+    }
+
+    /// Options that make no sense for this task's output are usage errors,
+    /// found before anything runs.
+    fn check_options(&self, backend: Backend, out: FormatId) -> Result<(), Error> {
+        use FormatId::*;
+        let video = backend == Backend::Ffmpeg && matches!(out, Mp4 | Mov | Webm);
+        if self.options.preset.is_some() && !video {
+            return Err(
+                Error::new(ErrorCode::Usage, "--preset is for mp4, mov and webm video")
+                    .with_fix("drop --preset"),
+            );
+        }
+        let audio = backend == Backend::Ffmpeg && matches!(out, Mp3 | M4a | Wav | Flac | Opus);
+        if self.options.max_size.is_some() && audio {
+            return Err(
+                Error::new(ErrorCode::Usage, "--max-size is for images and video")
+                    .with_fix("drop --max-size"),
+            );
+        }
+        Ok(())
     }
 
     fn plan_merge(
@@ -377,7 +412,9 @@ fn unsupported(reg: &Registry, op: Operation, from: FormatId, to: Option<FormatI
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
-    use persimmon_corpus::{GIF_1X1, PNG_1X1, ZIP_EMPTY};
+    use persimmon_corpus::{GIF_1X1, PNG_1X1, WAV_HEADER, ZIP_EMPTY};
+
+    const MOV_HEAD: &[u8] = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  ";
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prsm-job-{name}-{}", std::process::id()));
@@ -641,6 +678,110 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    fn with_options(j: Job, options: JobOptions) -> Job {
+        Job { options, ..j }
+    }
+
+    #[test]
+    fn preset_on_image_is_usage() {
+        let dir = scratch("preset-image");
+        let a = put(&dir, "a.png", &PNG_1X1);
+        let j = with_options(
+            job(Operation::Convert, vec![a.clone()], Some(FormatId::Webp)),
+            JobOptions {
+                preset: Some(Preset::Small),
+                ..JobOptions::default()
+            },
+        );
+        let plan = j.plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        let e = &plan.errors[0];
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "--preset is for mp4, mov and webm video");
+        assert_eq!(e.fix.as_deref(), Some("drop --preset"));
+        assert_eq!(e.file.as_deref(), Some(a.as_path()));
+    }
+
+    #[test]
+    fn preset_on_audio_target_is_usage() {
+        let dir = scratch("preset-audio");
+        let w = put(&dir, "a.wav", &WAV_HEADER);
+        let j = with_options(
+            job(Operation::Convert, vec![w], Some(FormatId::Mp3)),
+            JobOptions {
+                preset: Some(Preset::Compatible),
+                ..JobOptions::default()
+            },
+        );
+        let plan = j.plan(&Registry::builtin());
+        assert_eq!(plan.errors[0].code, ErrorCode::Usage);
+        assert!(plan.tasks.is_empty());
+    }
+
+    #[test]
+    fn preset_on_video_plans() {
+        let dir = scratch("preset-video");
+        let m = put(&dir, "clip.mov", MOV_HEAD);
+        for (op, to) in [
+            (Operation::Convert, Some(FormatId::Mp4)),
+            (Operation::Convert, Some(FormatId::Webm)),
+            (Operation::Compress, None),
+        ] {
+            let j = with_options(
+                job(op, vec![m.clone()], to),
+                JobOptions {
+                    preset: Some(Preset::Small),
+                    ..JobOptions::default()
+                },
+            );
+            let plan = j.plan(&Registry::builtin());
+            assert!(plan.errors.is_empty(), "{op:?} {to:?}: {:?}", plan.errors);
+            assert_eq!(plan.tasks[0].backend, Backend::Ffmpeg);
+        }
+    }
+
+    #[test]
+    fn preset_on_video_to_gif_or_audio_is_usage() {
+        let dir = scratch("preset-gif");
+        let m = put(&dir, "clip.mov", MOV_HEAD);
+        for to in [FormatId::Gif, FormatId::M4a] {
+            let j = with_options(
+                job(Operation::Convert, vec![m.clone()], Some(to)),
+                JobOptions {
+                    preset: Some(Preset::Compatible),
+                    ..JobOptions::default()
+                },
+            );
+            assert_eq!(
+                j.plan(&Registry::builtin()).errors[0].code,
+                ErrorCode::Usage,
+                "{to:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_size_on_audio_target_is_usage() {
+        let dir = scratch("max-size-audio");
+        let m = put(&dir, "clip.mov", MOV_HEAD);
+        let opts = JobOptions {
+            max_size: Some(640),
+            ..JobOptions::default()
+        };
+        let plan = with_options(
+            job(Operation::Convert, vec![m.clone()], Some(FormatId::Mp3)),
+            opts.clone(),
+        )
+        .plan(&Registry::builtin());
+        let e = &plan.errors[0];
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "--max-size is for images and video");
+        assert_eq!(e.fix.as_deref(), Some("drop --max-size"));
+        let plan = with_options(job(Operation::Convert, vec![m], Some(FormatId::Mp4)), opts)
+            .plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
     }
 
     #[test]

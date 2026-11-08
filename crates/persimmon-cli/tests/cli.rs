@@ -610,3 +610,43 @@ fn info_without_ffmpeg_hints() {
     assert!(text.contains("format   MP4"), "{text}");
     assert!(text.lines().any(|l| l.starts_with("details  ")), "{text}");
 }
+
+#[test]
+fn unknown_preset_is_usage() {
+    let c = Corpus::new("preset-unknown");
+    let out = prsm(
+        &c.dir,
+        [
+            "convert".as_ref(),
+            "--to".as_ref(),
+            "mp4".as_ref(),
+            "--preset".as_ref(),
+            "fast".as_ref(),
+            c.path("png-1x1").as_os_str(),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
+#[test]
+fn preset_dry_run_on_image_exits_2() {
+    let c = Corpus::new("preset-image");
+    let out = prsm(
+        &c.dir,
+        [
+            "convert".as_ref(),
+            "--to".as_ref(),
+            "webp".as_ref(),
+            "--preset".as_ref(),
+            "small".as_ref(),
+            "--dry-run".as_ref(),
+            c.path("png-1x1").as_os_str(),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--preset is for mp4, mov and webm video"),
+        "{}",
+        stderr(&out)
+    );
+}

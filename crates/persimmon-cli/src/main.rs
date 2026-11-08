@@ -21,7 +21,7 @@ use persimmon_core::detect::detect;
 use persimmon_core::error::{Error, ErrorCode};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
 use persimmon_core::format::{FormatId, MediaKind};
-use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Quality};
+use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Preset, Quality};
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::registry::{Operation, Registry};
 
@@ -118,15 +118,16 @@ struct OutArgs {
 struct TuneArgs {
     #[arg(long, value_enum)]
     quality: Option<QualityArg>,
-    #[arg(long, value_name = "NAME")]
-    preset: Option<String>,
+    /// Video: compatible (H.264 or VP9, plays anywhere) or small (HEVC or AV1, smaller and slower).
+    #[arg(long, value_enum)]
+    preset: Option<PresetArg>,
     /// The ffmpeg binary to use instead of the one on PATH.
     #[arg(long, value_name = "PATH")]
     ffmpeg: Option<PathBuf>,
-    /// Images: shrink so the long edge is at most this many pixels.
+    /// Images and video: shrink so the long edge is at most this many pixels.
     #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(1..))]
     max_size: Option<u32>,
-    /// Images: remove EXIF, XMP and colour profiles, converting to sRGB first.
+    /// Remove metadata: EXIF, XMP, tags and colour profiles (images convert to sRGB first).
     #[arg(long)]
     strip_metadata: bool,
 }
@@ -137,6 +138,21 @@ enum QualityArg {
     Medium,
     High,
     Max,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum PresetArg {
+    Compatible,
+    Small,
+}
+
+impl From<PresetArg> for Preset {
+    fn from(p: PresetArg) -> Preset {
+        match p {
+            PresetArg::Compatible => Preset::Compatible,
+            PresetArg::Small => Preset::Small,
+        }
+    }
 }
 
 impl From<QualityArg> for Quality {
@@ -222,11 +238,10 @@ fn main() -> ExitCode {
 
 impl TuneArgs {
     fn options(&self) -> JobOptions {
-        // `--ffmpeg` is accepted now and used by the FFmpeg backend (weeks 4–5).
-        let _ = &self.ffmpeg;
         JobOptions {
             quality: self.quality.map(Quality::from),
-            preset: self.preset.clone(),
+            preset: self.preset.map(Preset::from),
+            ffmpeg: self.ffmpeg.clone(),
             max_size: self.max_size,
             strip_metadata: self.strip_metadata,
             ..JobOptions::default()
