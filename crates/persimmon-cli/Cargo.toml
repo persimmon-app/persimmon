@@ -18,7 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-ctrlc = "3"
+# termination: SIGTERM and SIGHUP cancel like Ctrl-C.
+ctrlc = { version = "3", features = ["termination"] }
 persimmon-core = { path = "../persimmon-core", version = "0.0.1", default-features = false }
 
 [features]

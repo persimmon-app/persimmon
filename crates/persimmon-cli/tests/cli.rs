@@ -575,6 +575,99 @@ mod media {
     }
 
     #[test]
+    fn video_converts_and_piped_stderr_has_no_progress() {
+        let Some((dir, _)) = sample("video-convert", "vid-mov") else {
+            return;
+        };
+        let out = prsm(&dir, ["convert", "clip.mov", "--to", "mp4"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out), "clip.mov → clip.mp4\n");
+        assert!(!stderr(&out).contains('%'), "{}", stderr(&out));
+        assert!(dir.join("clip.mp4").is_file());
+    }
+
+    /// Start `prsm convert long.mp4 --to webm` in its own process group and
+    /// wait until FFmpeg is writing. Returns the child and its folder.
+    #[cfg(unix)]
+    fn start_long_video(test: &str) -> Option<(std::process::Child, PathBuf)> {
+        use std::os::unix::process::CommandExt;
+        let (dir, _) = sample(test, "vid-long")?;
+        let child = Command::new(PRSM)
+            .current_dir(&dir)
+            .args(["convert", "long.mp4", "--to", "webm"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !has_part(&dir) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "FFmpeg never started writing"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Some((child, dir))
+    }
+
+    #[cfg(unix)]
+    fn has_part(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part"))
+    }
+
+    /// After a cancel: exit 130, no `.part`, no output, no ffmpeg left.
+    #[cfg(unix)]
+    fn assert_cancelled_cleanly(child: std::process::Child, dir: &Path) {
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(130), "{err}");
+        assert!(!has_part(dir), "a .part was left");
+        assert!(!dir.join("long.webm").exists());
+        assert!(!err.contains("CORRUPT") && !err.contains("can't"), "{err}");
+        let left = Command::new("pgrep")
+            .args(["-f", &dir.display().to_string()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            left.status.code(),
+            Some(1),
+            "still running: {}",
+            String::from_utf8_lossy(&left.stdout)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_ctrl_c_cancels_video() {
+        let Some((child, dir)) = start_long_video("video-ctrl-c") else {
+            return;
+        };
+        // A terminal's Ctrl-C goes to the whole process group: prsm and
+        // FFmpeg both get it.
+        Command::new("kill")
+            .args(["-INT", &format!("-{}", child.id())])
+            .status()
+            .unwrap();
+        assert_cancelled_cleanly(child, &dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_cancels_video() {
+        let Some((child, dir)) = start_long_video("video-sigterm") else {
+            return;
+        };
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert_cancelled_cleanly(child, &dir);
+    }
+
+    #[test]
     fn info_truncated_is_exit_5() {
         let Some((dir, _)) = sample("info-truncated", "vid-truncated") else {
             return;
@@ -649,4 +742,34 @@ fn preset_dry_run_on_image_exits_2() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn missing_ffmpeg_is_exit_4() {
+    let dir = std::env::temp_dir().join(format!("prsm-cli-noff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("clip.mov"),
+        b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  ",
+    )
+    .unwrap();
+    let out = prsm(
+        &dir,
+        [
+            "convert",
+            "--ffmpeg",
+            "/nonexistent/ffmpeg",
+            "--to",
+            "mp4",
+            "clip.mov",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("clip.mov: no ffmpeg at /nonexistent/ffmpeg"),
+        "{err}"
+    );
+    assert!(err.contains("fix:"), "{err}");
 }

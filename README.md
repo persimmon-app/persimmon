@@ -4,7 +4,7 @@
 
 An open-source file conversion toolkit for Linux, Windows and macOS. Everything runs locally; there is no network code in the build.
 
-> Pre-release. `prsm` converts and compresses images today. Video, PDF and archives come next: `--dry-run` already plans them, and running them exits with `NOT_IMPLEMENTED` until their backends land.
+> Pre-release. `prsm` converts and compresses images, audio and video today. PDF and archives come next: `--dry-run` already plans them, and running them exits with `NOT_IMPLEMENTED` until their backends land.
 >
 > **macOS comes first.** The engine and CLI are platform-neutral and build on all three from the first commit, but the GUI and shell integration are built out on macOS through to v1.0 before Windows and Linux begin.
 
@@ -36,6 +36,16 @@ cargo build --release
 
 To build without image support, and without needing libvips, add `--no-default-features`. Image conversions then fail with `BACKEND_MISSING`.
 
+Audio and video go through [FFmpeg](https://ffmpeg.org/) 7 or later, which `prsm` runs as a separate program; it is never built in. `prsm` uses the `ffmpeg` on your `PATH`, with `ffprobe` beside it, or the one you name with `--ffmpeg <path>`:
+
+```sh
+brew install ffmpeg                  # macOS
+sudo apt-get install ffmpeg          # Ubuntu 26.04 or later, Debian 13 or later
+winget install Gyan.FFmpeg           # Windows
+```
+
+Without it, everything else still works, and audio and video conversions fail with `BACKEND_MISSING` and the install command.
+
 The workspace has two crates. `persimmon-core` is the engine, platform-neutral by rule. `persimmon-cli` builds the `prsm` binary. CI builds and tests both on macOS, Windows and Linux on every push. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
 
 ## Using it
@@ -46,10 +56,17 @@ prsm convert *.png --to webp --quality medium    # low, medium, high (the defaul
 prsm convert photo.jpg --to webp --max-size 2048 # shrink so the long edge is at most 2048 px
 prsm convert photo.jpg --to png --strip-metadata # drop EXIF, XMP and colour profiles (colours go to sRGB first)
 prsm compress scan.png                           # "scan (compressed).png", only if it's smaller
+prsm convert clip.mov --to mp4                   # copies the video stream when MP4 already takes it: fast and lossless
+prsm convert clip.mov --to mp4 --preset small    # HEVC: smaller, slower. --preset compatible is H.264, which plays anywhere
+prsm convert clip.mov --to webm                  # VP9 and Opus; --preset small makes AV1
+prsm convert talk.mp4 --to m4a                   # just the audio
+prsm convert clip.mp4 --to gif --max-size 480    # an animated GIF, at most 480 px on the long edge
+prsm compress clip.mp4                           # re-encoded, kept only if it's smaller
+prsm info clip.mov                               # duration, codecs, size and what it can become
 prsm convert clip.mov --to mp4 --dry-run         # show what would be written, write nothing
 ```
 
-`prsm` never overwrites a file unless you pass `--overwrite`. A clash becomes `name (1).ext`. Output goes next to each source unless `--out <dir>` says otherwise. Ctrl-C finishes the file in progress, skips the rest and leaves no partial files behind.
+`prsm` never overwrites a file unless you pass `--overwrite`. A clash becomes `name (1).ext`. Output goes next to each source unless `--out <dir>` says otherwise. Ctrl-C stops a video at once and lets an image in progress finish, skips the rest, and leaves no partial files behind. Closing the terminal or sending SIGTERM does the same. On a terminal, audio and video show their progress as they convert.
 
 `prsm formats` lists every conversion, and `prsm info <file>` says what a file is and what it can become.
 
@@ -63,13 +80,13 @@ prsm convert clip.mov --to mp4 --dry-run         # show what would be written, w
 | `INTERNAL` | 1 | A bug in Persimmon |
 | `USAGE` | 2 | The command line is wrong: an unknown flag, a missing argument, a bad page range |
 | `UNSUPPORTED_INPUT` | 3 | The input isn't a file type Persimmon reads, it's a folder, or an image is over the 500-megapixel limit |
-| `BACKEND_MISSING` | 4 | A tool the conversion needs isn't installed, such as FFmpeg, or this `prsm` was built without image support |
+| `BACKEND_MISSING` | 4 | A tool the conversion needs isn't installed or is too old, such as FFmpeg (7 or later, with the needed encoder), or this `prsm` was built without image support |
 | `CORRUPT_INPUT` | 5 | The file is empty, truncated, or doesn't match its type |
 | `OUTPUT_NOT_WRITABLE` | 6 | The output folder can't be written to; `--out <dir>` is the fix |
 | `INPUT_NOT_FOUND` | 7 | The input path doesn't exist |
 | `UNSUPPORTED_CONVERSION` | 8 | The input type can't become the requested type; `prsm formats` lists what can |
 | `OUTPUT_EXISTS` | 9 | The output appeared while the job ran, and `--overwrite` wasn't given |
-| `NOT_IMPLEMENTED` | 10 | Before v0.1.0 only: the backend for this conversion (video, PDF or archives) isn't built yet. This code is removed before v0.1.0 |
+| `NOT_IMPLEMENTED` | 10 | Before v0.1.0 only: the backend for this conversion (PDF or archives) isn't built yet. This code is removed before v0.1.0 |
 | `CANCELLED` | 130 | The job was cancelled (the shell convention for Ctrl-C) |
 
 ### Batches

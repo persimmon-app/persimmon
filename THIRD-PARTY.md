@@ -10,7 +10,7 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 |---|---|---|---|---|
 | [clap](https://github.com/clap-rs/clap) | 4 | MIT OR Apache-2.0 | `prsm` argument parsing | Statically linked (Rust crate) |
 | [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | 0.1 | (MIT OR Apache-2.0) AND Unicode-3.0 | `persimmon-core`: comparing output names the way APFS and NTFS do, so `café` in NFC and NFD forms can't overwrite each other | Statically linked (Rust crate) |
-| [ctrlc](https://github.com/Detegr/rust-ctrlc) | 3 | MIT OR Apache-2.0 | `prsm`: Ctrl-C cancels cleanly, leaving no partial files | Statically linked (Rust crate) |
+| [ctrlc](https://github.com/Detegr/rust-ctrlc) | 3, `termination` feature | MIT OR Apache-2.0 | `prsm`: Ctrl-C, SIGTERM and SIGHUP cancel cleanly, leaving no partial files | Statically linked (Rust crate) |
 | [rs-vips](https://github.com/mrdkprj/rs-vips) | 0.7 | MIT | `persimmon-core`: Rust bindings to libvips, the image backend | Statically linked (Rust crate) |
 | [image](https://github.com/image-rs/image) | 0.25, `bmp` feature only | MIT OR Apache-2.0 | `persimmon-core`: decoding BMP, which libvips can only read through ImageMagick | Statically linked (Rust crate) |
 | [libvips](https://www.libvips.org/) | 8.15 or later | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked; installed separately (Homebrew `vips`, apt `libvips-dev`) until the app bundles it |
@@ -24,7 +24,13 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 
 Persimmon doesn't use libvips's ImageMagick, poppler or libimagequant modules, and a bundled build leaves them out.
 
-`persimmon-corpus` is a test-only crate and is never shipped.
+## Run as a separate program
+
+| Component | Version | Licence | Used for | How |
+|---|---|---|---|---|
+| [FFmpeg](https://ffmpeg.org/) and ffprobe | 7.0 or later | LGPL-2.1-or-later, or GPL-2.0-or-later / GPL-3.0-or-later in builds with x264 and x265, as most are | Audio and video: probing, converting, compressing | Never linked or bundled in v0.1. `prsm` runs the `ffmpeg` the user installed as a child process. Bundling a GPL build arrives with the app (DD-04) |
+
+`persimmon-corpus` is a test-only crate and is never shipped. Its audio and video samples are made at test time by the test machine's FFmpeg.
 
 Transitive Rust dependencies (clap's own dependencies, for example) aren't listed one by one. Instead, `cargo deny check licenses` runs in CI on every push and fails the build if any dependency carries a licence not on the list in `deny.toml`. The full inventory, with every transitive crate and its licence, is generated for each release.
 

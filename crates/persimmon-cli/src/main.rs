@@ -328,8 +328,9 @@ fn note(e: &Error, first: &mut Option<ErrorCode>) {
     first.get_or_insert(e.code);
 }
 
-/// The first Ctrl-C cancels: the file being converted finishes, the rest
-/// are skipped, and no partial file is left. A second Ctrl-C quits at once.
+/// The first Ctrl-C, SIGTERM or closed terminal (SIGHUP) cancels: a video
+/// being converted stops, an image finishes, the rest are skipped, and no
+/// partial file is left. A second one quits at once.
 fn cancel_on_ctrl_c() -> CancelToken {
     let cancel = CancelToken::new();
     let token = cancel.clone();
@@ -340,6 +341,45 @@ fn cancel_on_ctrl_c() -> CancelToken {
         token.cancel();
     });
     cancel
+}
+
+/// A progress line on stderr, `[2/5] clip.mov  43%`, drawn only when
+/// stderr is a terminal and cleared before anything else is printed.
+struct Progress {
+    tty: bool,
+    shown: bool,
+}
+
+impl Progress {
+    fn new() -> Progress {
+        use std::io::IsTerminal;
+        Progress {
+            tty: std::io::stderr().is_terminal(),
+            shown: false,
+        }
+    }
+
+    fn draw(&mut self, index: usize, total: usize, label: &str, fraction: f32) {
+        if !self.tty {
+            return;
+        }
+        use std::io::Write;
+        let pct = (fraction * 100.0) as u32;
+        let _ = write!(
+            std::io::stderr().lock(),
+            "\r\x1b[2K[{}/{total}] {label}  {pct}%",
+            index + 1
+        );
+        self.shown = true;
+    }
+
+    fn clear(&mut self) {
+        if self.shown {
+            use std::io::Write;
+            let _ = write!(std::io::stderr().lock(), "\r\x1b[2K");
+            self.shown = false;
+        }
+    }
 }
 
 /// Plan a job, then run it (or, with `--dry-run`, print the plan). Output
@@ -390,10 +430,22 @@ fn run(
     } else {
         let cancel = cancel_on_ctrl_c();
         let mut cursor = 0;
+        let mut progress = Progress::new();
         execute(&job, &plan, &Backends::new(), &cancel, &mut |event| {
-            let Event::Finished { task, result, .. } = event else {
-                return;
+            let (task, result) = match event {
+                Event::Started { .. } => return,
+                Event::Progress {
+                    index,
+                    total,
+                    task,
+                    fraction,
+                } => {
+                    progress.draw(index, total, &label(op, task), fraction);
+                    return;
+                }
+                Event::Finished { task, result, .. } => (task, result),
             };
+            progress.clear();
             // Planning errors that come before this task in input order.
             while let Some(Err(e)) = order.get(cursor) {
                 note(e, &mut first);
