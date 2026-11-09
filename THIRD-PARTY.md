@@ -17,6 +17,12 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 | [lopdf](https://github.com/J-F-Liu/lopdf) | 0.47, no default features | MIT | `persimmon-core`: building PDFs from images, merging and splitting them | Statically linked (Rust crate) |
 | Foxit standard fonts, from [PDFium](https://pdfium.googlesource.com/pdfium/) | — | BSD-3-Clause | Stand-ins for the 14 standard PDF fonts when a PDF doesn't embed them | Compiled in, as data inside `hayro-font` |
 | [Adobe CMap resources](https://github.com/adobe-type-tools/cmap-resources) | — | BSD-3-Clause | Character maps for Chinese, Japanese and Korean text in PDFs | Compiled in, as data inside `hayro-cmap` |
+| [zip](https://github.com/zip-rs/zip2) | 9.5, Deflate, Deflate64, bzip2, LZMA and XZ only | MIT | `persimmon-core`: reading and writing ZIP archives | Statically linked (Rust crate) |
+| [tar](https://github.com/alexcrichton/tar-rs) | 0.4 | MIT OR Apache-2.0 | `persimmon-core`: reading and writing tar archives | Statically linked (Rust crate) |
+| [flate2](https://github.com/rust-lang/flate2-rs) with [zlib-rs](https://github.com/trifectatechfoundation/zlib-rs) | 1, `zlib-rs` backend | MIT OR Apache-2.0; zlib-rs is Zlib | `persimmon-core`: gzip and Deflate, for `.tar.gz` and ZIP | Statically linked (Rust crate) |
+| [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) with [libbz2-rs-sys](https://github.com/trifectatechfoundation/libbzip2-rs) | 0.6 | MIT OR Apache-2.0; libbz2-rs-sys is bzip2-1.0.6 | `persimmon-core`: bzip2, for `.tar.bz2` and bzip2 in ZIP | Statically linked (Rust crate) |
+| [lzma-rust2](https://github.com/hasenbanck/lzma-rust2) | 0.25 | Apache-2.0 | `persimmon-core`: XZ and LZMA, for `.tar.xz` and ZIP | Statically linked (Rust crate) |
+| [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9 | MIT | `persimmon-core`: Zstandard, for `.tar.zst` | Statically linked (Rust crate) |
 | [libvips](https://www.libvips.org/) | 8.15 or later | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked; installed separately (Homebrew `vips`, apt `libvips-dev`) until the app bundles it |
 | [GLib](https://gitlab.gnome.org/GNOME/glib) | 2 | LGPL-2.1-or-later | Required by libvips | Dynamically linked |
 

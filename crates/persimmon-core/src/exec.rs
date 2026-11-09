@@ -309,12 +309,12 @@ mod tests {
     #[test]
     fn backends_report_not_implemented_for_archives() {
         let dir = scratch("archive");
-        let zip = dir.join("a.zip");
-        std::fs::write(&zip, persimmon_corpus::ZIP_EMPTY).unwrap();
+        let png = dir.join("a.png");
+        std::fs::write(&png, PNG_1X1).unwrap();
         let j = Job {
-            op: Operation::Extract,
-            inputs: vec![zip],
-            target: None,
+            op: Operation::Merge,
+            inputs: vec![png],
+            target: Some(FormatId::Zip),
             output: OutputPolicy::default(),
             options: JobOptions::default(),
         };
@@ -330,8 +330,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::NotImplemented);
-        assert_eq!(e.reason, "the archive backend isn't built yet");
-        assert_eq!(e.fix.as_deref(), Some("use --dry-run to see the plan"));
+        assert_eq!(e.reason, "packing archives isn't built yet");
     }
 
     #[test]

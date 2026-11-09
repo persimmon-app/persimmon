@@ -214,14 +214,13 @@ fn batch_exit_code_is_first_failure() {
 
 #[test]
 fn without_dry_run_is_not_implemented() {
-    // Archives are the last backend, arriving in week 7.
+    // Packing archives is the last piece, arriving later in week 7.
     let c = Corpus::new("not-impl");
-    let out = prsm(&c.dir, ["extract", "empty.zip"]);
+    let out = prsm(&c.dir, ["merge", "--to", "tar.gz", "pixel.png"]);
     assert_eq!(out.status.code(), Some(10));
     let err = stderr(&out);
-    assert!(err.contains("the archive backend isn't built yet"), "{err}");
-    assert!(err.contains("fix: use --dry-run to see the plan"), "{err}");
-    assert!(!c.dir.join("empty").exists());
+    assert!(err.contains("packing archives isn't built yet"), "{err}");
+    assert!(!c.dir.join("merged.tar.gz").exists());
 }
 
 #[test]

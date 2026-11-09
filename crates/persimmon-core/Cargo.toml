@@ -23,6 +23,14 @@ unicode-normalization = "0.1"
 # rewrites documents. Both pure Rust, compiled in, nothing to install.
 hayro = "0.9"
 lopdf = { version = "0.47", default-features = false }
+# The archive backend (DD-37): pure-Rust readers for ZIP, the tar family
+# and 7z, and writers for ZIP and tar.gz.
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz"] }
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+ruzstd = "0.9"
 rs-vips = { version = "0.7", optional = true }
 # BMP decoding, which libvips can't do without ImageMagick (DD-34), and
 # PNG and JPEG for rendered PDF pages, which needs no libvips (DD-36).

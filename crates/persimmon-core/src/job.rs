@@ -297,7 +297,8 @@ impl Job {
                 let ext = reg.format(from).extensions[0];
                 free_name(&dir, &format!("{stem} (compressed)"), ext, ow, taken)
             }
-            _ => free_name(&dir, &stem, "", ow, taken),
+            // An extracted folder is never replaced (DD-37).
+            _ => free_name(&dir, &stem, "", false, taken),
         };
         Ok(PlannedTask {
             inputs: vec![input.to_path_buf()],

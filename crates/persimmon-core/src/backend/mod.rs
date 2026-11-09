@@ -16,7 +16,7 @@ pub mod pdf;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use crate::error::{Error, ErrorCode};
+use crate::error::Error;
 use crate::exec::CancelToken;
 use crate::job::{JobOptions, PlannedTask};
 use crate::registry::Backend;
@@ -76,11 +76,12 @@ impl Run for Backends {
             #[cfg(not(feature = "vips"))]
             Backend::Image => {
                 let _ = (options, temp, cancel, progress);
-                Err(
-                    Error::new(ErrorCode::BackendMissing, "this build has no image backend")
-                        .with_file(&task.inputs[0])
-                        .with_fix("install a build of prsm made with libvips"),
+                Err(Error::new(
+                    crate::error::ErrorCode::BackendMissing,
+                    "this build has no image backend",
                 )
+                .with_file(&task.inputs[0])
+                .with_fix("install a build of prsm made with libvips"))
             }
             Backend::Ffmpeg => {
                 let found = self.ffmpeg.get_or_init(|| {
@@ -93,18 +94,7 @@ impl Run for Backends {
                 }
             }
             Backend::Pdf => pdf::PdfBackend.run(task, options, temp, cancel, progress),
-            other => {
-                let e = Error::new(
-                    ErrorCode::NotImplemented,
-                    format!("the {} backend isn't built yet", other.as_str()),
-                )
-                .with_fix("use --dry-run to see the plan");
-                // Many-to-one tasks have no single file to name.
-                Err(match task.inputs.as_slice() {
-                    [one] => e.with_file(one),
-                    _ => e,
-                })
-            }
+            Backend::Archive => archive::ArchiveBackend.run(task, options, temp, cancel, progress),
         }
     }
 }

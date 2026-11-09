@@ -30,8 +30,9 @@ pub const TREE: &[(&str, TreeItem)] = &[
     ("link", TreeItem::Symlink("hello.txt")),
 ];
 
-/// Every entry's modification time: 2026-01-02 03:04:05 UTC.
-pub const MTIME: u64 = 1_767_323_045;
+/// Every entry's modification time: 2026-01-02 03:04:06 UTC. Even, since
+/// ZIP's DOS times count in two-second steps.
+pub const MTIME: u64 = 1_767_323_046;
 
 /// Every archive sample: `(id, file name)`.
 pub const ARCHIVE_SAMPLES: [(&str, &str); 19] = [
@@ -223,7 +224,7 @@ fn raw_field(field: &mut [u8], value: &str) {
 }
 
 fn zip_time() -> zip::DateTime {
-    zip::DateTime::from_date_and_time(2026, 1, 2, 3, 4, 5).expect("a valid date")
+    zip::DateTime::from_date_and_time(2026, 1, 2, 3, 4, 6).expect("a valid date")
 }
 
 fn zip(items: &[(&str, Item)]) -> Vec<u8> {
