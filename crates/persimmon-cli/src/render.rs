@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use persimmon_core::backend::ffmpeg::{MediaInfo, Stream};
+use persimmon_core::backend::pdf::PdfInfo;
 use persimmon_core::detect::Detected;
 use persimmon_core::format::FormatId;
 use persimmon_core::registry::{Operation, Registry};
@@ -111,6 +112,32 @@ pub fn info(
     rows.iter()
         .map(|(label, value)| format!("{label:<9}{value}\n"))
         .collect()
+}
+
+/// Paper sizes `info` names, portrait, in points.
+const PAPER: [(&str, f32, f32); 5] = [
+    ("A3", 842.0, 1191.0),
+    ("A4", 595.0, 842.0),
+    ("A5", 420.0, 595.0),
+    ("Letter", 612.0, 792.0),
+    ("Legal", 612.0, 1008.0),
+];
+
+/// `info`'s rows for a PDF: the page count and page 1's size, in
+/// millimetres, named when it's a common paper size.
+pub fn pdf_rows(info: &PdfInfo) -> Vec<(&'static str, String)> {
+    let (w, h) = info.first_page;
+    let mm = |pt: f32| (pt * 25.4 / 72.0).round() as u32;
+    let mut size = format!("{}×{} mm", mm(w), mm(h));
+    let near = |a: f32, b: f32| (a - b).abs() <= 3.0;
+    if let Some((name, ..)) = PAPER
+        .iter()
+        .find(|(_, pw, ph)| (near(w, *pw) && near(h, *ph)) || (near(w, *ph) && near(h, *pw)))
+    {
+        let landscape = if w > h { " landscape" } else { "" };
+        size.push_str(&format!(" ({name}{landscape})"));
+    }
+    vec![("pages", info.pages.to_string()), ("page", size)]
 }
 
 /// `info`'s rows for a probed audio or video file: duration, the video
@@ -230,6 +257,25 @@ fn ids(formats: &[FormatId]) -> String {
 mod tests {
     use super::*;
     use persimmon_core::backend::ffmpeg::StreamKind;
+
+    #[test]
+    fn pdf_rows_name_paper_sizes() {
+        let rows = |w, h| {
+            pdf_rows(&PdfInfo {
+                pages: 3,
+                first_page: (w, h),
+            })
+        };
+        assert_eq!(
+            rows(595.0, 842.0),
+            vec![
+                ("pages", "3".to_string()),
+                ("page", "210×297 mm (A4)".to_string())
+            ]
+        );
+        assert_eq!(rows(792.0, 612.0)[1].1, "279×216 mm (Letter landscape)");
+        assert_eq!(rows(100.0, 100.0)[1].1, "35×35 mm");
+    }
 
     #[test]
     fn human_size_values() {

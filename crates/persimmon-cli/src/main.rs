@@ -5,9 +5,9 @@
 //!
 //! A thin layer over `persimmon-core`: it parses arguments, builds a job,
 //! runs it (or, with `--dry-run`, prints the plan), and maps the first
-//! failure to a stable exit code (see "Exit codes" in the README). Images
-//! convert for real; video, PDF and archive tasks fail with
-//! `NOT_IMPLEMENTED` until their backends land.
+//! failure to a stable exit code (see "Exit codes" in the README). Images,
+//! audio, video and PDFs convert for real; archive tasks fail with
+//! `NOT_IMPLEMENTED` until their backend lands.
 
 mod render;
 
@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use persimmon_core::backend::Backends;
 use persimmon_core::backend::ffmpeg::Ffmpeg;
+use persimmon_core::backend::pdf::pdf_info;
 use persimmon_core::detect::detect;
 use persimmon_core::error::{Error, ErrorCode};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
@@ -286,7 +287,8 @@ fn parse_target(reg: &Registry, name: &str) -> Result<FormatId, Error> {
 }
 
 /// `prsm info`. Audio and video also get duration and codecs from
-/// ffprobe; without FFmpeg, a `details` row says how to get them.
+/// ffprobe; without FFmpeg, a `details` row says how to get them. PDFs get
+/// their page count and page size.
 fn info(reg: &Registry, file: PathBuf, ffmpeg: Option<PathBuf>) -> Result<(), Error> {
     let detected = detect(&file, reg.formats())?;
     let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
@@ -305,6 +307,12 @@ fn info(reg: &Registry, file: PathBuf, ffmpeg: Option<PathBuf>) -> Result<(), Er
                 let fix = e.fix.map(|f| format!(" ({f})")).unwrap_or_default();
                 media.push(("details", format!("{}{fix}", e.reason)));
             }
+        }
+    }
+    if detected.format == FormatId::Pdf {
+        match pdf_info(&file) {
+            Ok(pdf) => media = render::pdf_rows(&pdf),
+            Err(e) => failure = Some(e),
         }
     }
     say(&render::info(reg, &file, detected, bytes, &media));

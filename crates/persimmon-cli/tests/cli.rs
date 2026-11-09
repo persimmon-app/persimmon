@@ -307,6 +307,110 @@ fn locked_pdf_fails_at_planning() {
     assert!(err.contains("locked.pdf: it's password-protected"), "{err}");
 }
 
+mod pdf {
+    use super::*;
+    use persimmon_corpus::pdf::write_pdf_sample;
+
+    fn with_pdfs(test: &str, ids: &[&str]) -> Corpus {
+        let c = Corpus::new(test);
+        for id in ids {
+            write_pdf_sample(&c.dir, id);
+        }
+        c
+    }
+
+    /// The `pages` row `prsm info` gives for `file`.
+    fn pages(dir: &Path, file: &str) -> String {
+        let out = prsm(dir, ["info", file]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        stdout(&out)
+            .lines()
+            .find_map(|l| l.strip_prefix("pages    "))
+            .unwrap_or_else(|| panic!("no pages row: {}", stdout(&out)))
+            .to_string()
+    }
+
+    #[test]
+    fn info_shows_pdf_pages() {
+        let c = with_pdfs("info-pdf", &["pdf-text"]);
+        let out = prsm(&c.dir, ["info", "text.pdf"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let text = stdout(&out);
+        assert!(text.contains("pages    3\n"), "{text}");
+        assert!(text.contains("page     210×297 mm (A4)\n"), "{text}");
+    }
+
+    #[test]
+    fn info_locked_pdf_is_exit_3() {
+        let c = with_pdfs("info-locked", &["pdf-locked"]);
+        let out = prsm(&c.dir, ["info", "locked.pdf"]);
+        assert_eq!(out.status.code(), Some(3));
+        assert!(stdout(&out).contains("format   PDF (pdf)"));
+        assert!(stderr(&out).contains("locked.pdf: it's password-protected"));
+    }
+
+    #[test]
+    fn pdf_to_png_writes_a_folder() {
+        let c = with_pdfs("pdf-png", &["pdf-text"]);
+        let out = prsm(&c.dir, ["convert", "--to", "png", "text.pdf"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "text.pdf → text");
+        let mut names: Vec<String> = std::fs::read_dir(c.dir.join("text"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["text 1.png", "text 2.png", "text 3.png"]);
+    }
+
+    #[test]
+    fn split_writes_selected_pages() {
+        let c = with_pdfs("split-pdf", &["pdf-text"]);
+        let out = prsm(&c.dir, ["split", "--pages", "2", "text.pdf"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "text.pdf → text (pages 2).pdf");
+        assert_eq!(pages(&c.dir, "text (pages 2).pdf"), "1");
+    }
+
+    #[test]
+    fn merge_images_and_pdf() {
+        let c = with_pdfs("merge-pdf", &["pdf-text"]);
+        let photo = persimmon_corpus::IMAGE_SAMPLES
+            .iter()
+            .find(|s| s.0 == "img-jpeg")
+            .unwrap()
+            .2;
+        std::fs::write(c.dir.join("photo.jpg"), photo).unwrap();
+        let out = prsm(&c.dir, ["merge", "--to", "pdf", "photo.jpg", "text.pdf"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "2 files → merged.pdf");
+        assert_eq!(pages(&c.dir, "merged.pdf"), "4");
+    }
+
+    #[test]
+    fn convert_pages_flag() {
+        let c = with_pdfs("pages-flag", &["pdf-text"]);
+        let out = prsm(
+            &c.dir,
+            ["convert", "--to", "jpeg", "--pages", "2", "text.pdf"],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "text.pdf → text (page 2).jpg");
+        assert!(c.dir.join("text (page 2).jpg").is_file());
+    }
+
+    #[test]
+    fn bad_pages_flag_is_usage() {
+        let c = with_pdfs("pages-bad", &["pdf-text"]);
+        let out = prsm(
+            &c.dir,
+            ["convert", "--to", "png", "--pages", "x", "text.pdf"],
+        );
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("isn't a page range"));
+    }
+}
+
 #[test]
 fn unknown_target_format() {
     let c = Corpus::new("unknown-target");
