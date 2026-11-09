@@ -116,7 +116,7 @@ pub(crate) fn jpeg_info(bytes: &[u8]) -> Option<JpegInfo> {
                 let x = f32::from(be16(&data[8..10]));
                 dpi = match data[7] {
                     1 => plausible(x),
-                    2 => plausible(x * 2.54),
+                    2 => plausible((x * 2.54).round()),
                     _ => None,
                 };
             }

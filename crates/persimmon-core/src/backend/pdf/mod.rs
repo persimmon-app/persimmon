@@ -15,6 +15,7 @@ use crate::exec::CancelToken;
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask};
 
+pub(crate) mod assemble;
 pub(crate) mod build;
 pub(crate) mod images;
 pub(crate) mod render;

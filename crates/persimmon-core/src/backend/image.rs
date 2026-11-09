@@ -312,7 +312,8 @@ fn decode(input: &Path, from: FormatId, max_size: Option<u32>) -> Result<Decoded
     if !matches!(img.get_format(), Ok(BandFormat::Uchar)) {
         img = img.cast(BandFormat::Uchar).map_err(|e| fail(&e))?;
     }
-    let dpi = Some(img.get_xres() as f32 * 25.4).filter(|d| (50.0..=4800.0).contains(d));
+    // Rounded: PNG stores 72 dpi as 2,835 pixels per metre, 72.009 dpi.
+    let dpi = Some((img.get_xres() * 25.4).round() as f32).filter(|d| (50.0..=4800.0).contains(d));
     let (width, height, bands) = (
         img.get_width() as u32,
         img.get_height() as u32,
