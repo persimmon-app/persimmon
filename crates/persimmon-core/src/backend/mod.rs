@@ -9,6 +9,7 @@
 #[cfg(feature = "vips")]
 pub mod image;
 
+pub mod archive;
 pub mod ffmpeg;
 pub mod pdf;
 

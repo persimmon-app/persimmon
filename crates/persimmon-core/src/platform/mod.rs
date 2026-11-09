@@ -26,6 +26,66 @@ pub const fn os_name() -> &'static str {
     }
 }
 
+use std::path::Path;
+
+/// Create a symlink at `link` pointing at `target`, as stored. `Ok(false)`
+/// means this platform refused and the link was skipped: Windows only
+/// creates symlinks with Developer Mode or elevation.
+pub fn symlink(target: &Path, link: &Path) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).map(|()| true)
+    }
+    #[cfg(windows)]
+    {
+        match std::os::windows::fs::symlink_file(target, link) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+            Err(e) if e.raw_os_error() == Some(1314) => Ok(false), // ERROR_PRIVILEGE_NOT_HELD
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Make `path` 0755 when `executable`, else 0644. Windows has no such
+/// bits; it's a no-op there.
+pub fn set_mode(path: &Path, executable: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o755 } else { 0o644 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, executable);
+        Ok(())
+    }
+}
+
+/// Whether this platform can hold a file called `name` (one path
+/// component, already free of `/`, `\` and NUL). Windows refuses
+/// `<>:"|?*`, control characters, a trailing dot or space, and device
+/// names such as `CON` or `com1.txt`.
+pub fn file_name_ok(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        if name.chars().any(|c| c < ' ' || "<>:\"|?*".contains(c)) || name.ends_with(['.', ' ']) {
+            return false;
+        }
+        let base = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let device = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (base.len() == 4
+                && (base.starts_with("COM") || base.starts_with("LPT"))
+                && base.as_bytes()[3].is_ascii_digit());
+        !device
+    }
+    #[cfg(not(windows))]
+    {
+        !name.is_empty()
+    }
+}
+
 /// Folders searched for FFmpeg after `PATH`. On macOS, Homebrew's: apps
 /// started from Finder don't inherit a shell's `PATH`.
 pub const fn ffmpeg_dirs() -> &'static [&'static str] {
