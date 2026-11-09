@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 
 use image::ImageDecoder;
 use image::codecs::bmp::BmpDecoder;
-use rs_vips::enums::BandFormat;
+use rs_vips::enums::{BandFormat, Interpretation};
 use rs_vips::voption::{Setter, VOption};
 use rs_vips::{Vips, VipsImage, VipsSource};
 
@@ -240,6 +240,103 @@ impl ImageBackend {
         }
         Ok(img)
     }
+}
+
+/// An image decoded for embedding in a PDF: 8-bit sRGB or gray, alpha
+/// last, upright.
+pub(crate) struct Decoded {
+    pub width: u32,
+    pub height: u32,
+    /// 1 (gray), 2 (gray and alpha), 3 (RGB) or 4 (RGB and alpha).
+    pub bands: u8,
+    pub pixels: Vec<u8>,
+    /// The recorded resolution, when it's a plausible one (50–4,800 dpi).
+    pub dpi: Option<f32>,
+}
+
+/// Decode `input` for a PDF page, as `convert` opens it: the pixel limit is
+/// checked first, EXIF rotation applied, the long edge shrunk to
+/// `max_size`, colour profiles and CMYK converted to sRGB, and 16-bit
+/// samples reduced to 8.
+pub(crate) fn decode_srgb8(
+    input: &Path,
+    from: FormatId,
+    max_size: Option<u32>,
+) -> Result<Decoded, Error> {
+    init().map_err(|reason| {
+        Error::new(ErrorCode::BackendMissing, reason)
+            .with_file(input)
+            .with_fix("install or update libvips (brew upgrade vips, or a newer libvips-dev)")
+    })?;
+    Vips::error_clear();
+    let result = decode(input, from, max_size);
+    Vips::error_clear();
+    result
+}
+
+fn decode(input: &Path, from: FormatId, max_size: Option<u32>) -> Result<Decoded, Error> {
+    let fail = |e: &dyn std::fmt::Display| {
+        Error::new(
+            ErrorCode::CorruptInput,
+            format!("can't read this image ({})", message(e)),
+        )
+        .with_file(input)
+    };
+    let mut img = ImageBackend::new().open(input, from)?;
+    if let Some(max) = max_size
+        && img.get_width().max(img.get_height()) > max as i32
+    {
+        img = img
+            .thumbnail_image_with_opts(
+                max as i32,
+                VOption::new().set("height", max as i32).set("size", "down"),
+            )
+            .map_err(|e| fail(&e))?;
+    }
+    if img.get_typeof("icc-profile-data").unwrap_or(0) != 0 {
+        img = img
+            .icc_transform_with_opts("srgb", VOption::new().set("embedded", true))
+            .map_err(|e| fail(&e))?;
+    }
+    let gray = matches!(
+        img.guess_interpretation(),
+        Ok(Interpretation::BW | Interpretation::Grey16)
+    );
+    img = img
+        .colourspace(if gray {
+            Interpretation::BW
+        } else {
+            Interpretation::Srgb
+        })
+        .map_err(|e| fail(&e))?;
+    if !matches!(img.get_format(), Ok(BandFormat::Uchar)) {
+        img = img.cast(BandFormat::Uchar).map_err(|e| fail(&e))?;
+    }
+    let dpi = Some(img.get_xres() as f32 * 25.4).filter(|d| (50.0..=4800.0).contains(d));
+    let (width, height, bands) = (
+        img.get_width() as u32,
+        img.get_height() as u32,
+        img.get_bands() as u8,
+    );
+    // Decoding happens here; a file that fails partway gives fewer bytes.
+    let pixels = img.write_to_memory();
+    if pixels.len() != width as usize * height as usize * usize::from(bands) {
+        let buffer = Vips::error_buffer().unwrap_or_default();
+        let reason = buffer
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("it's truncated")
+            .to_string();
+        return Err(fail(&reason));
+    }
+    Ok(Decoded {
+        width,
+        height,
+        bands,
+        pixels,
+        dpi,
+    })
 }
 
 impl Run for ImageBackend {

@@ -15,6 +15,8 @@ use crate::exec::CancelToken;
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask};
 
+pub(crate) mod build;
+pub(crate) mod images;
 pub(crate) mod render;
 
 /// Renders PDF pages to PNG and JPEG, and builds PDFs from images and
@@ -35,10 +37,7 @@ impl Run for PdfBackend {
             Some(FormatId::Png | FormatId::Jpeg) => {
                 render::render(task, options, temp, cancel, progress)
             }
-            _ => Err(Error::new(
-                ErrorCode::NotImplemented,
-                "the pdf backend can't build PDFs yet",
-            )),
+            _ => build::build(task, options, temp, cancel, progress),
         }
     }
 }
