@@ -63,6 +63,25 @@ pub fn set_mode(path: &Path, executable: bool) -> std::io::Result<()> {
     }
 }
 
+/// The mode to store for a file packed into an archive: 0755 if anything
+/// may execute it, else 0644. Windows has no such bits: 0644.
+pub fn file_mode(meta: &std::fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 != 0 {
+            0o755
+        } else {
+            0o644
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        0o644
+    }
+}
+
 /// Whether this platform can hold a file called `name` (one path
 /// component, already free of `/`, `\` and NUL). Windows refuses
 /// `<>:"|?*`, control characters, a trailing dot or space, and device

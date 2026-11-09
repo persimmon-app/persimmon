@@ -122,7 +122,7 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Backends, Done, Run};
+    use crate::backend::{Done, Run};
     use crate::error::ErrorCode;
     use crate::format::FormatId;
     use crate::job::{Job, JobOptions, PlannedTask};
@@ -304,33 +304,6 @@ mod tests {
             events,
             ["Started 0", "Finished 0", "Started 1", "Finished 1"]
         );
-    }
-
-    #[test]
-    fn backends_report_not_implemented_for_archives() {
-        let dir = scratch("archive");
-        let png = dir.join("a.png");
-        std::fs::write(&png, PNG_1X1).unwrap();
-        let j = Job {
-            op: Operation::Merge,
-            inputs: vec![png],
-            target: Some(FormatId::Zip),
-            output: OutputPolicy::default(),
-            options: JobOptions::default(),
-        };
-        let plan = j.plan(&Registry::builtin());
-        let temp = dir.join("t.part");
-        let e = Backends::new()
-            .run(
-                &plan.tasks[0],
-                &j.options,
-                &temp,
-                &CancelToken::new(),
-                &mut |_| {},
-            )
-            .unwrap_err();
-        assert_eq!(e.code, ErrorCode::NotImplemented);
-        assert_eq!(e.reason, "packing archives isn't built yet");
     }
 
     #[test]

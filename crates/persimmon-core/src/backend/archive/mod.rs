@@ -7,6 +7,7 @@
 //! executor's temporary folder; a failed, unsafe or cancelled extraction
 //! leaves nothing.
 
+mod pack;
 #[cfg(feature = "rar")]
 mod rar;
 #[cfg(any(feature = "rar", test))]
@@ -43,10 +44,7 @@ impl Run for ArchiveBackend {
         progress: &mut dyn FnMut(f32),
     ) -> Result<Done, Error> {
         if task.to.is_some() {
-            return Err(Error::new(
-                ErrorCode::NotImplemented,
-                "packing archives isn't built yet",
-            ));
+            return pack::pack(task, temp, cancel, progress);
         }
         let input = &task.inputs[0];
         let from = task.from[0];

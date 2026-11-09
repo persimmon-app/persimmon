@@ -213,17 +213,6 @@ fn batch_exit_code_is_first_failure() {
 }
 
 #[test]
-fn without_dry_run_is_not_implemented() {
-    // Packing archives is the last piece, arriving later in week 7.
-    let c = Corpus::new("not-impl");
-    let out = prsm(&c.dir, ["merge", "--to", "tar.gz", "pixel.png"]);
-    assert_eq!(out.status.code(), Some(10));
-    let err = stderr(&out);
-    assert!(err.contains("packing archives isn't built yet"), "{err}");
-    assert!(!c.dir.join("merged.tar.gz").exists());
-}
-
-#[test]
 fn unsupported_conversion_exit_8() {
     let c = Corpus::new("unsupported");
     let out = prsm(
@@ -530,17 +519,6 @@ mod images {
             "{text}"
         );
         assert!(stderr(&out).contains("empty.png: file is empty"));
-    }
-
-    #[test]
-    fn archives_still_not_implemented() {
-        let c = Corpus::new("img-archive");
-        assert_eq!(
-            prsm(&c.dir, ["merge", "--to", "zip", "pixel.png"])
-                .status
-                .code(),
-            Some(10)
-        );
     }
 
     #[cfg(unix)]
