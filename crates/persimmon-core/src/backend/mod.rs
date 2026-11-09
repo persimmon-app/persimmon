@@ -10,6 +10,7 @@
 pub mod image;
 
 pub mod ffmpeg;
+pub mod pdf;
 
 use std::path::Path;
 use std::sync::OnceLock;

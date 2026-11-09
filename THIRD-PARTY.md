@@ -13,6 +13,10 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 | [ctrlc](https://github.com/Detegr/rust-ctrlc) | 3, `termination` feature | MIT OR Apache-2.0 | `prsm`: Ctrl-C, SIGTERM and SIGHUP cancel cleanly, leaving no partial files | Statically linked (Rust crate) |
 | [rs-vips](https://github.com/mrdkprj/rs-vips) | 0.7 | MIT | `persimmon-core`: Rust bindings to libvips, the image backend | Statically linked (Rust crate) |
 | [image](https://github.com/image-rs/image) | 0.25, `bmp` feature only | MIT OR Apache-2.0 | `persimmon-core`: decoding BMP, which libvips can only read through ImageMagick | Statically linked (Rust crate) |
+| [hayro](https://github.com/LaurenzV/hayro) | 0.9, with its `hayro-*` crates | Apache-2.0 OR MIT | `persimmon-core`: reading PDFs and rendering their pages | Statically linked (Rust crate) |
+| [lopdf](https://github.com/J-F-Liu/lopdf) | 0.47, no default features | MIT | `persimmon-core`: building PDFs from images, merging and splitting them | Statically linked (Rust crate) |
+| Foxit standard fonts, from [PDFium](https://pdfium.googlesource.com/pdfium/) | — | BSD-3-Clause | Stand-ins for the 14 standard PDF fonts when a PDF doesn't embed them | Compiled in, as data inside `hayro-font` |
+| [Adobe CMap resources](https://github.com/adobe-type-tools/cmap-resources) | — | BSD-3-Clause | Character maps for Chinese, Japanese and Korean text in PDFs | Compiled in, as data inside `hayro-cmap` |
 | [libvips](https://www.libvips.org/) | 8.15 or later | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked; installed separately (Homebrew `vips`, apt `libvips-dev`) until the app bundles it |
 | [GLib](https://gitlab.gnome.org/GNOME/glib) | 2 | LGPL-2.1-or-later | Required by libvips | Dynamically linked |
 

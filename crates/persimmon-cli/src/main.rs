@@ -130,6 +130,9 @@ struct TuneArgs {
     /// Remove metadata: EXIF, XMP, tags and colour profiles (images convert to sRGB first).
     #[arg(long)]
     strip_metadata: bool,
+    /// PDF to images: only these pages, e.g. 1-3,5.
+    #[arg(long, value_name = "RANGES")]
+    pages: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -180,19 +183,16 @@ fn main() -> ExitCode {
             to,
             out,
             tune,
-        } => parse_target(&reg, &to).map_err(fail).and_then(|target| {
-            run(
-                &reg,
-                Operation::Convert,
-                files,
-                Some(target),
-                out,
-                tune.options(),
-            )
-        }),
-        Command::Compress { files, out, tune } => {
-            run(&reg, Operation::Compress, files, None, out, tune.options())
-        }
+        } => parse_target(&reg, &to)
+            .and_then(|target| Ok((target, tune.options()?)))
+            .map_err(fail)
+            .and_then(|(target, options)| {
+                run(&reg, Operation::Convert, files, Some(target), out, options)
+            }),
+        Command::Compress { files, out, tune } => tune
+            .options()
+            .map_err(fail)
+            .and_then(|options| run(&reg, Operation::Compress, files, None, out, options)),
         Command::Extract { archives, out } => run(
             &reg,
             Operation::Extract,
@@ -237,15 +237,16 @@ fn main() -> ExitCode {
 }
 
 impl TuneArgs {
-    fn options(&self) -> JobOptions {
-        JobOptions {
+    /// The job options these flags ask for. A bad `--pages` is an error.
+    fn options(&self) -> Result<JobOptions, Error> {
+        Ok(JobOptions {
             quality: self.quality.map(Quality::from),
             preset: self.preset.map(Preset::from),
             ffmpeg: self.ffmpeg.clone(),
             max_size: self.max_size,
             strip_metadata: self.strip_metadata,
-            ..JobOptions::default()
-        }
+            pages: self.pages.as_deref().map(PageRanges::parse).transpose()?,
+        })
     }
 }
 

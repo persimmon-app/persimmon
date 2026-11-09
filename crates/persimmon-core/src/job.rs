@@ -5,10 +5,11 @@
 //! anything runs, so mistakes surface up front (unknown formats, impossible
 //! conversions, clashing outputs), and planning never writes an output.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::backend::pdf::pdf_info;
 use crate::detect::detect;
 use crate::error::{Error, ErrorCode};
 use crate::format::{FormatId, format_for_name};
@@ -69,6 +70,28 @@ impl PageRanges {
         }
         Ok(PageRanges(ranges))
     }
+}
+
+/// Which pages of a `count`-page PDF `--pages` picks: all of them without
+/// ranges, else the pages named, in document order and without repeats. A
+/// page past the end is a `USAGE` error; the caller attaches the file.
+pub fn select_pages(ranges: Option<&PageRanges>, count: u32) -> Result<Vec<u32>, Error> {
+    let Some(ranges) = ranges else {
+        return Ok((1..=count).collect());
+    };
+    let mut pages = BTreeSet::new();
+    for &(first, last) in &ranges.0 {
+        let last = last.unwrap_or(count);
+        if first > count || last > count {
+            let noun = if count == 1 { "page" } else { "pages" };
+            return Err(
+                Error::new(ErrorCode::Usage, format!("it has {count} {noun}"))
+                    .with_fix(format!("use --pages between 1 and {count}")),
+            );
+        }
+        pages.extend(first..=last);
+    }
+    Ok(pages.into_iter().collect())
 }
 
 impl fmt::Display for PageRanges {
@@ -221,12 +244,38 @@ impl Job {
         let cap = reg
             .find(self.op, from, to)
             .ok_or_else(|| unsupported(reg, self.op, from, to).with_file(input))?;
-        self.check_options(cap.backend, to.unwrap_or(from))
+        self.check_options(cap.backend, from, to.unwrap_or(from))
             .map_err(|e| e.with_file(input))?;
+        // Rendering a PDF writes one file per page: planning counts them.
+        let render_pages = match (self.op, from) {
+            (Operation::Convert, FormatId::Pdf) => {
+                let info = pdf_info(input)?;
+                Some(
+                    select_pages(self.options.pages.as_ref(), info.pages)
+                        .map_err(|e| e.with_file(input))?,
+                )
+            }
+            _ => None,
+        };
         let dir = self.output.output_dir(input)?;
         let stem = stem_of(input, reg);
         let ow = self.output.overwrite;
         let output = match self.op {
+            Operation::Convert if let Some(pages) = render_pages => {
+                let ext = reg.format(to.expect("convert has a target")).extensions[0];
+                let ranges = self.options.pages.as_ref();
+                match (pages.as_slice(), ranges) {
+                    ([_], None) => free_name(&dir, &stem, ext, ow, taken),
+                    ([n], Some(_)) => {
+                        free_name(&dir, &format!("{stem} (page {n})"), ext, ow, taken)
+                    }
+                    // Several pages make a folder, which is never replaced.
+                    (_, None) => free_name(&dir, &stem, "", false, taken),
+                    (_, Some(r)) => {
+                        free_name(&dir, &format!("{stem} (pages {r})"), "", false, taken)
+                    }
+                }
+            }
             Operation::Convert => {
                 let ext = reg.format(to.expect("convert has a target")).extensions[0];
                 free_name(&dir, &stem, ext, ow, taken)
@@ -248,8 +297,14 @@ impl Job {
 
     /// Options that make no sense for this task's output are usage errors,
     /// found before anything runs.
-    fn check_options(&self, backend: Backend, out: FormatId) -> Result<(), Error> {
+    fn check_options(&self, backend: Backend, from: FormatId, out: FormatId) -> Result<(), Error> {
         use FormatId::*;
+        let renders_pdf = self.op == Operation::Convert && from == Pdf && matches!(out, Png | Jpeg);
+        if self.options.pages.is_some() && !renders_pdf && self.op != Operation::Split {
+            return Err(
+                Error::new(ErrorCode::Usage, "--pages is for PDFs").with_fix("drop --pages")
+            );
+        }
         let video = backend == Backend::Ffmpeg && matches!(out, Mp4 | Mov | Webm);
         if self.options.preset.is_some() && !video {
             return Err(
@@ -293,10 +348,15 @@ impl Job {
             if target == FormatId::Pdf {
                 match detect(input, reg.formats()) {
                     Ok(d) => match reg.find(Operation::Merge, d.format, Some(target)) {
-                        Some(cap) => {
-                            backend = cap.backend;
-                            from.push(d.format);
-                        }
+                        // A PDF is opened now, so a locked or broken one
+                        // fails before anything runs.
+                        Some(cap) => match (d.format == FormatId::Pdf).then(|| pdf_info(input)) {
+                            Some(Err(e)) => errors.push(e),
+                            _ => {
+                                backend = cap.backend;
+                                from.push(d.format);
+                            }
+                        },
                         None => errors.push(
                             unsupported(reg, Operation::Merge, d.format, Some(target))
                                 .with_file(input),
@@ -344,6 +404,8 @@ impl Job {
             .ok_or_else(|| {
                 unsupported(reg, Operation::Split, from, Some(FormatId::Pdf)).with_file(input)
             })?;
+        let info = pdf_info(input)?;
+        select_pages(Some(pages), info.pages).map_err(|e| e.with_file(input))?;
         let dir = self.output.output_dir(input)?;
         let stem = format!("{} (pages {pages})", stem_of(input, reg));
         Ok(PlannedTask {
@@ -369,7 +431,7 @@ fn dedupe(inputs: &[PathBuf]) -> Vec<PathBuf> {
 
 /// The file name without its format extension: `photos.tar.gz` → `photos`,
 /// `v1.2.zip` → `v1.2`. Unknown extensions lose only the last one.
-fn stem_of(path: &Path, reg: &Registry) -> String {
+pub(crate) fn stem_of(path: &Path, reg: &Registry) -> String {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -412,7 +474,8 @@ fn unsupported(reg: &Registry, op: Operation, from: FormatId, to: Option<FormatI
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
-    use persimmon_corpus::{GIF_1X1, PNG_1X1, WAV_HEADER, ZIP_EMPTY};
+    use persimmon_corpus::pdf::write_pdf_sample;
+    use persimmon_corpus::{GIF_1X1, PNG_1X1, WAV_HEADER, ZIP_EMPTY, minimal_pdf};
 
     const MOV_HEAD: &[u8] = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  ";
 
@@ -499,8 +562,8 @@ mod tests {
     #[test]
     fn merge_output_never_replaces_an_input() {
         let dir = scratch("merge-self");
-        let a = put(&dir, "merged.pdf", b"%PDF-1.4\n");
-        let b = put(&dir, "b.pdf", b"%PDF-1.4\n");
+        let a = put(&dir, "merged.pdf", &minimal_pdf());
+        let b = put(&dir, "b.pdf", &minimal_pdf());
         let mut j = job(Operation::Merge, vec![a, b], Some(FormatId::Pdf));
         j.output.overwrite = true;
         assert_eq!(
@@ -641,7 +704,7 @@ mod tests {
     #[test]
     fn split_needs_pages() {
         let dir = scratch("split");
-        let p = put(&dir, "doc.pdf", b"%PDF-1.4\n");
+        let p = put(&dir, "doc.pdf", &minimal_pdf());
         let plan = job(Operation::Split, vec![p], Some(FormatId::Pdf)).plan(&Registry::builtin());
         assert!(plan.tasks.is_empty());
         assert_eq!(plan.errors[0].code, ErrorCode::Usage);
@@ -654,7 +717,9 @@ mod tests {
     #[test]
     fn split_names_the_pages() {
         let dir = scratch("split-pages");
-        let p = put(&dir, "doc.pdf", b"%PDF-1.4\n");
+        let many = write_pdf_sample(&dir, "pdf-many");
+        let p = dir.join("doc.pdf");
+        std::fs::rename(many, &p).unwrap();
         let mut j = job(Operation::Split, vec![p], Some(FormatId::Pdf));
         j.options.pages = Some(PageRanges::parse("1-3,5,7-").unwrap());
         let plan = j.plan(&Registry::builtin());
@@ -800,5 +865,156 @@ mod tests {
             outputs(&plan),
             vec![dir.join("out/a.jpg"), dir.join("out/a (1).jpg")]
         );
+    }
+
+    fn pages(s: &str) -> Option<PageRanges> {
+        Some(PageRanges::parse(s).unwrap())
+    }
+
+    #[test]
+    fn select_pages_picks_in_document_order() {
+        assert_eq!(select_pages(None, 3).unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            select_pages(pages("3,1-2,2").as_ref(), 3).unwrap(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            select_pages(pages("7-").as_ref(), 12).unwrap(),
+            (7..=12).collect::<Vec<_>>()
+        );
+        let e = select_pages(pages("4").as_ref(), 3).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "it has 3 pages");
+        assert_eq!(e.fix.as_deref(), Some("use --pages between 1 and 3"));
+        assert_eq!(e.file, None);
+        let e = select_pages(pages("2").as_ref(), 1).unwrap_err();
+        assert_eq!(e.reason, "it has 1 page");
+    }
+
+    #[test]
+    fn pdf_to_png_one_page_is_a_file() {
+        let dir = scratch("pdf-one");
+        let p = put(&dir, "page.pdf", &minimal_pdf());
+        let plan = job(Operation::Convert, vec![p], Some(FormatId::Png)).plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert_eq!(plan.tasks[0].backend, Backend::Pdf);
+        assert_eq!(outputs(&plan), vec![dir.join("page.png")]);
+    }
+
+    #[test]
+    fn pdf_to_png_many_pages_is_a_folder() {
+        let dir = scratch("pdf-many");
+        let p = write_pdf_sample(&dir, "pdf-text");
+        let plan = job(Operation::Convert, vec![p.clone()], Some(FormatId::Png))
+            .plan(&Registry::builtin());
+        assert_eq!(outputs(&plan), vec![dir.join("text")]);
+        // A folder is never replaced, even with --overwrite.
+        std::fs::create_dir(dir.join("text")).unwrap();
+        let mut j = job(Operation::Convert, vec![p], Some(FormatId::Png));
+        j.output.overwrite = true;
+        assert_eq!(
+            outputs(&j.plan(&Registry::builtin())),
+            vec![dir.join("text (1)")]
+        );
+    }
+
+    #[test]
+    fn pdf_pages_name_the_output() {
+        let dir = scratch("pdf-pages");
+        let p = write_pdf_sample(&dir, "pdf-text");
+        for (r, out) in [("2", "text (page 2).png"), ("1-2", "text (pages 1-2)")] {
+            let mut j = job(Operation::Convert, vec![p.clone()], Some(FormatId::Png));
+            j.options.pages = pages(r);
+            assert_eq!(
+                outputs(&j.plan(&Registry::builtin())),
+                vec![dir.join(out)],
+                "{r}"
+            );
+        }
+    }
+
+    #[test]
+    fn pages_past_the_end_is_usage_at_planning() {
+        let dir = scratch("pdf-past");
+        let p = write_pdf_sample(&dir, "pdf-text");
+        let mut j = job(Operation::Split, vec![p.clone()], Some(FormatId::Pdf));
+        j.options.pages = pages("9");
+        let plan = j.plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        let e = &plan.errors[0];
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "it has 3 pages");
+        assert_eq!(e.file.as_deref(), Some(p.as_path()));
+    }
+
+    #[test]
+    fn pages_on_an_image_is_usage() {
+        let dir = scratch("pages-image");
+        let a = put(&dir, "a.png", &PNG_1X1);
+        let mut j = job(Operation::Convert, vec![a], Some(FormatId::Webp));
+        j.options.pages = pages("1");
+        let plan = j.plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        let e = &plan.errors[0];
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "--pages is for PDFs");
+        assert_eq!(e.fix.as_deref(), Some("drop --pages"));
+    }
+
+    #[test]
+    fn bad_pdfs_fail_at_planning() {
+        let dir = scratch("pdf-bad");
+        for (id, code, reason) in [
+            (
+                "pdf-locked",
+                ErrorCode::UnsupportedInput,
+                "it's password-protected",
+            ),
+            (
+                "pdf-garbage",
+                ErrorCode::CorruptInput,
+                "can't read this PDF",
+            ),
+            (
+                "pdf-no-pages",
+                ErrorCode::CorruptInput,
+                "this PDF has no pages",
+            ),
+        ] {
+            let p = write_pdf_sample(&dir, id);
+            let plan = job(Operation::Convert, vec![p.clone()], Some(FormatId::Png))
+                .plan(&Registry::builtin());
+            assert!(plan.tasks.is_empty(), "{id}");
+            let e = &plan.errors[0];
+            assert_eq!((e.code, e.reason.as_str()), (code, reason), "{id}");
+            assert_eq!(e.file.as_deref(), Some(p.as_path()), "{id}");
+        }
+        let locked = &job(
+            Operation::Convert,
+            vec![write_pdf_sample(&dir, "pdf-locked")],
+            Some(FormatId::Png),
+        )
+        .plan(&Registry::builtin())
+        .errors[0];
+        assert_eq!(
+            locked.fix.as_deref(),
+            Some("remove the password in another app, then try again")
+        );
+        let owner = write_pdf_sample(&dir, "pdf-owner");
+        let plan =
+            job(Operation::Convert, vec![owner], Some(FormatId::Png)).plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert_eq!(outputs(&plan), vec![dir.join("owner")]);
+    }
+
+    #[test]
+    fn merge_reports_every_bad_pdf() {
+        let dir = scratch("merge-bad-pdf");
+        let inputs = ["pdf-locked", "pdf-text", "pdf-garbage"]
+            .map(|id| write_pdf_sample(&dir, id))
+            .to_vec();
+        let plan = job(Operation::Merge, inputs, Some(FormatId::Pdf)).plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        assert_eq!(plan.errors.len(), 2, "{:?}", plan.errors);
     }
 }

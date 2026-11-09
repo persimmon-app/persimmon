@@ -285,6 +285,29 @@ fn split_bad_pages_is_usage() {
 }
 
 #[test]
+fn locked_pdf_fails_at_planning() {
+    use persimmon_corpus::pdf::write_pdf_sample;
+    let c = Corpus::new("locked-pdf");
+    write_pdf_sample(&c.dir, "pdf-locked");
+    write_pdf_sample(&c.dir, "pdf-text");
+    let out = prsm(
+        &c.dir,
+        [
+            "convert",
+            "--dry-run",
+            "--to",
+            "png",
+            "locked.pdf",
+            "text.pdf",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim_end(), "text.pdf → text");
+    let err = stderr(&out);
+    assert!(err.contains("locked.pdf: it's password-protected"), "{err}");
+}
+
+#[test]
 fn unknown_target_format() {
     let c = Corpus::new("unknown-target");
     let out = prsm(
