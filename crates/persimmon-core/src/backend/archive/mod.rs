@@ -7,6 +7,10 @@
 //! executor's temporary folder; a failed, unsafe or cancelled extraction
 //! leaves nothing.
 
+#[cfg(feature = "rar")]
+mod rar;
+#[cfg(any(feature = "rar", test))]
+mod rar_scan;
 mod sevenz;
 pub(crate) mod sink;
 mod tar;
@@ -55,6 +59,19 @@ impl Run for ArchiveBackend {
             | FormatId::TarXz
             | FormatId::TarZst => tar::extract_tar(input, from, &mut sink, cancel, progress)?,
             FormatId::SevenZ => sevenz::extract_7z(input, &mut sink, cancel, progress)?,
+            #[cfg(feature = "rar")]
+            FormatId::Rar => rar::extract_rar(input, &mut sink, cancel, progress)?,
+            #[cfg(not(feature = "rar"))]
+            FormatId::Rar => {
+                return Err(
+                    Error::new(ErrorCode::BackendMissing, "this build can't read RAR")
+                        .with_file(input)
+                        .with_fix(
+                            "install libarchive (brew install libarchive, or libarchive-dev), \
+                             or use a build of prsm made with it",
+                        ),
+                );
+            }
             other => {
                 return Err(Error::new(
                     ErrorCode::NotImplemented,
@@ -461,5 +478,78 @@ pub(crate) mod tests {
         assert_eq!(e.code, ErrorCode::CorruptInput, "{e}");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Copy the committed RAR sample `id` into `dir`.
+    fn rar(dir: &Path, id: &str) -> PathBuf {
+        let (_, name, bytes) = persimmon_corpus::RAR_SAMPLES
+            .iter()
+            .find(|s| s.0 == id)
+            .unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[cfg(feature = "rar")]
+    #[test]
+    fn rar4_and_rar5_extract() {
+        let dir = scratch("rar");
+        let out = extract(&dir, rar(&dir, "rar4")).unwrap();
+        let text = b"test text document\r\n".as_slice();
+        assert_eq!(std::fs::read(out.join("test.txt")).unwrap(), text);
+        assert_eq!(std::fs::read(out.join("testdir/test.txt")).unwrap(), text);
+        assert!(out.join("testemptydir").is_dir());
+        // RAR links are skipped: the binding doesn't expose their targets.
+        assert!(std::fs::symlink_metadata(out.join("testlink")).is_err());
+        let out = extract(&dir, rar(&dir, "rar5")).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("helloworld.txt")).unwrap(),
+            b"hello libarchive test suite!\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "rar")]
+    #[test]
+    fn rar5_unicode_names() {
+        let dir = scratch("rar-unicode");
+        let out = extract(&dir, rar(&dir, "rar5-unicode")).unwrap();
+        assert_eq!(
+            std::fs::read(out.join("\u{1f44b}\u{1f30e}.txt")).unwrap(),
+            b"Hello, world!"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "rar")]
+    #[test]
+    fn locked_rar_is_password_protected() {
+        let dir = scratch("rar-locked");
+        let e = extract(&dir, rar(&dir, "rar4-locked")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnsupportedInput, "{e}");
+        assert_eq!(e.reason, "it's password-protected");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(not(feature = "rar"))]
+    #[test]
+    fn rar_without_libarchive_is_backend_missing() {
+        let dir = scratch("rar-missing");
+        let e = extract(&dir, rar(&dir, "rar5")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::BackendMissing);
+        assert_eq!(e.reason, "this build can't read RAR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rar_encryption_is_detected_from_headers() {
+        for (id, _, bytes) in persimmon_corpus::RAR_SAMPLES {
+            assert_eq!(
+                rar_scan::encrypted(&mut std::io::Cursor::new(bytes)),
+                id == "rar4-locked",
+                "{id}"
+            );
+        }
     }
 }

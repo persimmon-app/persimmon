@@ -12,10 +12,14 @@ keywords.workspace = true
 categories = ["multimedia"]
 
 [features]
-default = ["vips"]
+default = ["vips", "rar"]
 # The libvips image backend (DD-34). Needs libvips installed (Homebrew
 # `vips`, apt `libvips-dev`); build with --no-default-features without it.
 vips = ["dep:rs-vips"]
+# RAR and RAR5 through the system libarchive's own reader, never unRAR
+# (DD-37, BL-T20). Needs libarchive 3.6 or later (Homebrew `libarchive`,
+# apt `libarchive-dev`); build with --no-default-features without it.
+rar = ["dep:compress-tools"]
 
 [dependencies]
 unicode-normalization = "0.1"
@@ -32,6 +36,7 @@ bzip2 = "0.6"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 ruzstd = "0.9"
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["bzip2", "ppmd", "deflate", "util"] }
+compress-tools = { version = "0.16", optional = true }
 rs-vips = { version = "0.7", optional = true }
 # BMP decoding, which libvips can't do without ImageMagick (DD-34), and
 # PNG and JPEG for rendered PDF pages, which needs no libvips (DD-36).

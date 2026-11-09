@@ -23,9 +23,11 @@ ctrlc = { version = "3", features = ["termination"] }
 persimmon-core = { path = "../persimmon-core", version = "0.0.1", default-features = false }
 
 [features]
-default = ["vips"]
+default = ["vips", "rar"]
 # The libvips image backend; see persimmon-core.
 vips = ["persimmon-core/vips"]
+# RAR through the system libarchive; see persimmon-core.
+rar = ["persimmon-core/rar"]
 
 [dev-dependencies]
 persimmon-corpus = { path = "../persimmon-corpus" }

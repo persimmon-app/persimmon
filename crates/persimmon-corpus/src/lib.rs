@@ -155,6 +155,23 @@ pub const IMAGE_SAMPLES: [(&str, &str, &[u8], &str); 13] = [
     ),
 ];
 
+/// RAR samples, committed because nothing free writes RAR: from
+/// libarchive 3.8.1's test suite (BSD-2-Clause). `(id, file name, bytes)`.
+pub const RAR_SAMPLES: [(&str, &str, &[u8]); 4] = [
+    ("rar4", "rar4.rar", include_bytes!("../samples/rar4.rar")),
+    ("rar5", "rar5.rar", include_bytes!("../samples/rar5.rar")),
+    (
+        "rar5-unicode",
+        "rar5-unicode.rar",
+        include_bytes!("../samples/rar5-unicode.rar"),
+    ),
+    (
+        "rar4-locked",
+        "rar4-locked.rar",
+        include_bytes!("../samples/rar4-locked.rar"),
+    ),
+];
+
 /// A minimal one-page PDF with a correct cross-reference table.
 pub fn minimal_pdf() -> Vec<u8> {
     let objects = [

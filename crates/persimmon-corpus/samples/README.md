@@ -41,3 +41,14 @@ PDF samples are not committed either. `persimmon_corpus::pdf` writes them at tes
 ## Archives
 
 Archive samples are not committed either. `persimmon_corpus::archives` writes them at test time: a standard tree (a text file, an executable script, a subfolder, an NFD name, an empty folder and a symlink) as ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, TAR.ZST and 7z, plus hostile and odd ones: a `../` entry, an absolute path, a write through a symlink, hard links inside and outside, a case clash, a repeated name, password-protected ZIP and 7z, a gzip that isn't a tar, and 3 MiB of noise for progress. Fixed times, no owners and fixed salts make the same id give the same bytes.
+
+## RAR
+
+Nothing free writes RAR, so four small RAR samples are committed. They come unchanged (uudecoded) from libarchive 3.8.1's test suite, `libarchive/test/` in https://github.com/libarchive/libarchive, under libarchive's BSD-2-Clause licence:
+
+| File | From | What it tests |
+|---|---|---|
+| `rar4.rar` | `test_read_format_rar.rar.uu` | RAR4: files, a folder, an empty folder and a symlink |
+| `rar5.rar` | `test_read_format_rar5_stored.rar.uu` | RAR5, stored |
+| `rar5-unicode.rar` | `test_read_format_rar5_unicode.rar.uu` | RAR5 with emoji names, a hard link and a symlink |
+| `rar4-locked.rar` | `test_read_format_rar4_encrypted.rar.uu` | RAR4 with encrypted files |

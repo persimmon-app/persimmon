@@ -40,20 +40,20 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Install libvips and FFmpeg (macOS)
+      - name: Install libvips, FFmpeg and libarchive (macOS)
         if: runner.os == 'macOS'
-        run: brew install vips ffmpeg
+        run: brew install vips ffmpeg libarchive pkgconf
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
 
       # The libheif plugins decode HEIC (libde265) and AVIF (dav1d), and
       # encode AVIF (aom).
-      - name: Install libvips and FFmpeg (Linux)
+      - name: Install libvips, FFmpeg and libarchive (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc ffmpeg
+          sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc ffmpeg libarchive-dev
 
       # Chocolatey puts a shim on PATH that starts the real ffmpeg.exe.
       # Killing the shim (as a cancel does) would leave FFmpeg running, so
