@@ -22,12 +22,25 @@ pub enum ErrorCode {
     InputNotFound,
     UnsupportedConversion,
     OutputExists,
-    /// Pre-0.1 only: the backend for this task isn't built yet.
-    NotImplemented,
     Cancelled,
 }
 
 impl ErrorCode {
+    /// Every code. Exit 10, `NOT_IMPLEMENTED` before v0.1.0, is retired
+    /// and never reused.
+    pub const ALL: [ErrorCode; 10] = [
+        ErrorCode::Internal,
+        ErrorCode::Usage,
+        ErrorCode::UnsupportedInput,
+        ErrorCode::BackendMissing,
+        ErrorCode::CorruptInput,
+        ErrorCode::OutputNotWritable,
+        ErrorCode::InputNotFound,
+        ErrorCode::UnsupportedConversion,
+        ErrorCode::OutputExists,
+        ErrorCode::Cancelled,
+    ];
+
     /// The process exit code for this failure.
     pub fn exit_code(self) -> u8 {
         match self {
@@ -40,7 +53,6 @@ impl ErrorCode {
             ErrorCode::InputNotFound => 7,
             ErrorCode::UnsupportedConversion => 8,
             ErrorCode::OutputExists => 9,
-            ErrorCode::NotImplemented => 10,
             ErrorCode::Cancelled => 130,
         }
     }
@@ -57,7 +69,6 @@ impl ErrorCode {
             ErrorCode::InputNotFound => "INPUT_NOT_FOUND",
             ErrorCode::UnsupportedConversion => "UNSUPPORTED_CONVERSION",
             ErrorCode::OutputExists => "OUTPUT_EXISTS",
-            ErrorCode::NotImplemented => "NOT_IMPLEMENTED",
             ErrorCode::Cancelled => "CANCELLED",
         }
     }
@@ -129,8 +140,23 @@ mod tests {
         assert_eq!(ErrorCode::InputNotFound.exit_code(), 7);
         assert_eq!(ErrorCode::UnsupportedConversion.exit_code(), 8);
         assert_eq!(ErrorCode::OutputExists.exit_code(), 9);
-        assert_eq!(ErrorCode::NotImplemented.exit_code(), 10);
         assert_eq!(ErrorCode::Cancelled.exit_code(), 130);
+    }
+
+    #[test]
+    fn no_code_exits_10() {
+        // NOT_IMPLEMENTED (exit 10) was retired with the last backend;
+        // 10 is reserved and never reused.
+        let mut exits: Vec<u8> = ErrorCode::ALL.iter().map(|c| c.exit_code()).collect();
+        assert!(!exits.contains(&10));
+        assert!(
+            ErrorCode::ALL
+                .iter()
+                .all(|c| c.as_str() != "NOT_IMPLEMENTED")
+        );
+        exits.sort_unstable();
+        exits.dedup();
+        assert_eq!(exits.len(), ErrorCode::ALL.len(), "exit codes are distinct");
     }
 
     #[test]

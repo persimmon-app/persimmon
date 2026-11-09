@@ -16,6 +16,8 @@
 //!   numbered (`a (1).txt`), since APFS and NTFS would merge them; folders
 //!   that differ that way merge into the first spelling, as they would on
 //!   those volumes anyway.
+//! - **`__MACOSX` sidecars are skipped:** they carry resource forks and
+//!   extended attributes, which prsm doesn't keep.
 //! - **Attributes:** modification times and the executable bit (0755 or
 //!   0644); never owners, set-uid, set-gid or sticky bits.
 
@@ -56,6 +58,16 @@ pub(crate) fn safe_path(name: &str) -> Option<PathBuf> {
         }
     }
     (!out.as_os_str().is_empty()).then_some(out)
+}
+
+/// Whether `name` is in a `__MACOSX` folder: the resource-fork and
+/// extended-attribute sidecars (`._*`) that Finder and `ditto` add to
+/// ZIPs. Archive Utility hides them; prsm keeps no extended attributes,
+/// so they're skipped rather than left as clutter.
+fn sidecar(name: &str) -> bool {
+    name.split(['/', '\\'])
+        .find(|p| !p.is_empty() && *p != ".")
+        .is_some_and(|first| first == "__MACOSX")
 }
 
 /// Names compare the way APFS and NTFS do: ignoring case and Unicode
@@ -197,6 +209,9 @@ impl Sink {
     }
 
     pub(crate) fn dir(&mut self, name: &str, mtime: Option<i64>) -> Result<(), Error> {
+        if sidecar(name) {
+            return Ok(());
+        }
         std::fs::create_dir_all(&self.root).map_err(|e| self.not_writable(name, &e))?;
         let (_, actual) = self.place(name, Kind::Dir)?;
         if let Some(t) = mtime {
@@ -214,6 +229,9 @@ impl Sink {
         data: &mut dyn Read,
         cancel: &CancelToken,
     ) -> Result<(), Error> {
+        if sidecar(name) {
+            return Ok(());
+        }
         std::fs::create_dir_all(&self.root).map_err(|e| self.not_writable(name, &e))?;
         let (rel, actual) = self.place(name, Kind::Leaf)?;
         let path = self.root.join(&actual);
@@ -261,6 +279,9 @@ impl Sink {
     /// Recreate a symlink with its target as stored. A platform that
     /// refuses symlinks (Windows without Developer Mode) skips it.
     pub(crate) fn symlink(&mut self, name: &str, target: &str) -> Result<(), Error> {
+        if sidecar(name) {
+            return Ok(());
+        }
         std::fs::create_dir_all(&self.root).map_err(|e| self.not_writable(name, &e))?;
         let (_, actual) = self.place(name, Kind::Leaf)?;
         let path = self.root.join(&actual);
@@ -271,6 +292,9 @@ impl Sink {
 
     /// A hard link to `target`, an entry written earlier, as a copy.
     pub(crate) fn hardlink(&mut self, name: &str, target: &str) -> Result<(), Error> {
+        if sidecar(name) {
+            return Ok(());
+        }
         let source = safe_path(target).ok_or_else(|| self.unsafe_path(target))?;
         let Some(from) = self.written.get(&source).cloned() else {
             return Err(Error::new(
@@ -513,6 +537,21 @@ mod tests {
             .file("big.bin", None, None, &mut &data[..], &cancel)
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::Cancelled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn macosx_sidecars_are_skipped() {
+        let dir = scratch("macosx");
+        let mut s = sink(&dir);
+        put(&mut s, "notes/a.txt", b"a").unwrap();
+        s.dir("__MACOSX", None).unwrap();
+        s.dir("__MACOSX/notes", None).unwrap();
+        put(&mut s, "__MACOSX/notes/._a.txt", b"sidecar").unwrap();
+        s.symlink("__MACOSX/link", "a.txt").unwrap();
+        s.finish("other").unwrap();
+        assert!(dir.join("out/notes/a.txt").is_file());
+        assert!(!dir.join("out/__MACOSX").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -5,9 +5,7 @@
 //!
 //! A thin layer over `persimmon-core`: it parses arguments, builds a job,
 //! runs it (or, with `--dry-run`, prints the plan), and maps the first
-//! failure to a stable exit code (see "Exit codes" in the README). Images,
-//! audio, video and PDFs convert for real; archive tasks fail with
-//! `NOT_IMPLEMENTED` until their backend lands.
+//! failure to a stable exit code (see "Exit codes" in the README).
 
 mod render;
 

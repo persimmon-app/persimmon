@@ -70,10 +70,11 @@ impl Run for ArchiveBackend {
                         ),
                 );
             }
+            // The planner only routes archive formats here.
             other => {
                 return Err(Error::new(
-                    ErrorCode::NotImplemented,
-                    format!("extracting {} isn't built yet", other.as_str()),
+                    ErrorCode::Internal,
+                    format!("the archive backend was given {}", other.as_str()),
                 )
                 .with_file(input));
             }

@@ -399,6 +399,107 @@ mod pdf {
     }
 }
 
+mod archives {
+    use super::*;
+    use persimmon_corpus::archives::write_archive_sample;
+
+    #[test]
+    fn extract_writes_a_folder() {
+        let c = Corpus::new("extract");
+        write_archive_sample(&c.dir, "arc-tgz");
+        let out = prsm(&c.dir, ["extract", "tree.tar.gz"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "tree.tar.gz → tree");
+        assert_eq!(
+            std::fs::read_to_string(c.dir.join("tree/hello.txt")).unwrap(),
+            "hello\n"
+        );
+    }
+
+    #[test]
+    fn extract_hostile_is_exit_5() {
+        let c = Corpus::new("extract-hostile");
+        write_archive_sample(&c.dir, "arc-slip");
+        let out = prsm(&c.dir, ["extract", "slip.zip"]);
+        assert_eq!(out.status.code(), Some(5));
+        let err = stderr(&out);
+        assert!(err.contains("slip.zip"), "{err}");
+        assert!(err.contains("../evil.txt"), "{err}");
+        assert!(!c.dir.join("slip").exists());
+        assert!(!c.dir.parent().unwrap().join("evil.txt").exists());
+    }
+
+    #[test]
+    fn merge_to_zip_writes_merged_zip() {
+        let c = Corpus::new("merge-zip");
+        let out = prsm(&c.dir, ["merge", "--to", "zip", "pixel.png", "pixel.gif"]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(stdout(&out).trim_end(), "2 files → merged.zip");
+        let listed = prsm(&c.dir, ["extract", "merged.zip"]);
+        assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+        assert!(c.dir.join("merged/pixel.png").is_file());
+        assert!(c.dir.join("merged/pixel.gif").is_file());
+    }
+
+    #[cfg(unix)]
+    fn lock(dir: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// BL-T23: a source folder prsm can't write to fails with exit 6 and
+    /// names --out, for every backend family; --out then works.
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_source_folder_names_out() {
+        let c = Corpus::new("unwritable");
+        let src = c.dir.join("locked");
+        std::fs::create_dir(&src).unwrap();
+        persimmon_corpus::pdf::write_pdf_sample(&src, "pdf-text");
+        write_archive_sample(&src, "arc-tgz");
+        let mut jobs = vec![
+            vec!["convert", "--to", "png", "locked/text.pdf"],
+            vec!["extract", "locked/tree.tar.gz"],
+        ];
+        if cfg!(feature = "vips") {
+            std::fs::copy(c.dir.join("pixel.png"), src.join("pixel.png")).unwrap();
+            jobs.push(vec!["convert", "--to", "webp", "locked/pixel.png"]);
+        }
+        lock(&src, 0o555);
+        for job in &jobs {
+            let out = prsm(&c.dir, job);
+            assert_eq!(out.status.code(), Some(6), "{job:?}: {}", stderr(&out));
+            assert!(
+                stderr(&out).contains("fix: choose another folder with --out <dir>"),
+                "{job:?}: {}",
+                stderr(&out)
+            );
+        }
+        for job in &jobs {
+            let mut args = job.clone();
+            args.extend(["--out", "elsewhere"]);
+            let out = prsm(&c.dir, &args);
+            assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        }
+        lock(&src, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_out_folder_is_exit_6() {
+        let c = Corpus::new("unwritable-out");
+        let out_dir = c.dir.join("readonly");
+        std::fs::create_dir(&out_dir).unwrap();
+        lock(&out_dir, 0o555);
+        let out = prsm(
+            &c.dir,
+            ["merge", "--to", "zip", "pixel.png", "--out", "readonly"],
+        );
+        lock(&out_dir, 0o755);
+        assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
+    }
+}
+
 #[test]
 fn unknown_target_format() {
     let c = Corpus::new("unknown-target");
