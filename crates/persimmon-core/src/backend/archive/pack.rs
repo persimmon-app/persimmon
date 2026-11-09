@@ -30,6 +30,43 @@ use crate::platform;
 /// The error text a cancelled read carries back out of the writers.
 const CANCELLED: &str = "prsm: cancelled";
 
+/// The error text a source that shrank while being packed carries back.
+pub(crate) const CHANGED: &str = "prsm: the file changed while it was packed";
+
+/// Exactly `len` bytes of `inner`: a file that grew is cut at the size its
+/// tar header already states, and one that shrank is an error rather than
+/// an archive whose header and data disagree.
+pub(crate) struct Exact<R> {
+    inner: R,
+    left: u64,
+}
+
+impl<R> Exact<R> {
+    pub(crate) fn new(inner: R, len: u64) -> Exact<R> {
+        Exact { inner, left: len }
+    }
+}
+
+impl<R: Read> Read for Exact<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 {
+            return Ok(0);
+        }
+        let want = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..want])?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                CHANGED,
+            ));
+        }
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
 /// What an archive entry is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -155,13 +192,15 @@ fn walk(
                 out,
             )?;
         }
-    } else {
+    } else if meta.is_file() {
         out.push(Entry {
             name,
             source: path.to_path_buf(),
             kind: Kind::File,
         });
     }
+    // FIFOs, sockets and devices are left out: opening a FIFO blocks
+    // forever, and a device like /dev/zero never ends.
     Ok(())
 }
 
@@ -277,6 +316,13 @@ fn write_error(output: &Path, source: &Path, e: &dyn std::fmt::Display) -> Error
     let text = e.to_string();
     if text.contains(CANCELLED) {
         Error::new(ErrorCode::Cancelled, "cancelled")
+    } else if text.contains(CHANGED) {
+        Error::new(
+            ErrorCode::UnsupportedInput,
+            "it changed while it was being packed",
+        )
+        .with_file(source)
+        .with_fix("try again once nothing is writing to it")
     } else {
         not_writable(output, &format!("{} ({text})", source.display()))
     }
@@ -288,17 +334,26 @@ fn write_zip(
     packing: &Packing,
     progress: &mut dyn FnMut(f32),
 ) -> Result<(), Error> {
-    use ::zip::write::SimpleFileOptions;
+    use ::zip::write::FullFileOptions;
     let output = packing.output;
     let mut w = ::zip::ZipWriter::new(out);
     for entry in list {
         let meta =
             std::fs::symlink_metadata(&entry.source).map_err(|e| unreadable(&entry.source, &e))?;
-        let base = SimpleFileOptions::default()
+        let secs = mtime(&meta);
+        let mut base = FullFileOptions::default()
             .compression_method(::zip::CompressionMethod::Deflated)
             .compression_level(Some(6))
-            .last_modified_time(zip_time(mtime(&meta)));
+            .last_modified_time(zip_time(secs));
         let fail = |e: &dyn std::fmt::Display| write_error(output, &entry.source, e);
+        // An extended timestamp (0x5455) carries the time in UTC, to the
+        // second, which other tools read before the local DOS time.
+        if let Ok(secs) = u32::try_from(secs) {
+            let mut field = vec![1u8];
+            field.extend(secs.to_le_bytes());
+            base.add_extra_field(0x5455, field, false)
+                .map_err(|e| fail(&e))?;
+        }
         match &entry.kind {
             Kind::Dir => w
                 .add_directory(&entry.name, base.unix_permissions(0o755))
@@ -373,7 +428,7 @@ fn write_tar_gz(
                     packing,
                     progress: &mut *progress,
                 };
-                tar.append_data(&mut header, &entry.name, feed)
+                tar.append_data(&mut header, &entry.name, Exact::new(feed, meta.len()))
                     .map_err(|e| fail(&e))?;
             }
         }
@@ -545,6 +600,70 @@ mod tests {
         let mut zip = ::zip::ZipArchive::new(std::fs::File::open(packed).unwrap()).unwrap();
         let mode = zip.by_index_raw(0).unwrap().unix_mode().unwrap() & 0o7777;
         assert_eq!(mode, 0o600, "kept private, set-uid dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_files_are_skipped() {
+        let dir = scratch("fifo");
+        let folder = dir.join("in");
+        write(&folder, "a.txt", "a");
+        let status = std::process::Command::new("mkfifo")
+            .arg(folder.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let folder2 = folder.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(pack_to(vec![folder2], FormatId::Zip, None).map(|p| zip_names(&p)));
+        });
+        let names = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("packing a folder with a FIFO finishes")
+            .unwrap();
+        assert_eq!(names, ["in/", "in/a.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exact_reads_the_stated_length() {
+        use std::io::Read;
+        let mut out = Vec::new();
+        super::Exact::new(&b"abcdef"[..], 4)
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, b"abcd", "a file that grew is cut at its stated size");
+        let e = super::Exact::new(&b"ab"[..], 4)
+            .read_to_end(&mut Vec::new())
+            .unwrap_err();
+        assert!(e.to_string().contains(super::CHANGED), "{e}");
+    }
+
+    #[test]
+    fn packed_zip_carries_utc_time() {
+        let dir = scratch("utc");
+        let f = write(&dir, "a.txt", "a");
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_323_047);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        let packed = pack_to(vec![f], FormatId::Zip, None).unwrap();
+        let mut zip = ::zip::ZipArchive::new(std::fs::File::open(packed).unwrap()).unwrap();
+        let entry = zip.by_index(0).unwrap();
+        let utc = entry.extra_data_fields().find_map(|f| match f {
+            ::zip::extra_fields::ExtraField::ExtendedTimestamp(t) => t.mod_time(),
+            _ => None,
+        });
+        assert_eq!(
+            utc,
+            Some(1_767_323_047),
+            "an odd second, which DOS times can't hold"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

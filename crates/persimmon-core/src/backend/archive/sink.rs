@@ -60,6 +60,13 @@ pub(crate) fn safe_path(name: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
+/// Whether `name` names the output folder itself: only `.` parts and
+/// separators, like the `./` entry `tar -C dir .` writes first. A leading
+/// separator stays unsafe.
+fn is_root(name: &str) -> bool {
+    !name.starts_with(['/', '\\']) && name.split(['/', '\\']).all(|p| p.is_empty() || p == ".")
+}
+
 /// Whether `name` is in a `__MACOSX` folder: the resource-fork and
 /// extended-attribute sidecars (`._*`) that Finder and `ditto` add to
 /// ZIPs. Archive Utility hides them; prsm keeps no extended attributes,
@@ -209,7 +216,8 @@ impl Sink {
     }
 
     pub(crate) fn dir(&mut self, name: &str, mtime: Option<i64>) -> Result<(), Error> {
-        if sidecar(name) {
+        // `./` (from `tar -C dir .`) is the output folder itself.
+        if is_root(name) || sidecar(name) {
             return Ok(());
         }
         std::fs::create_dir_all(&self.root).map_err(|e| self.not_writable(name, &e))?;
@@ -286,6 +294,9 @@ impl Sink {
         let (_, actual) = self.place(name, Kind::Leaf)?;
         let path = self.root.join(&actual);
         self.clear_leaf(name, &path)?;
+        // A file replaced by a link is no longer a file a hard link may
+        // copy: copying would follow the link outside the folder.
+        self.written.retain(|_, written| *written != actual);
         platform::symlink(Path::new(target), &path).map_err(|e| self.not_writable(name, &e))?;
         Ok(())
     }
@@ -296,13 +307,18 @@ impl Sink {
             return Ok(());
         }
         let source = safe_path(target).ok_or_else(|| self.unsafe_path(target))?;
-        let Some(from) = self.written.get(&source).cloned() else {
-            return Err(Error::new(
+        let missing = || {
+            Error::new(
                 ErrorCode::CorruptInput,
                 format!("it links to a file that isn't in it: {target}"),
             )
-            .with_file(&self.archive));
+            .with_file(&self.archive)
         };
+        let from = self.written.get(&source).cloned().ok_or_else(missing)?;
+        // Only ever copy a regular file the sink wrote, never through a link.
+        if !std::fs::symlink_metadata(self.root.join(&from)).is_ok_and(|m| m.is_file()) {
+            return Err(missing());
+        }
         let (rel, actual) = self.place(name, Kind::Leaf)?;
         let path = self.root.join(&actual);
         self.clear_leaf(name, &path)?;
@@ -552,6 +568,36 @@ mod tests {
         s.finish("other").unwrap();
         assert!(dir.join("out/notes/a.txt").is_file());
         assert!(!dir.join("out/__MACOSX").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn symlink_swapped_in_never_feeds_a_hardlink() {
+        let dir = scratch("swap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret.txt");
+        std::fs::write(&secret, "secret").unwrap();
+        let mut s = sink(&dir);
+        put(&mut s, "a.txt", b"plain").unwrap();
+        s.symlink("a.txt", secret.to_str().unwrap()).unwrap();
+        let e = s.hardlink("b.txt", "a.txt").unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput, "{e}");
+        assert!(
+            std::fs::read(dir.join("out/b.txt")).map_or(true, |b| b != b"secret"),
+            "the outside file was copied in"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dot_entries_are_the_folder_itself() {
+        let dir = scratch("dot");
+        let mut s = sink(&dir);
+        s.dir("./", None).unwrap();
+        s.dir(".", None).unwrap();
+        put(&mut s, "./t.txt", b"t").unwrap();
+        s.finish("other").unwrap();
+        assert_eq!(read(&dir, "t.txt"), "t");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

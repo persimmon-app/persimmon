@@ -40,7 +40,15 @@ pub(crate) fn extract_zip(
             .name()
             .map_err(|e| unreadable(input, &e))?
             .into_owned();
-        let mtime = entry.last_modified().and_then(dos_time);
+        // The extended-timestamp field (0x5455) holds real UTC, as Finder,
+        // Info-ZIP and 7-Zip write it; without one, the DOS time.
+        let utc = entry.extra_data_fields().find_map(|f| match f {
+            ::zip::extra_fields::ExtraField::ExtendedTimestamp(t) => t.mod_time(),
+            _ => None,
+        });
+        let mtime = utc
+            .map(i64::from)
+            .or_else(|| entry.last_modified().and_then(dos_time));
         if entry.is_dir() {
             sink.dir(&name, mtime)?;
         } else if entry.is_symlink() {
@@ -58,8 +66,8 @@ pub(crate) fn extract_zip(
     Ok(())
 }
 
-/// A ZIP's DOS timestamp as Unix seconds. DOS times carry no time zone;
-/// they're read as UTC.
+/// A ZIP's DOS timestamp as Unix seconds, for entries without an
+/// extended timestamp. DOS times carry no time zone; they're read as UTC.
 fn dos_time(t: ::zip::DateTime) -> Option<i64> {
     let (y, m, d) = (
         i64::from(t.year()),
@@ -93,5 +101,38 @@ mod tests {
         assert_eq!(super::dos_time(t), Some(1_767_323_046));
         let t = ::zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap();
         assert_eq!(super::dos_time(t), Some(315_532_800));
+    }
+
+    #[cfg(test)]
+    mod utc_tests {
+        use crate::backend::archive::tests::{extract, scratch};
+        use std::io::Write;
+
+        #[test]
+        fn extended_timestamp_wins_over_dos_time() {
+            use ::zip::write::FullFileOptions;
+            let dir = scratch("zip-utc");
+            let path = dir.join("t.zip");
+            let mut w = ::zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let mut options = FullFileOptions::default().last_modified_time(
+                ::zip::DateTime::from_date_and_time(2026, 1, 2, 13, 4, 6).unwrap(),
+            );
+            let mut ut = vec![1u8];
+            ut.extend(1_767_323_047u32.to_le_bytes());
+            options.add_extra_field(0x5455, ut, false).unwrap();
+            w.start_file("a.txt", options).unwrap();
+            w.write_all(b"a").unwrap();
+            w.finish().unwrap();
+            let out = extract(&dir, path).unwrap();
+            let mtime = std::fs::metadata(out.join("a.txt"))
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            assert_eq!(mtime, 1_767_323_047);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
