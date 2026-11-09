@@ -33,3 +33,7 @@ PNG and GIF input are covered by the corpus's 1×1 files.
 ## Audio and video
 
 Audio and video samples are not committed. `persimmon_corpus::media` makes them at test time with FFmpeg's own test sources (`testsrc2` and `sine`), using the `ffmpeg` on `PATH`. Without one, the tests that need them skip, unless `PERSIMMON_REQUIRE_FFMPEG=1` is set, as it is in CI.
+
+## PDFs
+
+PDF samples are not committed either. `persimmon_corpus::pdf` writes them at test time with lopdf: plain and inherited-attribute pages, mixed page sizes with rotation and a crop box, object streams, a scanned page, links with an outline and a form field, 120 pages, a 200-inch page, an owner-password and a password-locked file, and broken ones. The same id always gives the same bytes.

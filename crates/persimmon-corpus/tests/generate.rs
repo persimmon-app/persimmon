@@ -230,3 +230,52 @@ fn media_samples_are_shared_between_runs() {
     );
     assert!(dir.join(".complete").is_file());
 }
+
+#[test]
+fn pdf_samples_are_generated() {
+    use persimmon_corpus::pdf::{PDF_SAMPLES, write_pdf_sample};
+    let dir = scratch("pdf");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (id, name, pages) in PDF_SAMPLES {
+        let path = write_pdf_sample(&dir, id);
+        assert_eq!(path, dir.join(name), "{id}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"), "{id}");
+        if pages > 0 {
+            let doc = lopdf::Document::load(&path).unwrap_or_else(|e| panic!("{id}: {e}"));
+            if id == "pdf-locked" {
+                assert!(doc.is_encrypted(), "{id} needs its password");
+            } else {
+                assert!(!doc.is_encrypted(), "{id}");
+                assert_eq!(doc.get_pages().len() as u32, pages, "{id}");
+            }
+        }
+    }
+    let links = lopdf::Document::load(dir.join("links.pdf")).unwrap();
+    let page1 = links.get_pages()[&1];
+    let annots = links
+        .get_dictionary(page1)
+        .unwrap()
+        .get(b"Annots")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(annots, 2);
+    let size = |n: &str| std::fs::metadata(dir.join(n)).unwrap().len();
+    assert!(size("truncated.pdf") < size("many.pdf"));
+    // The same bytes every time.
+    let again = scratch("pdf-again");
+    let _ = std::fs::remove_dir_all(&again);
+    std::fs::create_dir_all(&again).unwrap();
+    for (id, name, _) in PDF_SAMPLES {
+        write_pdf_sample(&again, id);
+        assert!(
+            std::fs::read(dir.join(name)).unwrap() == std::fs::read(again.join(name)).unwrap(),
+            "{id} isn't deterministic"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&again);
+}

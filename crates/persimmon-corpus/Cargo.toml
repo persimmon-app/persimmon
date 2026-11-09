@@ -11,5 +11,9 @@ publish = false
 
 # No dependency on persimmon-core: the core's tests depend on this crate.
 
+[dependencies]
+# Writes the PDF samples.
+lopdf = { version = "0.47", default-features = false }
+
 [lints]
 workspace = true

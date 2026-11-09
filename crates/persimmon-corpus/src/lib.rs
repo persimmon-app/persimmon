@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub mod media;
+pub mod pdf;
 
 /// What the engine should make of a case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
