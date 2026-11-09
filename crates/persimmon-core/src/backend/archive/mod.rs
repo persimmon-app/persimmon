@@ -7,6 +7,7 @@
 //! executor's temporary folder; a failed, unsafe or cancelled extraction
 //! leaves nothing.
 
+mod sevenz;
 pub(crate) mod sink;
 mod tar;
 mod zip;
@@ -53,6 +54,7 @@ impl Run for ArchiveBackend {
             | FormatId::TarBz2
             | FormatId::TarXz
             | FormatId::TarZst => tar::extract_tar(input, from, &mut sink, cancel, progress)?,
+            FormatId::SevenZ => sevenz::extract_7z(input, &mut sink, cancel, progress)?,
             other => {
                 return Err(Error::new(
                     ErrorCode::NotImplemented,
@@ -430,6 +432,34 @@ pub(crate) mod tests {
         let plan = job.plan(&Registry::builtin());
         assert_eq!(plan.tasks[0].output, dir.join("tree (1)"));
         assert_eq!(plan.tasks[0].from, vec![FormatId::TarGz]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sevenz_extracts_the_tree() {
+        let dir = scratch("7z");
+        let out = extract(&dir, write_archive_sample(&dir, "arc-7z")).unwrap();
+        assert_tree(&out, false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn locked_7z_is_password_protected() {
+        let dir = scratch("locked-7z");
+        let e = extract(&dir, write_archive_sample(&dir, "arc-locked-7z")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::UnsupportedInput, "{e}");
+        assert_eq!(e.reason, "it's password-protected");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncated_7z_leaves_nothing() {
+        let dir = scratch("truncated-7z");
+        let input = write_archive_sample(&dir, "arc-7z");
+        truncate(&input, 60);
+        let e = execute_extract(input).expect("a truncated 7z fails");
+        assert_eq!(e.code, ErrorCode::CorruptInput, "{e}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

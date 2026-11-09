@@ -23,6 +23,7 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 | [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) with [libbz2-rs-sys](https://github.com/trifectatechfoundation/libbzip2-rs) | 0.6 | MIT OR Apache-2.0; libbz2-rs-sys is bzip2-1.0.6 | `persimmon-core`: bzip2, for `.tar.bz2` and bzip2 in ZIP | Statically linked (Rust crate) |
 | [lzma-rust2](https://github.com/hasenbanck/lzma-rust2) | 0.25 | Apache-2.0 | `persimmon-core`: XZ and LZMA, for `.tar.xz` and ZIP | Statically linked (Rust crate) |
 | [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9 | MIT | `persimmon-core`: Zstandard, for `.tar.zst` | Statically linked (Rust crate) |
+| [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) with [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 0.25, bzip2, PPMd and Deflate | Apache-2.0; ppmd-rust is CC0-1.0 OR MIT-0 | `persimmon-core`: reading 7z archives | Statically linked (Rust crate) |
 | [libvips](https://www.libvips.org/) | 8.15 or later | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked; installed separately (Homebrew `vips`, apt `libvips-dev`) until the app bundles it |
 | [GLib](https://gitlab.gnome.org/GNOME/glib) | 2 | LGPL-2.1-or-later | Required by libvips | Dynamically linked |
 

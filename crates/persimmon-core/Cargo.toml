@@ -31,6 +31,7 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 ruzstd = "0.9"
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["bzip2", "ppmd", "deflate", "util"] }
 rs-vips = { version = "0.7", optional = true }
 # BMP decoding, which libvips can't do without ImageMagick (DD-34), and
 # PNG and JPEG for rendered PDF pages, which needs no libvips (DD-36).
