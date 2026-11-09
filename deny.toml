@@ -18,5 +18,11 @@ allow = [
     "MPL-2.0",
     "LGPL-2.1-or-later",
     "GPL-3.0-or-later",
+    # libbz2-rs-sys, the pure-Rust bzip2 that reads .tar.bz2 and bzip2 in
+    # ZIP and 7z. A BSD-style licence. Owner-approved with DD-37, 2026-11-09.
+    "bzip2-1.0.6",
+    # ppmd-rust (CC0-1.0 OR MIT-0), for 7z's PPMd method. Owner-approved
+    # with DD-37, 2026-11-09.
+    "MIT-0",
 ]
 confidence-threshold = 0.9

@@ -279,3 +279,50 @@ fn pdf_samples_are_generated() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&again);
 }
+
+#[test]
+fn archive_samples_are_generated() {
+    use persimmon_corpus::archives::{ARCHIVE_SAMPLES, TREE, write_archive_sample};
+    let dir = scratch("archives");
+    let again = scratch("archives-again");
+    for d in [&dir, &again] {
+        let _ = std::fs::remove_dir_all(d);
+        std::fs::create_dir_all(d).unwrap();
+    }
+    for (id, name) in ARCHIVE_SAMPLES {
+        let path = write_archive_sample(&dir, id);
+        assert_eq!(path, dir.join(name), "{id}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.is_empty(), "{id}");
+        write_archive_sample(&again, id);
+        assert!(
+            bytes == std::fs::read(again.join(name)).unwrap(),
+            "{id} isn't deterministic"
+        );
+    }
+    // tree.tar lists every TREE item under tree/.
+    let mut tar = tar::Archive::new(std::fs::File::open(dir.join("tree.tar")).unwrap());
+    let names: Vec<String> = tar
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            e.path()
+                .unwrap()
+                .to_string_lossy()
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .collect();
+    for (item, _) in TREE {
+        assert!(
+            names.contains(&format!("tree/{item}")),
+            "{item} in {names:?}"
+        );
+    }
+    let mut zip =
+        zip::ZipArchive::new(std::fs::File::open(dir.join("locked.zip")).unwrap()).unwrap();
+    assert!(zip.by_index_raw(0).unwrap().encrypted());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&again);
+}

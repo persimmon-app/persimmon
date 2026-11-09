@@ -37,3 +37,7 @@ Audio and video samples are not committed. `persimmon_corpus::media` makes them 
 ## PDFs
 
 PDF samples are not committed either. `persimmon_corpus::pdf` writes them at test time with lopdf: plain and inherited-attribute pages, mixed page sizes with rotation and a crop box, object streams, a scanned page, links with an outline and a form field, 120 pages, a 200-inch page, an owner-password and a password-locked file, and broken ones. The same id always gives the same bytes.
+
+## Archives
+
+Archive samples are not committed either. `persimmon_corpus::archives` writes them at test time: a standard tree (a text file, an executable script, a subfolder, an NFD name, an empty folder and a symlink) as ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, TAR.ZST and 7z, plus hostile and odd ones: a `../` entry, an absolute path, a write through a symlink, hard links inside and outside, a case clash, a repeated name, password-protected ZIP and 7z, a gzip that isn't a tar, and 3 MiB of noise for progress. Fixed times, no owners and fixed salts make the same id give the same bytes.

@@ -15,6 +15,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub mod archives;
 pub mod media;
 pub mod pdf;
 
