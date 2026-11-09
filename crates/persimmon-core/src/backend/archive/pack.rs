@@ -533,4 +533,18 @@ mod tests {
         assert_eq!(e.file.as_deref(), Some(missing.as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_files_stay_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("private");
+        let key = write(&dir.join("keys"), "id", "secret");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o4600)).unwrap();
+        let packed = pack_to(vec![key], FormatId::Zip, None).unwrap();
+        let mut zip = ::zip::ZipArchive::new(std::fs::File::open(packed).unwrap()).unwrap();
+        let mode = zip.by_index_raw(0).unwrap().unix_mode().unwrap() & 0o7777;
+        assert_eq!(mode, 0o600, "kept private, set-uid dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

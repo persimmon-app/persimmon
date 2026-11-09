@@ -63,17 +63,14 @@ pub fn set_mode(path: &Path, executable: bool) -> std::io::Result<()> {
     }
 }
 
-/// The mode to store for a file packed into an archive: 0755 if anything
-/// may execute it, else 0644. Windows has no such bits: 0644.
+/// The mode to store for a file packed into an archive: its own read,
+/// write and execute bits (a private 0600 file stays private), without
+/// set-uid, set-gid or sticky. Windows has no such bits: 0644.
 pub fn file_mode(meta: &std::fs::Metadata) -> u32 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o111 != 0 {
-            0o755
-        } else {
-            0o644
-        }
+        meta.permissions().mode() & 0o777
     }
     #[cfg(not(unix))]
     {
