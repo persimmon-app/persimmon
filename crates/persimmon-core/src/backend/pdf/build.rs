@@ -10,8 +10,8 @@ use std::path::Path;
 
 use lopdf::{Document, Object, ObjectId, SaveOptions, dictionary};
 
-use super::assemble::{append_pages, load_pdf};
-use super::images::{add_image_page, image_page};
+use super::assemble::{append_pages, checked_page_count, load_pdf};
+use super::images::{add_image_page, image_page, image_pages};
 use crate::backend::Done;
 use crate::error::{Error, ErrorCode};
 use crate::exec::CancelToken;
@@ -35,7 +35,7 @@ pub(crate) fn build(
     for (done, (input, &from)) in task.inputs.iter().zip(&task.from).enumerate() {
         if from == FormatId::Pdf {
             let source = load_pdf(input)?;
-            let count = source.get_pages().len() as u32;
+            let count = checked_page_count(&source, input)?;
             // Split picks pages; merge takes them all.
             let pages =
                 select_pages(options.pages.as_ref(), count).map_err(|e| e.with_file(input))?;
@@ -44,8 +44,13 @@ pub(crate) fn build(
             kids.extend(appended.pages);
             info = appended.info;
         } else {
-            let page = image_page(input, from, options)?;
-            kids.push(add_image_page(&mut doc, &page, quality).map_err(|e| e.with_file(input))?);
+            // One at a time, so a long TIFF never holds every page at once.
+            for n in 0..image_pages(input, from)? {
+                let page = image_page(input, from, options, n)?;
+                kids.push(
+                    add_image_page(&mut doc, &page, quality).map_err(|e| e.with_file(input))?,
+                );
+            }
         }
         progress((done + 1) as f32 / total as f32);
         if cancel.is_cancelled() {
@@ -313,6 +318,28 @@ mod tests {
     #[cfg(feature = "vips")]
     mod vips {
         use super::*;
+
+        #[test]
+        fn multi_page_tiff_makes_every_page() {
+            use rs_vips::VipsImage;
+            use rs_vips::voption::{Setter, VOption};
+            let dir = scratch("tiff-pages");
+            crate::backend::image::ImageBackend::new();
+            let mut img = VipsImage::black(64, 192).unwrap();
+            img.set_int("page-height", 64).unwrap();
+            let p = dir.join("fax.tif");
+            img.tiffsave_with_opts(
+                p.to_str().unwrap(),
+                VOption::new().set("compression", "lzw"),
+            )
+            .unwrap();
+            let doc = Document::load(convert(&dir, p).unwrap()).unwrap();
+            assert_eq!(doc.get_pages().len(), 3);
+            for n in 1..=3 {
+                assert_eq!(media_box(&doc, n), vec![0.0, 0.0, 64.0, 64.0], "page {n}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
 
         #[test]
         fn cmyk_jpeg_is_decoded() {
@@ -602,6 +629,179 @@ mod tests {
         .unwrap_err();
         assert_eq!(e.code, ErrorCode::Cancelled);
         assert_eq!(calls, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Final review fixes.
+
+    /// A PDF from numbered object bodies, with a correct xref table. Each
+    /// page shows `Page N` from its own content stream.
+    fn raw_pdf(dir: &Path, name: &str, objects: &[(u32, String)]) -> PathBuf {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = std::collections::BTreeMap::new();
+        for (n, body) in objects {
+            offsets.insert(*n, out.len());
+            out.extend_from_slice(format!("{n} 0 obj\n{body}\nendobj\n").as_bytes());
+        }
+        let size = offsets.keys().max().unwrap() + 1;
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+        for n in 1..size {
+            out.extend_from_slice(
+                match offsets.get(&n) {
+                    Some(o) => format!("{o:010} 00000 n \n"),
+                    None => "0000000000 65535 f \n".to_string(),
+                }
+                .as_bytes(),
+            );
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        let p = dir.join(name);
+        std::fs::write(&p, out).unwrap();
+        p
+    }
+
+    /// The objects of a two-page PDF whose page tree is `pages` and whose
+    /// catalog has `catalog_extra`; page 1 is object 10, page 2 object 11.
+    fn tree(pages: &str, catalog_extra: &str, page2_parent: u32) -> Vec<(u32, String)> {
+        let content = |n: u32| {
+            let s = format!("BT /F1 48 Tf 72 700 Td (Page {n}) Tj ET");
+            format!("<< /Length {} >>\nstream\n{s}\nendstream", s.len())
+        };
+        let page = |parent: u32, c: u32| {
+            format!(
+                "<< /Type /Page /Parent {parent} 0 R /MediaBox [0 0 595 842] \
+                 /Resources << /Font << /F1 3 0 R >> >> /Contents {c} 0 R >>"
+            )
+        };
+        vec![
+            (
+                1,
+                format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>"),
+            ),
+            (2, pages.to_string()),
+            (
+                3,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            ),
+            (10, page(2, 30)),
+            (11, page(page2_parent, 31)),
+            (30, content(1)),
+            (31, content(2)),
+        ]
+    }
+
+    const TWO: &str = "<< /Type /Pages /Kids [10 0 R 11 0 R] /Count 2 >>";
+
+    #[test]
+    fn jpeg_trailer_stays_out_of_pdf() {
+        let dir = scratch("trailer");
+        let orient = sample_bytes("img-orient-6");
+        // A second image after the first one's end, as multi-picture,
+        // gain-map and motion-photo JPEGs carry.
+        let mut bytes = orient.to_vec();
+        bytes.extend_from_slice(orient);
+        let p = dir.join("burst.jpg");
+        std::fs::write(&p, &bytes).unwrap();
+        let pdf = convert(&dir, p).unwrap();
+        assert!(
+            !std::fs::read(&pdf)
+                .unwrap()
+                .windows(6)
+                .any(|w| w == b"Exif\0\0")
+        );
+        let doc = Document::load(&pdf).unwrap();
+        assert_eq!(
+            xobject(&doc, 1).content,
+            super::super::images::strip_jpeg_metadata(orient)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncated_jpeg_with_a_trailer_is_corrupt() {
+        let dir = scratch("truncated-trailer");
+        let mut bytes = sample_bytes("img-truncated").to_vec();
+        bytes.extend_from_slice(sample_bytes("img-orient-6"));
+        let p = dir.join("broken.jpg");
+        std::fs::write(&p, &bytes).unwrap();
+        let e = convert(&dir, p).unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput);
+        assert_eq!(e.reason, "the image is truncated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_page_trees_fail_cleanly() {
+        let dir = scratch("malformed");
+        // /Kids names an object that doesn't exist.
+        let dangling = raw_pdf(
+            &dir,
+            "dangling.pdf",
+            &tree(
+                "<< /Type /Pages /Kids [10 0 R 99 0 R 11 0 R] /Count 3 >>",
+                "",
+                2,
+            ),
+        );
+        let e = make(
+            &dir,
+            Operation::Merge,
+            vec![dangling],
+            JobOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput, "{e}");
+        assert!(e.file.is_some());
+        // Page 2's /Parent is page 1; the catalog's /Outlines is a page.
+        for (name, catalog, parent) in [
+            ("sibling.pdf", "", 10),
+            ("outlines.pdf", "/Outlines 10 0 R", 2),
+        ] {
+            let p = raw_pdf(&dir, name, &tree(TWO, catalog, parent));
+            let doc = Document::load(split(&dir, p, "1")).unwrap();
+            assert_eq!(doc.get_pages().len(), 1, "{name}");
+            assert!(text_of(&doc, 1).contains("Page 1"), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inconsistent_page_trees_fail_instead_of_picking_wrong_pages() {
+        let dir = scratch("inconsistent");
+        let twice = raw_pdf(
+            &dir,
+            "twice.pdf",
+            &tree(
+                "<< /Type /Pages /Kids [10 0 R 10 0 R 11 0 R] /Count 3 >>",
+                "",
+                2,
+            ),
+        );
+        let mut cycle = tree("<< /Type /Pages /Kids [10 0 R 20 0 R] /Count 2 >>", "", 20);
+        cycle.push((
+            20,
+            "<< /Type /Pages /Kids [11 0 R 2 0 R] /Count 1 /Parent 2 0 R >>".into(),
+        ));
+        let cycle = raw_pdf(&dir, "cycle.pdf", &cycle);
+        for p in [twice, cycle] {
+            let options = JobOptions {
+                pages: Some(crate::job::PageRanges::parse("2").unwrap()),
+                ..JobOptions::default()
+            };
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            for (op, opts) in [
+                (Operation::Split, options),
+                (Operation::Merge, JobOptions::default()),
+            ] {
+                let e = make(&dir, op, vec![p.clone()], opts).unwrap_err();
+                assert_eq!(e.code, ErrorCode::CorruptInput, "{name} {op:?}: {e}");
+                assert_eq!(e.reason, "its page tree is damaged", "{name}");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

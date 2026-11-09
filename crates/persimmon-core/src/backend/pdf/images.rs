@@ -46,38 +46,72 @@ pub(crate) struct JpegInfo {
     pub has_eoi: bool,
 }
 
-/// One marker segment before the scan: the marker, where it starts (at its
-/// `FF`), where its data starts, and where it ends.
-struct Segment {
-    marker: u8,
-    start: usize,
-    data: usize,
-    end: usize,
+/// A piece of a JPEG, in file order: a marker segment, or a run of
+/// entropy-coded data (with any restart markers inside it).
+enum Part {
+    /// A marker, from its `FF` to the end of its data. `data` is where the
+    /// data after the length starts.
+    Segment {
+        marker: u8,
+        start: usize,
+        data: usize,
+        end: usize,
+    },
+    Scan {
+        start: usize,
+        end: usize,
+    },
 }
 
-/// The segments from SOI up to the first SOS, and where that SOS starts.
-fn segments(bytes: &[u8]) -> Option<(Vec<Segment>, usize)> {
+/// Markers that may follow a scan before the image ends: tables, restart
+/// interval, another scan (progressive), line count, APPn and COM.
+fn allowed_after_scan(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xC4 | 0xDB | 0xDD | 0xDA | 0xDC | 0xE0..=0xEF | 0xFE
+    )
+}
+
+/// Walk a JPEG from SOI to its end-of-image marker. `None` when the
+/// headers before the first scan don't parse. Otherwise the parts up to
+/// the end of the image, and whether a proper EOI ended it: data that runs
+/// out, or hits a marker that can't belong to this image, means the file
+/// is truncated. Anything after the EOI (a second image, a gain map, a
+/// motion photo's video) is not part of the walk.
+fn walk(bytes: &[u8]) -> Option<(Vec<Part>, bool)> {
     if !bytes.starts_with(&[0xFF, 0xD8]) {
         return None;
     }
-    let mut out = Vec::new();
+    let mut parts = Vec::new();
     let mut i = 2;
+    let mut scanned = false;
+    // Before the first scan a malformed header is "not a JPEG"; after it,
+    // a truncated one.
+    macro_rules! stop {
+        () => {
+            return if scanned { Some((parts, false)) } else { None }
+        };
+    }
     loop {
-        if *bytes.get(i)? != 0xFF {
-            return None;
+        if bytes.get(i) != Some(&0xFF) {
+            stop!();
         }
         let start = i;
-        while *bytes.get(i + 1)? == 0xFF {
+        while bytes.get(i + 1) == Some(&0xFF) {
             i += 1; // fill bytes
         }
-        let marker = bytes[i + 1];
+        let Some(&marker) = bytes.get(i + 1) else {
+            stop!();
+        };
         i += 2;
-        if marker == 0xDA {
-            return Some((out, start));
+        if marker == 0xD9 {
+            if scanned {
+                return Some((parts, true));
+            }
+            return None;
         }
         if (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
-            // No length: standalone markers.
-            out.push(Segment {
+            parts.push(Part::Segment {
                 marker,
                 start,
                 data: i,
@@ -85,17 +119,41 @@ fn segments(bytes: &[u8]) -> Option<(Vec<Segment>, usize)> {
             });
             continue;
         }
-        let len = usize::from(u16::from_be_bytes([*bytes.get(i)?, *bytes.get(i + 1)?]));
-        if len < 2 || i + len > bytes.len() {
-            return None;
+        if scanned && !allowed_after_scan(marker) {
+            stop!();
         }
-        out.push(Segment {
+        let (Some(&hi), Some(&lo)) = (bytes.get(i), bytes.get(i + 1)) else {
+            stop!();
+        };
+        let len = usize::from(u16::from_be_bytes([hi, lo]));
+        if len < 2 || i + len > bytes.len() {
+            stop!();
+        }
+        parts.push(Part::Segment {
             marker,
             start,
             data: i + 2,
             end: i + len,
         });
         i += len;
+        if marker == 0xDA {
+            scanned = true;
+            // Entropy-coded data runs to the next marker that isn't a
+            // stuffed FF 00 or a restart marker.
+            let start = i;
+            loop {
+                match (bytes.get(i), bytes.get(i + 1)) {
+                    (None, _) | (Some(0xFF), None) => {
+                        parts.push(Part::Scan { start, end: i });
+                        return Some((parts, false));
+                    }
+                    (Some(0xFF), Some(0x00 | 0xD0..=0xD7)) => i += 2,
+                    (Some(0xFF), Some(_)) => break,
+                    _ => i += 1,
+                }
+            }
+            parts.push(Part::Scan { start, end: i });
+        }
     }
 }
 
@@ -106,12 +164,18 @@ fn be16(b: &[u8]) -> u16 {
 /// Read a JPEG's frame header, JFIF density and whether it ends properly.
 /// `None` when it isn't a JPEG this can walk.
 pub(crate) fn jpeg_info(bytes: &[u8]) -> Option<JpegInfo> {
-    let (segs, sos) = segments(bytes)?;
+    let (parts, has_eoi) = walk(bytes)?;
     let mut info: Option<JpegInfo> = None;
     let mut dpi = None;
-    for seg in &segs {
-        let data = &bytes[seg.data..seg.end];
-        match seg.marker {
+    for part in &parts {
+        let Part::Segment {
+            marker, data, end, ..
+        } = *part
+        else {
+            continue;
+        };
+        let data = &bytes[data..end];
+        match marker {
             0xE0 if data.starts_with(b"JFIF\0") && data.len() >= 12 => {
                 let x = f32::from(be16(&data[8..10]));
                 dpi = match data[7] {
@@ -136,28 +200,35 @@ pub(crate) fn jpeg_info(bytes: &[u8]) -> Option<JpegInfo> {
     }
     let mut info = info.filter(|i| i.width > 0 && i.height > 0)?;
     info.dpi = dpi;
-    let scan = sos + 2 + usize::from(be16(bytes.get(sos + 2..sos + 4)?));
-    info.has_eoi = bytes
-        .get(scan..)
-        .is_some_and(|rest| rest.windows(2).any(|w| w == [0xFF, 0xD9]));
+    info.has_eoi = has_eoi;
     Some(info)
 }
 
-/// The JPEG without its APP1–APP13, APP15 and COM segments: EXIF, XMP,
-/// GPS, maker notes and comments. JFIF, ICC (APP2) and Adobe (APP14) stay,
-/// since they affect how the image looks.
+/// The JPEG cut at its end-of-image marker, without its APP1–APP13, APP15
+/// and COM segments wherever they appear: EXIF, XMP, GPS, maker notes and
+/// comments. JFIF (APP0) and Adobe (APP14) stay, since they affect how the
+/// image decodes. ICC profiles (APP2) go too: the caller embeds the
+/// profile as the image's colour space instead. Whatever follows the EOI,
+/// such as a second image or a motion photo's video, is dropped.
 pub(crate) fn strip_jpeg_metadata(bytes: &[u8]) -> Vec<u8> {
-    let Some((segs, sos)) = segments(bytes) else {
+    let Some((parts, has_eoi)) = walk(bytes) else {
         return bytes.to_vec();
     };
     let mut out = bytes[..2].to_vec();
-    for seg in segs
-        .iter()
-        .filter(|s| !matches!(s.marker, 0xE1..=0xED | 0xEF | 0xFE))
-    {
-        out.extend_from_slice(&bytes[seg.start..seg.end]);
+    for part in &parts {
+        match *part {
+            Part::Segment {
+                marker: 0xE1..=0xED | 0xEF | 0xFE,
+                ..
+            } => {}
+            Part::Segment { start, end, .. } | Part::Scan { start, end } => {
+                out.extend_from_slice(&bytes[start..end]);
+            }
+        }
     }
-    out.extend_from_slice(&bytes[sos..]);
+    if has_eoi {
+        out.extend_from_slice(&[0xFF, 0xD9]);
+    }
     out
 }
 
@@ -195,19 +266,31 @@ fn corrupt(input: &Path, reason: impl Into<String>) -> Error {
     Error::new(ErrorCode::CorruptInput, reason).with_file(input)
 }
 
-/// Read `input` as a PDF page: a JPEG as it is when it can be, else
-/// decoded through libvips.
+/// How many PDF pages `input` makes: one per page of a multi-page TIFF,
+/// else one. (A GIF gives its first frame only, DD-28.)
+pub(crate) fn image_pages(input: &Path, from: FormatId) -> Result<u32, Error> {
+    #[cfg(feature = "vips")]
+    if from == FormatId::Tiff {
+        return crate::backend::image::tiff_pages(input);
+    }
+    let _ = (input, from);
+    Ok(1)
+}
+
+/// Read page `page` (from 0) of `input` as a PDF page: a JPEG as it is
+/// when it can be, else decoded through libvips.
 pub(crate) fn image_page(
     input: &Path,
     from: FormatId,
     options: &JobOptions,
+    page: u32,
 ) -> Result<ImagePage, Error> {
     if from == FormatId::Jpeg
         && let Some(page) = jpeg_as_is(input, options)?
     {
         return Ok(page);
     }
-    decoded_page(input, from, options)
+    decoded_page(input, from, options, page)
 }
 
 /// The JPEG at `input` as an embeddable page, or `None` when it has to be
@@ -257,8 +340,13 @@ fn jpeg_as_is(input: &Path, options: &JobOptions) -> Result<Option<ImagePage>, E
 }
 
 #[cfg(feature = "vips")]
-fn decoded_page(input: &Path, from: FormatId, options: &JobOptions) -> Result<ImagePage, Error> {
-    let d = crate::backend::image::decode_srgb8(input, from, options.max_size)?;
+fn decoded_page(
+    input: &Path,
+    from: FormatId,
+    options: &JobOptions,
+    page: u32,
+) -> Result<ImagePage, Error> {
+    let d = crate::backend::image::decode_srgb8(input, from, options.max_size, page)?;
     let (components, pixels, alpha) = match d.bands {
         2 | 4 => {
             let n = usize::from(d.bands);
@@ -290,7 +378,7 @@ fn decoded_page(input: &Path, from: FormatId, options: &JobOptions) -> Result<Im
 }
 
 #[cfg(not(feature = "vips"))]
-fn decoded_page(input: &Path, _: FormatId, _: &JobOptions) -> Result<ImagePage, Error> {
+fn decoded_page(input: &Path, _: FormatId, _: &JobOptions, _: u32) -> Result<ImagePage, Error> {
     Err(
         Error::new(ErrorCode::BackendMissing, "this build has no image backend")
             .with_file(input)

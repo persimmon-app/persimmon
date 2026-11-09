@@ -131,6 +131,16 @@ fn init() -> Result<(), String> {
 
 /// Open `input` with the libvips loader for `from`, never by guessing.
 fn load(input: &Path, from: FormatId, access: &str) -> Result<VipsImage, rs_vips::error::Error> {
+    load_page(input, from, access, 0)
+}
+
+/// [`load`] page `page` of a multi-page TIFF; other formats ignore it.
+fn load_page(
+    input: &Path,
+    from: FormatId,
+    access: &str,
+    page: u32,
+) -> Result<VipsImage, rs_vips::error::Error> {
     let src = VipsSource::new_from_file(input)?;
     let opts = || {
         VOption::new()
@@ -142,7 +152,9 @@ fn load(input: &Path, from: FormatId, access: &str) -> Result<VipsImage, rs_vips
         FormatId::Png => VipsImage::pngload_source_with_opts(&src, opts()),
         FormatId::Webp => VipsImage::webpload_source_with_opts(&src, opts()),
         FormatId::Heic | FormatId::Avif => VipsImage::heifload_source_with_opts(&src, opts()),
-        FormatId::Tiff => VipsImage::tiffload_source_with_opts(&src, opts()),
+        FormatId::Tiff => {
+            VipsImage::tiffload_source_with_opts(&src, opts().set("page", page as i32))
+        }
         FormatId::Gif => VipsImage::gifload_source_with_opts(&src, opts()),
         // Every other format is routed to another backend by the planner.
         _ => VipsImage::new_from_source_with_opts(&src, "", opts()),
@@ -203,6 +215,11 @@ impl ImageBackend {
 
     /// Open the input with the pixel limit checked before any decoding.
     fn open(&self, input: &Path, from: FormatId) -> Result<VipsImage, Error> {
+        self.open_page(input, from, 0)
+    }
+
+    /// [`open`](Self::open) page `page` of a multi-page TIFF.
+    fn open_page(&self, input: &Path, from: FormatId, page: u32) -> Result<VipsImage, Error> {
         let corrupt = |e: &dyn std::fmt::Display| {
             Error::new(
                 ErrorCode::CorruptInput,
@@ -230,11 +247,11 @@ impl ImageBackend {
             )
             .map_err(|e| corrupt(&e));
         }
-        let img = load(input, from, "sequential").map_err(|e| corrupt(&e))?;
+        let img = load_page(input, from, "sequential", page).map_err(|e| corrupt(&e))?;
         self.too_large(input, img.get_width() as u64, img.get_height() as u64)?;
         if img.get_orientation() > 1 {
             // Rotating needs random access to the pixels.
-            return load(input, from, "random")
+            return load_page(input, from, "random", page)
                 .and_then(|img| img.autorot())
                 .map_err(|e| corrupt(&e));
         }
@@ -262,19 +279,44 @@ pub(crate) fn decode_srgb8(
     input: &Path,
     from: FormatId,
     max_size: Option<u32>,
+    page: u32,
 ) -> Result<Decoded, Error> {
-    init().map_err(|reason| {
-        Error::new(ErrorCode::BackendMissing, reason)
-            .with_file(input)
-            .with_fix("install or update libvips (brew upgrade vips, or a newer libvips-dev)")
-    })?;
+    started(input)?;
     Vips::error_clear();
-    let result = decode(input, from, max_size);
+    let result = decode(input, from, max_size, page);
     Vips::error_clear();
     result
 }
 
-fn decode(input: &Path, from: FormatId, max_size: Option<u32>) -> Result<Decoded, Error> {
+/// libvips started, or `BACKEND_MISSING` naming `input`.
+fn started(input: &Path) -> Result<(), Error> {
+    init().map_err(|reason| {
+        Error::new(ErrorCode::BackendMissing, reason)
+            .with_file(input)
+            .with_fix("install or update libvips (brew upgrade vips, or a newer libvips-dev)")
+    })
+}
+
+/// How many pages the TIFF at `input` holds: each becomes a PDF page.
+pub(crate) fn tiff_pages(input: &Path) -> Result<u32, Error> {
+    started(input)?;
+    let img = load(input, FormatId::Tiff, "sequential").map_err(|e| {
+        Error::new(
+            ErrorCode::CorruptInput,
+            format!("can't read this image ({})", message(&e)),
+        )
+        .with_file(input)
+    });
+    Vips::error_clear();
+    Ok(img?.get_n_pages().max(1) as u32)
+}
+
+fn decode(
+    input: &Path,
+    from: FormatId,
+    max_size: Option<u32>,
+    page: u32,
+) -> Result<Decoded, Error> {
     let fail = |e: &dyn std::fmt::Display| {
         Error::new(
             ErrorCode::CorruptInput,
@@ -282,7 +324,7 @@ fn decode(input: &Path, from: FormatId, max_size: Option<u32>) -> Result<Decoded
         )
         .with_file(input)
     };
-    let mut img = ImageBackend::new().open(input, from)?;
+    let mut img = ImageBackend::new().open_page(input, from, page)?;
     if let Some(max) = max_size
         && img.get_width().max(img.get_height()) > max as i32
     {

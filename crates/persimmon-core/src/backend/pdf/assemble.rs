@@ -43,6 +43,28 @@ pub(crate) fn load_pdf(path: &Path) -> Result<Document, Error> {
     Ok(doc)
 }
 
+/// The number of pages in `source`, checked against hayro's count of
+/// the same file, which planning, `--pages` and rendering all use. A page
+/// tree the two read differently (a page listed twice, a cycle, a missing
+/// page) is an error, rather than a split that silently picks the wrong
+/// pages.
+pub(crate) fn checked_page_count(source: &Document, path: &Path) -> Result<u32, Error> {
+    let pages = source.get_pages();
+    let distinct: HashSet<ObjectId> = pages.values().copied().collect();
+    let planned = super::pdf_info(path)?.pages;
+    let sound = distinct.len() == pages.len()
+        && pages.len() == planned as usize
+        && pages.values().all(|id| source.objects.contains_key(id));
+    if !sound {
+        return Err(damaged().with_file(path));
+    }
+    Ok(planned)
+}
+
+fn damaged() -> Error {
+    Error::new(ErrorCode::CorruptInput, "its page tree is damaged")
+}
+
 /// What [`append_pages`] added.
 pub(crate) struct Appended {
     /// The kept pages' new ids, in document order.
@@ -65,7 +87,8 @@ pub(crate) fn append_pages(
         .map(|n| {
             all.get(n)
                 .copied()
-                .ok_or_else(|| Error::new(ErrorCode::CorruptInput, format!("page {n} is missing")))
+                .filter(|id| source.objects.contains_key(id))
+                .ok_or_else(damaged)
         })
         .collect::<Result<_, _>>()?;
 
@@ -109,6 +132,10 @@ pub(crate) fn append_pages(
         }
     }
 
+    // A malformed file can point a page tree link or the outline root at a
+    // kept page; it stays.
+    dropped.retain(|id| !keep.contains(id));
+
     // Renumber everything that isn't dropped; a reference to anything else,
     // dropped or missing, becomes null.
     let mut next = target.max_id + 1;
@@ -133,7 +160,10 @@ pub(crate) fn append_pages(
         .ok()
         .and_then(|id| map.get(&id).copied());
     Ok(Appended {
-        pages: kept.iter().map(|id| map[id]).collect(),
+        pages: kept
+            .iter()
+            .map(|id| map.get(id).copied().ok_or_else(damaged))
+            .collect::<Result<_, _>>()?,
         info,
     })
 }
