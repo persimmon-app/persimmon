@@ -214,14 +214,14 @@ fn batch_exit_code_is_first_failure() {
 
 #[test]
 fn without_dry_run_is_not_implemented() {
-    // Images → PDF is the PDF backend, which arrives in week 6.
+    // Archives are the last backend, arriving in week 7.
     let c = Corpus::new("not-impl");
-    let out = prsm(&c.dir, ["convert", "--to", "pdf", "pixel.png"]);
+    let out = prsm(&c.dir, ["extract", "empty.zip"]);
     assert_eq!(out.status.code(), Some(10));
     let err = stderr(&out);
-    assert!(err.contains("the pdf backend isn't built yet"), "{err}");
+    assert!(err.contains("the archive backend isn't built yet"), "{err}");
     assert!(err.contains("fix: use --dry-run to see the plan"), "{err}");
-    assert!(!c.dir.join("pixel.pdf").exists());
+    assert!(!c.dir.join("empty").exists());
 }
 
 #[test]
@@ -430,10 +430,10 @@ mod images {
     }
 
     #[test]
-    fn pdf_still_not_implemented() {
-        let c = Corpus::new("img-pdf");
+    fn archives_still_not_implemented() {
+        let c = Corpus::new("img-archive");
         assert_eq!(
-            prsm(&c.dir, ["convert", "--to", "pdf", "pixel.png"])
+            prsm(&c.dir, ["merge", "--to", "zip", "pixel.png"])
                 .status
                 .code(),
             Some(10)

@@ -91,6 +91,7 @@ impl Run for Backends {
                     Err(e) => Err(e.clone().with_file(&task.inputs[0])),
                 }
             }
+            Backend::Pdf => pdf::PdfBackend.run(task, options, temp, cancel, progress),
             other => {
                 let e = Error::new(
                     ErrorCode::NotImplemented,

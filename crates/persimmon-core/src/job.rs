@@ -25,6 +25,19 @@ pub enum Quality {
     Max,
 }
 
+impl Quality {
+    /// The JPEG quality (1–100) for this level, shared by every backend
+    /// that writes JPEG.
+    pub fn jpeg(self) -> u8 {
+        match self {
+            Quality::Low => 60,
+            Quality::Medium => 75,
+            Quality::High => 85,
+            Quality::Max => 95,
+        }
+    }
+}
+
 /// `--preset`: how video is encoded, per container (DD-35).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preset {

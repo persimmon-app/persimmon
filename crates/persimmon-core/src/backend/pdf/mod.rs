@@ -9,7 +9,39 @@ use std::path::Path;
 
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 
+use crate::backend::{Done, Run};
 use crate::error::{Error, ErrorCode};
+use crate::exec::CancelToken;
+use crate::format::FormatId;
+use crate::job::{JobOptions, PlannedTask};
+
+pub(crate) mod render;
+
+/// Renders PDF pages to PNG and JPEG, and builds PDFs from images and
+/// other PDFs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PdfBackend;
+
+impl Run for PdfBackend {
+    fn run(
+        &self,
+        task: &PlannedTask,
+        options: &JobOptions,
+        temp: &Path,
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(f32),
+    ) -> Result<Done, Error> {
+        match task.to {
+            Some(FormatId::Png | FormatId::Jpeg) => {
+                render::render(task, options, temp, cancel, progress)
+            }
+            _ => Err(Error::new(
+                ErrorCode::NotImplemented,
+                "the pdf backend can't build PDFs yet",
+            )),
+        }
+    }
+}
 
 /// What planning and `prsm info` need to know about a PDF.
 #[derive(Debug, Clone, Copy, PartialEq)]

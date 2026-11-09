@@ -307,10 +307,17 @@ mod tests {
     }
 
     #[test]
-    fn backends_report_not_implemented_for_pdf() {
-        let dir = scratch("pdf");
-        let mut j = job(&dir, 1);
-        j.target = Some(FormatId::Pdf);
+    fn backends_report_not_implemented_for_archives() {
+        let dir = scratch("archive");
+        let zip = dir.join("a.zip");
+        std::fs::write(&zip, persimmon_corpus::ZIP_EMPTY).unwrap();
+        let j = Job {
+            op: Operation::Extract,
+            inputs: vec![zip],
+            target: None,
+            output: OutputPolicy::default(),
+            options: JobOptions::default(),
+        };
         let plan = j.plan(&Registry::builtin());
         let temp = dir.join("t.part");
         let e = Backends::new()
@@ -323,7 +330,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::NotImplemented);
-        assert_eq!(e.reason, "the pdf backend isn't built yet");
+        assert_eq!(e.reason, "the archive backend isn't built yet");
         assert_eq!(e.fix.as_deref(), Some("use --dry-run to see the plan"));
     }
 

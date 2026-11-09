@@ -44,22 +44,22 @@ struct Q {
 fn quality(q: Quality) -> Q {
     match q {
         Quality::Low => Q {
-            jpeg: 60,
+            jpeg: q.jpeg().into(),
             webp: 60,
             avif: 40,
         },
         Quality::Medium => Q {
-            jpeg: 75,
+            jpeg: q.jpeg().into(),
             webp: 75,
             avif: 50,
         },
         Quality::High => Q {
-            jpeg: 85,
+            jpeg: q.jpeg().into(),
             webp: 85,
             avif: 65,
         },
         Quality::Max => Q {
-            jpeg: 95,
+            jpeg: q.jpeg().into(),
             webp: 95,
             avif: 80,
         },

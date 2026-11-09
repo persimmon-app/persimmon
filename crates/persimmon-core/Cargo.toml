@@ -15,7 +15,7 @@ categories = ["multimedia"]
 default = ["vips"]
 # The libvips image backend (DD-34). Needs libvips installed (Homebrew
 # `vips`, apt `libvips-dev`); build with --no-default-features without it.
-vips = ["dep:rs-vips", "dep:image"]
+vips = ["dep:rs-vips"]
 
 [dependencies]
 unicode-normalization = "0.1"
@@ -24,8 +24,9 @@ unicode-normalization = "0.1"
 hayro = "0.9"
 lopdf = { version = "0.47", default-features = false }
 rs-vips = { version = "0.7", optional = true }
-# Only BMP: libvips has no BMP loader of its own (DD-34).
-image = { version = "0.25", default-features = false, features = ["bmp"], optional = true }
+# BMP decoding, which libvips can't do without ImageMagick (DD-34), and
+# PNG and JPEG for rendered PDF pages, which needs no libvips (DD-36).
+image = { version = "0.25", default-features = false, features = ["bmp", "png", "jpeg"] }
 
 [dev-dependencies]
 persimmon-corpus = { path = "../persimmon-corpus" }
