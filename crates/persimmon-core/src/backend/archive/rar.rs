@@ -83,6 +83,8 @@ pub(crate) fn extract_rar(
     while let Some(item) = iter.next() {
         match item {
             ArchiveContents::StartOfEntry(name, stat) => {
+                // st_mode is u16 on macOS and u32 on Linux.
+                #[allow(clippy::unnecessary_cast)]
                 let mode = stat.st_mode as u32;
                 // time_t is i64 here but narrower on some platforms.
                 #[allow(clippy::useless_conversion)]

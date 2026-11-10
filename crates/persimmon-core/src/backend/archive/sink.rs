@@ -332,10 +332,8 @@ impl Sink {
     pub(crate) fn finish(self, stem: &str) -> Result<(), Error> {
         std::fs::create_dir_all(&self.root).map_err(|e| self.not_writable(stem, &e))?;
         for (dir, t) in self.dir_times.iter().rev() {
-            // Best effort: Windows can't open a folder to set its time.
-            if let Ok(f) = File::open(self.root.join(dir)) {
-                let _ = f.set_modified(time(*t));
-            }
+            // Best effort: a folder's time is a nicety, never a failure.
+            let _ = platform::set_dir_modified(&self.root.join(dir), time(*t));
         }
         let entries: Vec<_> = std::fs::read_dir(&self.root)
             .map_err(|e| self.not_writable(stem, &e))?

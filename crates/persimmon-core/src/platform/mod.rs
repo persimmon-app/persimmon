@@ -79,6 +79,26 @@ pub fn file_mode(meta: &std::fs::Metadata) -> u32 {
     }
 }
 
+/// Set a folder's modification time. Windows only opens a folder with
+/// "backup semantics", and setting times needs write-attributes access.
+pub fn set_dir_modified(path: &Path, time: std::time::SystemTime) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?
+            .set_modified(time)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(path)?.set_modified(time)
+    }
+}
+
 /// Whether this platform can hold a file called `name` (one path
 /// component, already free of `/`, `\` and NUL). Windows refuses
 /// `<>:"|?*`, control characters, a trailing dot or space, and device
