@@ -372,14 +372,27 @@ impl Sink {
             .map_err(|e| self.not_writable(stem, &e))?
             .filter_map(Result::ok)
             .collect();
-        if let [only] = entries.as_slice()
-            && only.file_type().is_ok_and(|t| t.is_dir())
+        // On exFAT, FAT and SMB, macOS keeps a folder's extended attributes
+        // in `._name` beside it: the top folder's own sidecar doesn't count.
+        let is_dir = |e: &std::fs::DirEntry| e.file_type().is_ok_and(|t| t.is_dir());
+        let dirs: Vec<_> = entries.iter().filter(|e| is_dir(e)).collect();
+        let own_sidecar = |e: &std::fs::DirEntry| {
+            dirs.first().is_some_and(|d| {
+                e.file_name().to_string_lossy() == format!("._{}", d.file_name().to_string_lossy())
+            })
+        };
+        let rest: Vec<_> = entries.iter().filter(|e| !own_sidecar(e)).collect();
+        if let [only] = rest.as_slice()
+            && is_dir(only)
             && fold(&only.file_name().to_string_lossy()) == fold(stem)
         {
             let mut lifted = self.root.clone().into_os_string();
             lifted.push(".lift");
             let lifted = PathBuf::from(lifted);
             let fail = |e: std::io::Error| self.not_writable(stem, &e);
+            for sidecar in entries.iter().filter(|e| own_sidecar(e)) {
+                std::fs::remove_file(sidecar.path()).map_err(fail)?;
+            }
             std::fs::rename(only.path(), &lifted).map_err(fail)?;
             std::fs::remove_dir(&self.root).map_err(fail)?;
             std::fs::rename(&lifted, &self.root).map_err(fail)?;
@@ -573,6 +586,34 @@ mod tests {
         assert_eq!(read(&dir, "a (1).txt"), "lower");
         // Numbered by its own name, as every clash is.
         assert_eq!(read(&dir, "a (1) (1).txt"), "real");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// On exFAT, FAT and SMB, macOS keeps a folder's extended attributes
+    /// in a `._name` file beside it. That sidecar mustn't stop the unwrap.
+    #[test]
+    fn unwrap_ignores_the_folders_own_appledouble_file() {
+        let dir = scratch("unwrap-appledouble");
+        let mut s = sink(&dir);
+        put(&mut s, "tree/a.txt", b"a").unwrap();
+        std::fs::write(dir.join("out/._tree"), b"xattrs").unwrap();
+        s.finish("tree").unwrap();
+        assert_eq!(read(&dir, "a.txt"), "a");
+        assert!(!dir.join("out/tree").exists());
+        assert!(!dir.join("out/._tree").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Any other `._` file is the archive's own content and still counts.
+    #[test]
+    fn other_appledouble_files_still_count() {
+        let dir = scratch("unwrap-other");
+        let mut s = sink(&dir);
+        put(&mut s, "tree/a.txt", b"a").unwrap();
+        put(&mut s, "._other", b"x").unwrap();
+        s.finish("tree").unwrap();
+        assert_eq!(read(&dir, "tree/a.txt"), "a");
+        assert_eq!(read(&dir, "._other"), "x");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1329,10 +1329,9 @@ mod sweep {
 /// one needs before `prsm` starts.
 #[test]
 fn readme_lists_every_release_archive() {
-    let readme = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
-    )
-    .unwrap();
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
+            .unwrap();
     for needle in [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
