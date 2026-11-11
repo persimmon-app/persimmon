@@ -42,7 +42,12 @@ jobs:
 
       - name: Install libvips, FFmpeg and libarchive (macOS)
         if: runner.os == 'macOS'
-        run: brew install vips ffmpeg libarchive pkgconf
+        # libarchive is keg-only, so pkg-config finds it only with its own
+        # folder on the path. (compress-tools guesses /opt/homebrew, which
+        # Intel Macs don't have.)
+        run: |
+          brew install vips ffmpeg libarchive pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix libarchive)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"

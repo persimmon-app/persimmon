@@ -43,6 +43,7 @@ Then put `prsm` somewhere on your `PATH`, such as `/usr/local/bin` or `~/.local/
 
 ```sh
 brew install vips libarchive pkgconf    # macOS; on Debian and Ubuntu, the -dev packages under Building
+export PKG_CONFIG_PATH="$(brew --prefix libarchive)/lib/pkgconfig"   # macOS: Homebrew keeps libarchive out of pkg-config's sight
 cargo install persimmon-cli
 ```
 
