@@ -1,5 +1,6 @@
 # cargo-deny configuration: the licence guard for Rust dependencies (DD-04).
-# CI runs `cargo deny check licenses` on Ubuntu for every push.
+# CI runs `cargo deny check licenses advisories` on Ubuntu for every push.
+# about.toml's accepted list mirrors the allow-list below; change both.
 #
 # Every licence here is compatible with GPL-3.0-or-later. Widening this list
 # is an owner decision: never add a licence just to make

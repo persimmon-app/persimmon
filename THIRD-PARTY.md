@@ -45,7 +45,7 @@ Persimmon doesn't use libvips's ImageMagick, poppler or libimagequant modules, a
 
 `persimmon-corpus` is a test-only crate and is never shipped. Its audio and video samples are made at test time by the test machine's FFmpeg.
 
-Transitive Rust dependencies (clap's own dependencies, for example) aren't listed one by one. Instead, `cargo deny check licenses` runs in CI on every push and fails the build if any dependency carries a licence not on the list in `deny.toml`. The full inventory, with every transitive crate and its licence, is generated for each release.
+Transitive Rust dependencies (clap's own dependencies, for example) aren't listed one by one. Instead, `cargo deny check licenses` runs in CI on every push and fails the build if any dependency carries a licence not on the list in `deny.toml`. The full inventory, with every crate compiled into `prsm` and its licence text, is generated for each release by [cargo-about](https://github.com/EmbarkStudios/cargo-about) (MIT OR Apache-2.0, a build tool, not shipped) and included in every release archive as `THIRD-PARTY-LICENSES.html`. Its configuration is `about.toml`, whose accepted licences mirror `deny.toml`.
 
 ## Never
 

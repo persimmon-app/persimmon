@@ -1,0 +1,184 @@
+# The release archives (DD-30): macOS arm64 and x64, Windows x64 and
+# Linux x64, each tested, packaged with its licences and a checksum.
+#
+# A pushed v* tag builds all four and creates a *draft* GitHub Release; a
+# maintainer reviews it and publishes it by hand. Run by hand
+# (workflow_dispatch), it builds and uploads the archives as artifacts only,
+# a dry run before tagging.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # A tag that doesn't match the workspace version stops here, before
+  # anything is built.
+  check:
+    runs-on: ubuntu-26.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      - name: Version matches the tag
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version=$(.github/scripts/version.sh "$GITHUB_REF_NAME")
+          else
+            version=$(.github/scripts/version.sh)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes exist
+        run: .github/scripts/notes.sh "${{ steps.version.outputs.version }}" > /dev/null
+
+  build:
+    needs: check
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # GitHub's last x86_64 macOS image.
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          # No libvips or libarchive on Windows until the port.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            features: --no-default-features
+          # Ubuntu 26.04 for FFmpeg 7 in the tests; the binary needs 26.04's
+          # libvips and libarchive, as the README says.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      # A runner image that changed architecture would build the wrong
+      # archive under the right name.
+      - name: Host is the target
+        shell: bash
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "host $host"
+          test "$host" = "${{ matrix.target }}"
+
+      - name: Install libvips, FFmpeg and libarchive (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vips ffmpeg libarchive pkgconf
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+      - name: Install libvips, FFmpeg and libarchive (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc ffmpeg libarchive-dev
+
+      # The real ffmpeg.exe ahead of Chocolatey's shims, as in CI.
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg-full -y --no-progress
+          $exe = Get-ChildItem C:\ProgramData\chocolatey\lib\ffmpeg-full -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe not found under the ffmpeg-full package" }
+          $exe.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Test
+        run: cargo test --workspace --locked ${{ matrix.features }}
+        env:
+          PERSIMMON_REQUIRE_FFMPEG: "1"
+
+      - name: Build release
+        run: cargo build -p persimmon-cli --release --locked ${{ matrix.features }}
+
+      # What the binary needs installed to start: the README's install
+      # section has to match these.
+      - name: Linked libraries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          otool -L target/release/prsm
+          vtool -show-build target/release/prsm | grep -q 'minos 14.0'
+
+      - name: Linked libraries (Linux)
+        if: runner.os == 'Linux'
+        run: ldd target/release/prsm
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+        env:
+          RUSTFLAGS: ""
+
+      - name: Licence inventory
+        run: cargo about generate --locked --offline -m crates/persimmon-cli/Cargo.toml ${{ matrix.features }} --target ${{ matrix.target }} about.hbs -o target/release/THIRD-PARTY-LICENSES.html
+
+      - name: Package
+        shell: bash
+        run: .github/scripts/package.sh "${{ matrix.target }}" "${{ needs.check.outputs.version }}" target/release dist
+
+      # Unpack what was packaged and run it, as a user would.
+      - name: Smoke test the archive
+        shell: bash
+        run: |
+          name="prsm-${{ needs.check.outputs.version }}-${{ matrix.target }}"
+          mkdir unpacked
+          if [[ "${{ runner.os }}" == Windows ]]; then
+            7z x -bso0 -ounpacked "dist/$name.zip"
+            bin="unpacked/$name/prsm.exe"
+          else
+            tar -xzf "dist/$name.tar.gz" -C unpacked
+            bin="unpacked/$name/prsm"
+          fi
+          "$bin" --version | grep -qx "prsm ${{ needs.check.outputs.version }}"
+          "$bin" formats > /dev/null
+          ls -l dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: prsm-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [check, build]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .github/scripts/notes.sh "${{ needs.check.outputs.version }}" > notes.md
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "Persimmon $GITHUB_REF_NAME" --notes-file notes.md dist/*
