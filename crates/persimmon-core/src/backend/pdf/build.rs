@@ -68,7 +68,7 @@ pub(crate) fn build(
     }
     // Drop everything no kept page reaches: the rest of each source.
     doc.prune_objects();
-    save(&mut doc, temp)?;
+    save(&mut doc, temp, &task.output)?;
     Ok(Done::Written)
 }
 
@@ -91,14 +91,15 @@ fn finish(doc: &mut Document, pages: ObjectId, kids: &[ObjectId]) {
     doc.trailer.set("Root", catalog);
 }
 
-/// Write `doc` to `temp`, with object and cross-reference streams.
-fn save(doc: &mut Document, temp: &Path) -> Result<(), Error> {
+/// Write `doc` to `temp`, with object and cross-reference streams. Errors
+/// name `output`, the file the user asked for.
+fn save(doc: &mut Document, temp: &Path, output: &Path) -> Result<(), Error> {
     let fail = |e: &dyn std::fmt::Display| {
         Error::new(
             ErrorCode::OutputNotWritable,
             format!("couldn't write the PDF ({e})"),
         )
-        .with_file(temp)
+        .with_file(output)
         .with_fix("choose another folder with --out <dir>")
     };
     let mut out = BufWriter::new(File::create(temp).map_err(|e| fail(&e))?);
@@ -599,6 +600,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A write failure names the output the user asked for, not the
+    /// executor's temporary file.
+    #[cfg(unix)]
+    #[test]
+    fn save_failure_names_the_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("save-fail");
+        let pdf = persimmon_corpus::pdf::write_pdf_sample(&dir, "pdf-text");
+        let job = Job {
+            op: Operation::Split,
+            inputs: vec![pdf],
+            target: Some(FormatId::Pdf),
+            output: OutputPolicy::default(),
+            options: JobOptions {
+                pages: Some(crate::job::PageRanges::parse("1").unwrap()),
+                ..JobOptions::default()
+            },
+        };
+        let mut plan = job.plan(&Registry::builtin());
+        let task = plan.tasks.remove(0);
+        let ro = dir.join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::File::create(ro.join("probe")).is_ok() {
+            return; // running as root
+        }
+        let e = build(
+            &task,
+            &job.options,
+            &ro.join("x.part"),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(e.code, ErrorCode::OutputNotWritable);
+        assert_eq!(e.file.as_deref(), Some(task.output.as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

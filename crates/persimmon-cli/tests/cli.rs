@@ -1161,3 +1161,166 @@ fn missing_ffmpeg_is_exit_4() {
     );
     assert!(err.contains("fix:"), "{err}");
 }
+
+/// Gate item 3: every error the corpus provokes names the file and a
+/// reason, never a temp file, never a panic, and gives a fix for the codes
+/// whose errors always have one.
+mod sweep {
+    use super::*;
+    use persimmon_core::detect::detect;
+    use persimmon_core::format::FormatId;
+    use persimmon_core::registry::{Operation, Registry};
+    use persimmon_corpus::archives::{ARCHIVE_SAMPLES, write_archive_sample};
+    use persimmon_corpus::media::{MEDIA_SAMPLES, media_sample};
+    use persimmon_corpus::pdf::{PDF_SAMPLES, write_pdf_sample};
+    use persimmon_corpus::{Expect, IMAGE_SAMPLES, RAR_SAMPLES};
+
+    /// Exit codes a run may end with: success and every documented failure
+    /// except INTERNAL (1).
+    const DOCUMENTED: [i32; 9] = [0, 2, 3, 4, 5, 6, 7, 8, 9];
+
+    /// libvips and GLib write their own warnings; deferred, not prsm's lines.
+    fn foreign(line: &str) -> bool {
+        line.is_empty() || line.contains("VIPS-WARNING") || line.contains("GLib")
+    }
+
+    /// Check one run's output. `names` are the names an error may give.
+    fn check(what: &str, out: &Output, names: &[String]) {
+        let code = out.status.code().unwrap_or(-1);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(DOCUMENTED.contains(&code), "{what}: exit {code}\n{err}");
+        for bad in ["panicked", ".prsm-", ".part"] {
+            assert!(!err.contains(bad), "{what}: stderr has {bad:?}\n{err}");
+        }
+        let lines: Vec<&str> = err.lines().filter(|l| !foreign(l)).collect();
+        let mut errors = 0;
+        for (i, l) in lines.iter().enumerate() {
+            let Some(rest) = l.strip_prefix("prsm: ") else {
+                assert!(
+                    l.starts_with("  fix: "),
+                    "{what}: stray stderr line {l:?}\n{err}"
+                );
+                continue;
+            };
+            errors += 1;
+            let (name, reason) = rest
+                .split_once(": ")
+                .unwrap_or_else(|| panic!("{what}: no file in {l:?}"));
+            assert!(
+                names.iter().any(|n| n == name),
+                "{what}: error names {name:?}, not one of {names:?}\n{err}"
+            );
+            assert!(!reason.trim().is_empty(), "{what}: empty reason in {l:?}");
+            if matches!(code, 4 | 6 | 8) {
+                assert!(
+                    lines.get(i + 1).is_some_and(|n| n.starts_with("  fix: ")),
+                    "{what}: exit {code} without a fix\n{err}"
+                );
+            }
+        }
+        if code != 0 {
+            assert!(errors > 0, "{what}: exit {code} with no error line\n{err}");
+        }
+    }
+
+    fn name_of(p: &Path) -> String {
+        p.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// `info`, then the natural job, for one file in `dir`.
+    fn sweep_one(reg: &Registry, dir: &Path, path: &Path) {
+        let name = name_of(path);
+        let info = prsm(dir, ["info", "--", name.as_str()]);
+        check(&format!("info {name}"), &info, std::slice::from_ref(&name));
+        // These two render successfully and take most of a minute; their
+        // pages are covered by the PDF backend's tests.
+        if ["many.pdf", "big-page.pdf"].contains(&name.as_str()) {
+            return;
+        }
+        let detected = detect(path, reg.formats()).ok().map(|d| d.format);
+        let mut args: Vec<String> = match detected {
+            Some(f) if reg.format(f).kind == persimmon_core::format::MediaKind::Archive => {
+                vec!["extract".into()]
+            }
+            Some(FormatId::Pdf) | None => vec!["convert".into(), "--to".into(), "png".into()],
+            Some(f) => {
+                let to = reg.targets(Operation::Convert, f);
+                let Some(to) = to.first() else { return };
+                vec!["convert".into(), "--to".into(), to.as_str().into()]
+            }
+        };
+        args.extend(["--out".into(), "out".into(), "--".into(), name.clone()]);
+        let out = prsm(dir, &args);
+        // An error may name the input or what it was writing: the output
+        // shares the input's stem.
+        let stem = name.split('.').next().unwrap_or(&name).to_string();
+        let mut names = vec![name.clone()];
+        if let Ok(rd) = std::fs::read_dir(dir.join("out")) {
+            names.extend(rd.map(|e| name_of(&e.unwrap().path())));
+        }
+        names.extend(
+            [
+                "png", "jpg", "jpeg", "webp", "mp4", "webm", "mov", "gif", "mp3", "m4a", "wav",
+                "flac", "opus", "pdf",
+            ]
+            .iter()
+            .map(|e| format!("{stem}.{e}")),
+        );
+        names.push(stem);
+        check(&format!("{} {name}", args[0]), &out, &names);
+    }
+
+    #[test]
+    fn every_corpus_failure_is_well_formed() {
+        let reg = Registry::builtin();
+        let dir = std::env::temp_dir().join(format!("prsm-cli-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cases = generate(&dir, &Options { large: false }).unwrap();
+        for case in &cases {
+            if case.path.is_file() {
+                if let Expect::Error(code) = case.expect {
+                    let name = name_of(&case.path);
+                    let out = prsm(&dir, ["info", "--", name.as_str()]);
+                    let want = persimmon_core::error::ErrorCode::ALL
+                        .iter()
+                        .find(|c| c.as_str() == code)
+                        .unwrap()
+                        .exit_code();
+                    assert_eq!(out.status.code(), Some(i32::from(want)), "info {name}");
+                }
+                sweep_one(&reg, &dir, &case.path);
+            }
+        }
+        let samples = dir.join("samples");
+        std::fs::create_dir_all(&samples).unwrap();
+        let mut files = Vec::new();
+        for (_, name, bytes, _) in IMAGE_SAMPLES {
+            std::fs::write(samples.join(name), bytes).unwrap();
+            files.push(samples.join(name));
+        }
+        for (_, name, bytes) in RAR_SAMPLES {
+            std::fs::write(samples.join(name), bytes).unwrap();
+            files.push(samples.join(name));
+        }
+        for (id, _, _) in PDF_SAMPLES {
+            files.push(write_pdf_sample(&samples, id));
+        }
+        for (id, _) in ARCHIVE_SAMPLES {
+            files.push(write_archive_sample(&samples, id));
+        }
+        for (id, _) in MEDIA_SAMPLES {
+            if id == "vid-long" {
+                continue; // the same shapes as vid-mp4, only slower
+            }
+            if let Some(src) = media_sample(id) {
+                let to = samples.join(src.file_name().unwrap());
+                std::fs::copy(&src, &to).unwrap();
+                files.push(to);
+            }
+        }
+        for f in &files {
+            sweep_one(&reg, &samples, f);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

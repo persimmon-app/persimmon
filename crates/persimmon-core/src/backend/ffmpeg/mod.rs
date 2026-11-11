@@ -84,13 +84,24 @@ pub(crate) fn file_url(path: &Path) -> OsString {
 }
 
 /// The last useful line of FFmpeg's stderr, for an error's reason: path
-/// prefixes removed, temp files never shown, at most 160 characters.
+/// and `[demuxer @ 0x…]` prefixes removed, FFmpeg's closing summaries
+/// skipped, temp files never shown, at most 160 characters.
 pub(crate) fn message(stderr: &str, paths: &[&Path]) -> String {
     let line = stderr
         .lines()
         .rev()
+        .filter(|l| {
+            let l = l.trim();
+            l != "Conversion failed!" && !l.starts_with("Error opening output files")
+        })
         .map(|l| {
             let mut l = l.trim();
+            if l.starts_with('[')
+                && let Some((tag, rest)) = l.split_once("] ")
+                && tag.contains(" @ 0x")
+            {
+                l = rest;
+            }
             for p in paths {
                 let p = p.display().to_string();
                 for prefix in [format!("file:{p}: "), format!("{p}: ")] {
@@ -110,6 +121,14 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn message_drops_stream_prefixes_and_summaries() {
+        let stderr = "[out#0/webm @ 0x6000013a8000] Error opening output file x.webm.\nError opening output files: Invalid argument\nConversion failed!\n";
+        assert_eq!(message(stderr, &[]), "Error opening output file x.webm.");
+        // Nothing useful left: the caller says how FFmpeg exited instead.
+        assert_eq!(message("Conversion failed!\n", &[]), "");
+    }
+
+    #[test]
     fn message_hides_paths() {
         let p = Path::new("/tmp/x/clip.mp4");
         let t = Path::new("/tmp/x/.prsm-1-0.part");
@@ -127,7 +146,7 @@ mod tests {
                 "Error opening output file:/tmp/x/.prsm-1-0.part.\nConversion failed!\n",
                 &[p, t]
             ),
-            "Conversion failed!"
+            ""
         );
         assert_eq!(message(&"x".repeat(400), &[p]).chars().count(), 160);
         assert_eq!(message("", &[p]), "");

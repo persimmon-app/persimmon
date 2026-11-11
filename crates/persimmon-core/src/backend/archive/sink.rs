@@ -116,6 +116,9 @@ pub(crate) struct Sink {
     written: HashMap<PathBuf, PathBuf>,
     /// Folder modification times, applied by `finish`.
     dir_times: Vec<(PathBuf, i64)>,
+    /// The archive's own path of each symlink recreated, so a hard link to
+    /// one can say so.
+    links: std::collections::HashSet<PathBuf>,
 }
 
 impl Sink {
@@ -128,6 +131,7 @@ impl Sink {
             names: HashMap::new(),
             written: HashMap::new(),
             dir_times: Vec::new(),
+            links: std::collections::HashSet::new(),
         }
     }
 
@@ -139,7 +143,16 @@ impl Sink {
         .with_file(&self.archive)
     }
 
-    fn not_writable(&self, name: &str, e: &dyn std::fmt::Display) -> Error {
+    /// A write that failed. A name the file system can't hold is the
+    /// archive's problem, so it gets no `--out` fix.
+    fn not_writable(&self, name: &str, e: &std::io::Error) -> Error {
+        if e.kind() == std::io::ErrorKind::InvalidFilename {
+            return Error::new(
+                ErrorCode::CorruptInput,
+                format!("it has a name this system can't hold: {name}"),
+            )
+            .with_file(&self.archive);
+        }
         Error::new(
             ErrorCode::OutputNotWritable,
             format!("couldn't write {name} ({e})"),
@@ -291,9 +304,10 @@ impl Sink {
             return Ok(());
         }
         std::fs::create_dir_all(&self.root).map_err(|e| self.not_writable(name, &e))?;
-        let (_, actual) = self.place(name, Kind::Leaf)?;
+        let (rel, actual) = self.place(name, Kind::Leaf)?;
         let path = self.root.join(&actual);
         self.clear_leaf(name, &path)?;
+        self.links.insert(rel);
         // A file replaced by a link is no longer a file a hard link may
         // copy: copying would follow the link outside the folder.
         self.written.retain(|_, written| *written != actual);
@@ -314,6 +328,13 @@ impl Sink {
             )
             .with_file(&self.archive)
         };
+        if self.links.contains(&source) && !self.written.contains_key(&source) {
+            return Err(Error::new(
+                ErrorCode::CorruptInput,
+                format!("it has a hard link to a link: {target}"),
+            )
+            .with_file(&self.archive));
+        }
         let from = self.written.get(&source).cloned().ok_or_else(missing)?;
         // Only ever copy a regular file the sink wrote, never through a link.
         if !std::fs::symlink_metadata(self.root.join(&from)).is_ok_and(|m| m.is_file()) {
@@ -494,6 +515,35 @@ mod tests {
         assert_eq!(e.reason, format!("it has an unsafe path: {name}"));
         assert_eq!(e.file.as_deref(), Some(dir.join("a.zip").as_path()));
         assert!(!escaped.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name too long for the file system is the archive's problem, not
+    /// the output folder's: no `--out` fix.
+    #[test]
+    fn overlong_name_is_corrupt_input() {
+        let dir = scratch("overlong");
+        let mut s = sink(&dir);
+        let long = format!("{}.txt", "a".repeat(296));
+        let e = put(&mut s, &long, b"x").unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput, "{}", e.reason);
+        assert_eq!(
+            e.reason,
+            format!("it has a name this system can't hold: {long}")
+        );
+        assert_eq!(e.fix, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_to_a_link_says_so() {
+        let dir = scratch("hard-to-link");
+        let mut s = sink(&dir);
+        s.symlink("l", "a.txt").unwrap();
+        let e = s.hardlink("b.txt", "l").unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput);
+        assert_eq!(e.reason, "it has a hard link to a link: l");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

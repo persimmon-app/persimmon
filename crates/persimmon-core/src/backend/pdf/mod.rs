@@ -95,6 +95,12 @@ pub fn pdf_info(path: &Path) -> Result<PdfInfo, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Backends;
+    use crate::exec::{CancelToken, Outcome, execute};
+    use crate::format::sniff;
+    use crate::job::{Job, JobOptions, PageRanges};
+    use crate::output::OutputPolicy;
+    use crate::registry::{Operation, Registry};
     use persimmon_corpus::pdf::write_pdf_sample;
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -124,6 +130,97 @@ mod tests {
                 "{id}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Run `op` through the real executor and backends; the one output.
+    fn run_job(
+        op: Operation,
+        inputs: Vec<std::path::PathBuf>,
+        to: FormatId,
+        pages: Option<&str>,
+    ) -> std::path::PathBuf {
+        let job = Job {
+            op,
+            inputs,
+            target: Some(to),
+            output: OutputPolicy::default(),
+            options: JobOptions {
+                pages: pages.map(|p| PageRanges::parse(p).unwrap()),
+                ..JobOptions::default()
+            },
+        };
+        let plan = job.plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        let results = execute(
+            &job,
+            &plan,
+            &Backends::new(),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        match results.as_slice() {
+            [Ok(Outcome::Written(p))] => p.clone(),
+            other => panic!("{op:?} → {to:?}: {other:?}"),
+        }
+    }
+
+    fn sniffed(path: &std::path::Path) -> Option<FormatId> {
+        let bytes = std::fs::read(path).unwrap();
+        sniff(&bytes[..bytes.len().min(64)])
+    }
+
+    /// Gate item 1 for PDF: every DD-28 PDF job, end to end.
+    #[test]
+    fn every_pdf_pair_converts() {
+        let dir = scratch("pairs");
+        // Images → PDF. Only JPEG goes in without libvips.
+        let mut images = vec!["img-jpeg"];
+        if cfg!(feature = "vips") {
+            images.extend(["img-webp", "img-heic", "img-tiff", "img-avif", "img-bmp"]);
+        }
+        let mut inputs: Vec<std::path::PathBuf> = images
+            .iter()
+            .map(|id| {
+                let (_, name, bytes, _) = persimmon_corpus::IMAGE_SAMPLES
+                    .iter()
+                    .find(|s| s.0 == *id)
+                    .unwrap();
+                let p = dir.join(name);
+                std::fs::write(&p, bytes).unwrap();
+                p
+            })
+            .collect();
+        if cfg!(feature = "vips") {
+            for (name, bytes) in [
+                ("pixel.png", &persimmon_corpus::PNG_1X1[..]),
+                ("pixel.gif", persimmon_corpus::GIF_1X1),
+            ] {
+                std::fs::write(dir.join(name), bytes).unwrap();
+                inputs.push(dir.join(name));
+            }
+        }
+        for input in inputs {
+            let out = run_job(Operation::Convert, vec![input.clone()], FormatId::Pdf, None);
+            assert_eq!(sniffed(&out), Some(FormatId::Pdf), "{input:?}");
+        }
+        // PDF → PNG and JPEG.
+        let pdf = write_pdf_sample(&dir, "pdf-text");
+        for to in [FormatId::Png, FormatId::Jpeg] {
+            let out = run_job(Operation::Convert, vec![pdf.clone()], to, Some("1"));
+            assert_eq!(sniffed(&out), Some(to));
+        }
+        // Merge and split.
+        let other = write_pdf_sample(&dir, "pdf-mixed");
+        let merged = run_job(
+            Operation::Merge,
+            vec![pdf.clone(), other],
+            FormatId::Pdf,
+            None,
+        );
+        assert_eq!(pdf_info(&merged).unwrap().pages, 6);
+        let split = run_job(Operation::Split, vec![pdf], FormatId::Pdf, Some("1"));
+        assert_eq!(pdf_info(&split).unwrap().pages, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

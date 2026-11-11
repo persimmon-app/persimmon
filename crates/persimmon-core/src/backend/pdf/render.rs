@@ -96,7 +96,7 @@ pub(crate) fn render(
     let selected = select_pages(options.pages.as_ref(), total).map_err(|e| e.with_file(input))?;
     let folder = selected.len() > 1;
     if folder {
-        std::fs::create_dir(temp).map_err(|e| not_writable(input, &e))?;
+        std::fs::create_dir(temp).map_err(|e| not_writable(&task.output, &e))?;
     }
     let stem = stem_of(input, &reg);
 
@@ -142,7 +142,7 @@ pub(crate) fn render(
         } else {
             temp.to_path_buf()
         };
-        write(&path, &rgb, (w, h), to, quality).map_err(|e| not_writable(input, &e))?;
+        write(&path, &rgb, (w, h), to, quality).map_err(|e| not_writable(&task.output, &e))?;
         progress((done + 1) as f32 / selected.len() as f32);
         if cancel.is_cancelled() {
             return Err(Error::new(ErrorCode::Cancelled, "cancelled").with_file(input));
@@ -170,12 +170,13 @@ fn write(
     }
 }
 
-fn not_writable(input: &Path, e: &dyn std::fmt::Display) -> Error {
+/// Errors name `output`, the file or folder the user asked for.
+fn not_writable(output: &Path, e: &dyn std::fmt::Display) -> Error {
     Error::new(
         ErrorCode::OutputNotWritable,
         format!("couldn't write the image ({e})"),
     )
-    .with_file(input)
+    .with_file(output)
     .with_fix("choose another folder with --out <dir>")
 }
 
@@ -330,6 +331,26 @@ mod tests {
             run(&task, &options, &temp).unwrap();
             assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 3, "{id}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_failure_names_the_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("write-fail");
+        let pdf = write_pdf_sample(&dir, "pdf-text");
+        let (task, options) = plan(&pdf, FormatId::Png, Some("1"));
+        let ro = dir.join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::File::create(ro.join("probe")).is_ok() {
+            return; // running as root
+        }
+        let e = run(&task, &options, &ro.join("x.part")).unwrap_err();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(e.code, ErrorCode::OutputNotWritable);
+        assert_eq!(e.file.as_deref(), Some(task.output.as_path()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

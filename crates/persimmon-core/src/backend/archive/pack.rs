@@ -33,6 +33,10 @@ const CANCELLED: &str = "prsm: cancelled";
 /// The error text a source that shrank while being packed carries back.
 pub(crate) const CHANGED: &str = "prsm: the file changed while it was packed";
 
+/// Marks a read error from a source file, so it's reported against the
+/// source rather than the archive being written.
+const READ_FAILED: &str = "prsm: read failed: ";
+
 /// Exactly `len` bytes of `inner`: a file that grew is cut at the size its
 /// tar header already states, and one that shrank is an error rather than
 /// an archive whose header and data disagree.
@@ -228,7 +232,11 @@ impl Read for Feed<'_> {
         if p.cancel.is_cancelled() {
             return Err(std::io::Error::other(CANCELLED));
         }
-        let n = self.file.read(buf)?;
+        let n = self.file.read(buf).map_err(|e| match e.kind() {
+            // io::copy retries these.
+            std::io::ErrorKind::Interrupted => e,
+            _ => std::io::Error::other(format!("{READ_FAILED}{e}")),
+        })?;
         p.done.set(p.done.get() + n as u64);
         let f = (p.done.get() as f32 / p.total.max(1) as f32).min(1.0);
         if f >= p.last.get() + 0.01 {
@@ -316,6 +324,8 @@ fn write_error(output: &Path, source: &Path, e: &dyn std::fmt::Display) -> Error
     let text = e.to_string();
     if text.contains(CANCELLED) {
         Error::new(ErrorCode::Cancelled, "cancelled")
+    } else if let Some((_, cause)) = text.split_once(READ_FAILED) {
+        unreadable(source, &cause)
     } else if text.contains(CHANGED) {
         Error::new(
             ErrorCode::UnsupportedInput,
@@ -441,6 +451,7 @@ fn write_tar_gz(
 #[cfg(test)]
 mod tests {
     use super::super::tests::{assert_tree, extract, scratch};
+    use super::{Feed, Packing, write_error};
     use crate::error::{Error, ErrorCode};
     use crate::exec::{CancelToken, Outcome, execute};
     use crate::format::FormatId;
@@ -448,6 +459,8 @@ mod tests {
     use crate::output::OutputPolicy;
     use crate::registry::{Operation, Registry};
     use persimmon_corpus::archives::write_archive_sample;
+    use std::cell::Cell;
+    use std::fs::File;
     use std::path::{Path, PathBuf};
 
     /// Pack `inputs` into `to` through the executor; the archive's path.
@@ -575,6 +588,37 @@ mod tests {
             let out = extract(&dir, packed).unwrap();
             assert_eq!(std::fs::read_to_string(out.join("a.txt")).unwrap(), "a");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A source that fails while it's being read is the source's fault,
+    /// not the output folder's.
+    #[test]
+    fn source_read_error_names_the_source() {
+        let dir = scratch("read-error");
+        let source = write(&dir, "a.txt", "text");
+        let output = dir.join("out.zip");
+        let cancel = CancelToken::new();
+        let packing = Packing {
+            output: &output,
+            done: Cell::new(0),
+            total: 4,
+            last: Cell::new(0.0),
+            cancel: &cancel,
+        };
+        // Opened for writing only, so reading it fails.
+        let file = File::options().write(true).open(&source).unwrap();
+        let mut feed = Feed {
+            file,
+            packing: &packing,
+            progress: &mut |_| {},
+        };
+        let e = std::io::copy(&mut feed, &mut std::io::sink()).unwrap_err();
+        let e = write_error(&output, &source, &e);
+        assert_eq!(e.code, ErrorCode::UnsupportedInput, "{}", e.reason);
+        assert!(e.reason.starts_with("can't read this file"), "{}", e.reason);
+        assert_eq!(e.file.as_deref(), Some(source.as_path()));
+        assert_eq!(e.fix, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
