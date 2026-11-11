@@ -67,6 +67,32 @@ fn section(text: &str, op: &str) -> Vec<String> {
 }
 
 #[test]
+fn max_size_over_i32_is_usage() {
+    let c = Corpus::new("max-size-cap");
+    let out = prsm(
+        &c.dir,
+        [
+            "convert",
+            "pixel.png",
+            "--to",
+            "jpeg",
+            "--max-size",
+            "3000000000",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
+#[test]
+fn compress_help_has_no_pages() {
+    let out = prsm(Path::new("."), ["compress", "--help"]);
+    assert!(out.status.success());
+    assert!(!stdout(&out).contains("--pages"), "{}", stdout(&out));
+    let out = prsm(Path::new("."), ["convert", "--help"]);
+    assert!(stdout(&out).contains("--pages"), "{}", stdout(&out));
+}
+
+#[test]
 fn formats_lists_heic_to_jpeg() {
     let out = prsm(Path::new("."), ["formats"]);
     assert!(out.status.success());
@@ -842,11 +868,22 @@ mod media {
     /// wait until FFmpeg is writing. Returns the child and its folder.
     #[cfg(unix)]
     fn start_long_video(test: &str) -> Option<(std::process::Child, TempDir)> {
+        start_long_video_after(test, &[])
+    }
+
+    /// [`start_long_video`], with `before` as inputs ahead of `long.mp4`.
+    #[cfg(unix)]
+    fn start_long_video_after(
+        test: &str,
+        before: &[&str],
+    ) -> Option<(std::process::Child, TempDir)> {
         use std::os::unix::process::CommandExt;
         let (dir, _) = sample(test, "vid-long")?;
         let child = Command::new(PRSM)
             .current_dir(&dir)
-            .args(["convert", "long.mp4", "--to", "webm"])
+            .arg("convert")
+            .args(before)
+            .args(["long.mp4", "--to", "webm"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .process_group(0)
@@ -940,6 +977,69 @@ mod media {
             .status()
             .unwrap();
         assert_cancelled_cleanly(child, &dir);
+    }
+
+    /// Cancelling wins over an earlier failure: a script must be able to
+    /// tell that the user interrupted the batch.
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_c_after_a_failure_exits_130() {
+        let Some((child, dir)) = start_long_video_after("ctrl-c-after-fail", &["missing.mov"])
+        else {
+            return;
+        };
+        Command::new("kill")
+            .args(["-INT", &format!("-{}", child.id())])
+            .status()
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(130), "{err}");
+        assert_eq!(err.matches("prsm: missing.mov:").count(), 1, "{err}");
+        assert_eq!(err.matches("cancelled").count(), 1, "{err}");
+        assert!(!has_part(&dir), "a .part was left");
+    }
+
+    /// Skipped files don't each get a "cancelled" line.
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_c_mid_batch_prints_one_cancelled_line() {
+        use std::io::BufRead;
+        use std::os::unix::process::CommandExt;
+        let Some((dir, first)) = sample("one-cancelled-line", "aud-flac") else {
+            return;
+        };
+        let mut args = vec!["convert".to_string(), "--to".into(), "wav".into()];
+        for i in 0..60 {
+            let name = format!("t{i:02}.flac");
+            std::fs::copy(&first, dir.join(&name)).unwrap();
+            args.push(name);
+        }
+        let mut child = Command::new(PRSM)
+            .current_dir(&dir)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        Command::new("kill")
+            .args(["-INT", &format!("-{}", child.id())])
+            .status()
+            .unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut rest).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(130), "{err}");
+        assert_eq!(
+            err.lines().filter(|l| l.contains("cancelled")).count(),
+            1,
+            "{err}"
+        );
     }
 
     #[cfg(unix)]

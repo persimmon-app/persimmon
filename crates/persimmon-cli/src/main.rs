@@ -51,6 +51,9 @@ enum Command {
         out: OutArgs,
         #[command(flatten)]
         tune: TuneArgs,
+        /// PDF to images: only these pages, e.g. 1-3,5.
+        #[arg(long, value_name = "RANGES")]
+        pages: Option<String>,
     },
     /// Make files smaller, keeping their format.
     Compress {
@@ -124,14 +127,11 @@ struct TuneArgs {
     #[arg(long, value_name = "PATH")]
     ffmpeg: Option<PathBuf>,
     /// Images and video: shrink so the long edge is at most this many pixels.
-    #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
     max_size: Option<u32>,
     /// Remove metadata: EXIF, XMP, tags and colour profiles (images convert to sRGB first).
     #[arg(long)]
     strip_metadata: bool,
-    /// PDF to images: only these pages, e.g. 1-3,5.
-    #[arg(long, value_name = "RANGES")]
-    pages: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -182,8 +182,13 @@ fn main() -> ExitCode {
             to,
             out,
             tune,
+            pages,
         } => parse_target(&reg, &to)
-            .and_then(|target| Ok((target, tune.options()?)))
+            .and_then(|target| {
+                let mut options = tune.options()?;
+                options.pages = pages.as_deref().map(PageRanges::parse).transpose()?;
+                Ok((target, options))
+            })
             .map_err(fail)
             .and_then(|(target, options)| {
                 run(&reg, Operation::Convert, files, Some(target), out, options)
@@ -236,7 +241,7 @@ fn main() -> ExitCode {
 }
 
 impl TuneArgs {
-    /// The job options these flags ask for. A bad `--pages` is an error.
+    /// The job options these flags ask for.
     fn options(&self) -> Result<JobOptions, Error> {
         Ok(JobOptions {
             quality: self.quality.map(Quality::from),
@@ -244,7 +249,7 @@ impl TuneArgs {
             ffmpeg: self.ffmpeg.clone(),
             max_size: self.max_size,
             strip_metadata: self.strip_metadata,
-            pages: self.pages.as_deref().map(PageRanges::parse).transpose()?,
+            pages: None,
         })
     }
 }
@@ -329,10 +334,20 @@ fn label(op: Operation, task: &PlannedTask) -> String {
     }
 }
 
-/// Report an error, and remember it if it's the batch's first.
+/// Report an error, and remember it if it's the batch's first. Only the
+/// first cancelled task is reported: the rest were skipped by the same
+/// Ctrl-C.
 fn note(e: &Error, first: &mut Option<ErrorCode>) {
+    if e.code == ErrorCode::Cancelled && *first == Some(ErrorCode::Cancelled) {
+        return;
+    }
     report(e);
-    first.get_or_insert(e.code);
+    if e.code == ErrorCode::Cancelled {
+        // A cancelled batch exits 130 whatever failed before it.
+        *first = Some(ErrorCode::Cancelled);
+    } else {
+        first.get_or_insert(e.code);
+    }
 }
 
 /// The first Ctrl-C, SIGTERM or closed terminal (SIGHUP) cancels: a video
@@ -474,6 +489,9 @@ fn run(
             if let Err(e) = slot {
                 note(e, &mut first);
             }
+        }
+        if cancel.is_cancelled() {
+            first = Some(ErrorCode::Cancelled);
         }
     }
     match first {

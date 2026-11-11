@@ -78,7 +78,7 @@ prsm merge --to zip notes/ photo.jpg             # merged.zip; also --to tar.gz
 prsm convert clip.mov --to mp4 --dry-run         # show what would be written, write nothing
 ```
 
-`prsm` never overwrites a file unless you pass `--overwrite`. A clash becomes `name (1).ext`; a folder (rendered pages, an extracted archive) is never replaced, even with `--overwrite`. Extracting never writes outside its folder: an archive with an absolute path, a `..`, or a path through a link fails as a whole, and nothing is written. Output goes next to each source unless `--out <dir>` says otherwise. Ctrl-C stops a video at once and a PDF after the page it's on, lets an image in progress finish, skips the rest, and leaves no partial files behind. Closing the terminal or sending SIGTERM does the same. On a terminal, audio, video and PDFs show their progress as they convert.
+`prsm` never overwrites a file unless you pass `--overwrite`. A clash becomes `name (1).ext`; a folder (rendered pages, an extracted archive) is never replaced, even with `--overwrite`. Extracting never writes outside its folder: an archive with an absolute path, a `..`, or a path through a link fails as a whole, and nothing is written. Output goes next to each source unless `--out <dir>` says otherwise. Ctrl-C stops a video at once and a PDF after the page it's on, lets an image in progress finish, skips the rest, and leaves no partial files behind. Closing the terminal or sending SIGTERM does the same. A second Ctrl-C quits at once and may leave a `.part` file. On a terminal, audio, video and PDFs show their progress as they convert.
 
 `prsm formats` lists every conversion, and `prsm info <file>` says what a file is and what it can become.
 
@@ -104,7 +104,7 @@ Exit 10 was `NOT_IMPLEMENTED` before every backend existed. It is retired and ne
 
 ### Batches
 
-When a command takes several inputs, `prsm` keeps going after a failure. It exits 0 only if every input succeeded. Otherwise it exits with the code of the **first failing input, in argument order**.
+When a command takes several inputs, `prsm` keeps going after a failure. It exits 0 only if every input succeeded. Otherwise it exits with the code of the **first failing input, in argument order**. The one exception is cancelling: a batch you cancel exits 130, even if an input before it failed, so a script can always tell it was interrupted. Only the first input that was cancelled or skipped gets a `cancelled` line.
 
 ### Error messages
 

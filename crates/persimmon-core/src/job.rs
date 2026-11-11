@@ -294,7 +294,13 @@ impl Job {
                 free_name(&dir, &stem, ext, ow, taken)
             }
             Operation::Compress => {
-                let ext = reg.format(from).extensions[0];
+                // Keep the source's own spelling: `scan.tif` stays `.tif`.
+                let exts = reg.format(from).extensions;
+                let own = input
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(|e| exts.iter().find(|x| x.eq_ignore_ascii_case(e)));
+                let ext = own.copied().unwrap_or(exts[0]);
                 free_name(&dir, &format!("{stem} (compressed)"), ext, ow, taken)
             }
             // An extracted folder is never replaced (DD-37).
@@ -478,10 +484,12 @@ fn unsupported(reg: &Registry, op: Operation, from: FormatId, to: Option<FormatI
         }
         (op, _) => format!("can't {} {from_name} files", op.as_str()),
     };
-    Error::new(ErrorCode::UnsupportedConversion, reason).with_fix(format!(
-        "run prsm formats to see what {} can become",
-        from.as_str()
-    ))
+    let fix = if op == Operation::Convert && to == Some(from) {
+        "to resize or strip metadata in the same format, use prsm compress".to_string()
+    } else {
+        format!("run prsm formats to see what {} can become", from.as_str())
+    };
+    Error::new(ErrorCode::UnsupportedConversion, reason).with_fix(fix)
 }
 
 #[cfg(test)]
@@ -659,6 +667,36 @@ mod tests {
         let p = put(&dir, "photo.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
         let plan = job(Operation::Compress, vec![p], None).plan(&Registry::builtin());
         assert_eq!(outputs(&plan), vec![dir.join("photo (compressed).jpg")]);
+    }
+
+    #[test]
+    fn compress_keeps_tif_extension() {
+        let dir = scratch("compress-tif");
+        let tif = put(&dir, "scan.tif", b"II*\0");
+        let tiff = put(&dir, "other.tiff", b"II*\0");
+        let plan = job(Operation::Compress, vec![tif, tiff], None).plan(&Registry::builtin());
+        assert_eq!(
+            outputs(&plan),
+            vec![
+                dir.join("scan (compressed).tif"),
+                dir.join("other (compressed).tiff")
+            ]
+        );
+    }
+
+    #[test]
+    fn same_format_convert_points_at_compress() {
+        let dir = scratch("same-format");
+        let p = put(&dir, "photo.jpg", &[0xFF, 0xD8, 0xFF, 0xE0]);
+        let plan =
+            job(Operation::Convert, vec![p], Some(FormatId::Jpeg)).plan(&Registry::builtin());
+        let e = &plan.errors[0];
+        assert_eq!(e.code, ErrorCode::UnsupportedConversion);
+        assert_eq!(e.reason, "can't convert JPEG to JPEG");
+        assert_eq!(
+            e.fix.as_deref(),
+            Some("to resize or strip metadata in the same format, use prsm compress")
+        );
     }
 
     #[test]
