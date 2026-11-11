@@ -376,10 +376,13 @@ impl Sink {
         // in `._name` beside it: the top folder's own sidecar doesn't count.
         let is_dir = |e: &std::fs::DirEntry| e.file_type().is_ok_and(|t| t.is_dir());
         let dirs: Vec<_> = entries.iter().filter(|e| is_dir(e)).collect();
+        // Only with exactly one folder, and only a regular file: a `._tree`
+        // folder is content, not a sidecar.
         let own_sidecar = |e: &std::fs::DirEntry| {
-            dirs.first().is_some_and(|d| {
-                e.file_name().to_string_lossy() == format!("._{}", d.file_name().to_string_lossy())
-            })
+            let [d] = dirs.as_slice() else { return false };
+            e.file_type().is_ok_and(|t| t.is_file())
+                && e.file_name().to_string_lossy()
+                    == format!("._{}", d.file_name().to_string_lossy())
         };
         let rest: Vec<_> = entries.iter().filter(|e| !own_sidecar(e)).collect();
         if let [only] = rest.as_slice()
@@ -601,6 +604,20 @@ mod tests {
         assert_eq!(read(&dir, "a.txt"), "a");
         assert!(!dir.join("out/tree").exists());
         assert!(!dir.join("out/._tree").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `._tree` *folder* isn't a sidecar: no unwrap, and the extraction
+    /// still succeeds, whichever order the folder lists them in.
+    #[test]
+    fn appledouble_named_folder_is_kept() {
+        let dir = scratch("unwrap-dot-folder");
+        let mut s = sink(&dir);
+        put(&mut s, "tree/a.txt", b"a").unwrap();
+        put(&mut s, "._tree/b.txt", b"b").unwrap();
+        s.finish("tree").unwrap();
+        assert_eq!(read(&dir, "tree/a.txt"), "a");
+        assert_eq!(read(&dir, "._tree/b.txt"), "b");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

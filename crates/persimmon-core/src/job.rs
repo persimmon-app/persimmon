@@ -484,7 +484,11 @@ fn unsupported(reg: &Registry, op: Operation, from: FormatId, to: Option<FormatI
         }
         (op, _) => format!("can't {} {from_name} files", op.as_str()),
     };
-    let fix = if op == Operation::Convert && to == Some(from) {
+    // Point at compress only where compress takes the format.
+    let fix = if op == Operation::Convert
+        && to == Some(from)
+        && reg.find(Operation::Compress, from, None).is_some()
+    {
         "to resize or strip metadata in the same format, use prsm compress".to_string()
     } else {
         format!("run prsm formats to see what {} can become", from.as_str())
@@ -696,6 +700,14 @@ mod tests {
         assert_eq!(
             e.fix.as_deref(),
             Some("to resize or strip metadata in the same format, use prsm compress")
+        );
+        // Compress can't take a PDF: no pointing the user at another error.
+        let pdf = put(&dir, "doc.pdf", &minimal_pdf());
+        let plan =
+            job(Operation::Convert, vec![pdf], Some(FormatId::Pdf)).plan(&Registry::builtin());
+        assert_eq!(
+            plan.errors[0].fix.as_deref(),
+            Some("run prsm formats to see what pdf can become")
         );
     }
 

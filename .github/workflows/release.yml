@@ -59,10 +59,13 @@ jobs:
           # GitHub's last x86_64 macOS image.
           - target: x86_64-apple-darwin
             os: macos-15-intel
-          # No libvips or libarchive on Windows until the port.
+          # No libvips or libarchive on Windows until the port. The C
+          # runtime is linked in, so prsm.exe starts without the Visual C++
+          # Redistributable.
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             features: --no-default-features
+            rustflags: -C target-feature=+crt-static
           # Ubuntu 26.04 for FFmpeg 7 in the tests; the binary needs 26.04's
           # libvips and libarchive, as the README says.
           - target: x86_64-unknown-linux-gnu
@@ -112,6 +115,8 @@ jobs:
 
       - name: Build release
         run: cargo build -p persimmon-cli --release --locked ${{ matrix.features }}
+        env:
+          RUSTFLAGS: -D warnings ${{ matrix.rustflags }}
 
       # What the binary needs installed to start: the README's install
       # section has to match these.
@@ -125,10 +130,27 @@ jobs:
         if: runner.os == 'Linux'
         run: ldd target/release/prsm
 
+      # Nothing beyond what every Windows has: no VCRUNTIME140.dll.
+      - name: Linked libraries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+          $deps = & $dumpbin /dependents target\release\prsm.exe
+          $deps
+          if ($deps -match "VCRUNTIME|MSVCP") { throw "prsm.exe needs the Visual C++ runtime" }
+
       - name: Install cargo-about
         run: cargo install cargo-about --locked --version 0.9.3 --features cli
         env:
           RUSTFLAGS: ""
+
+      # cargo-about reads the whole dependency graph, every platform's
+      # crates included, and the build above fetched only this one's.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
 
       - name: Licence inventory
         run: cargo about generate --locked --offline -m crates/persimmon-cli/Cargo.toml ${{ matrix.features }} --target ${{ matrix.target }} about.hbs -o target/release/THIRD-PARTY-LICENSES.html
