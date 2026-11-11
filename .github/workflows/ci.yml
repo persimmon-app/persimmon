@@ -86,8 +86,9 @@ jobs:
           PERSIMMON_REQUIRE_FFMPEG: "1"
 
       # The licence guard (DD-04): every Rust dependency, direct or
-      # transitive, must carry a licence on the deny.toml list. Once is
-      # enough, so it runs on Ubuntu only.
+      # transitive, must carry a licence on the deny.toml list. The
+      # advisories check fails on a dependency with a known security
+      # advisory. Once is enough, so both run on Ubuntu only.
       # RUSTFLAGS is cleared here: -D warnings is for our code, not for
       # building a tool.
       - name: Install cargo-deny
@@ -96,9 +97,9 @@ jobs:
         env:
           RUSTFLAGS: ""
 
-      - name: Check licences
+      - name: Check licences and advisories
         if: runner.os == 'Linux'
-        run: cargo deny check licenses
+        run: cargo deny check licenses advisories
 
       - name: Build release
         run: cargo build --workspace --release --locked ${{ matrix.features }}

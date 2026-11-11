@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "persimmon-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "persimmon-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bzip2",
  "compress-tools",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "persimmon-corpus"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bzip2",
  "flate2",
