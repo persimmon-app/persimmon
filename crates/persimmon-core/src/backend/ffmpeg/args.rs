@@ -107,7 +107,10 @@ pub(crate) fn build_args(
         input,
         has_encoder,
     };
-    a.push("-nostdin -hide_banner -loglevel error -nostats -progress pipe:1 -y -i");
+    // Local files and the progress pipe only (DD-11), whatever the input
+    // asks to open.
+    a.push("-nostdin -hide_banner -loglevel error -nostats -progress pipe:1 -y");
+    a.push("-protocol_whitelist file,pipe -i");
     a.arg(file_url(input));
     match out {
         Mp4 | Mov | Webm => video_target(&mut a, task, info, options, out)?,
@@ -480,7 +483,7 @@ mod tests {
             &JobOptions::default(),
         );
         assert!(
-            a.starts_with("-nostdin -hide_banner -loglevel error -nostats -progress pipe:1 -y -i file:/tmp/in.x "),
+            a.starts_with("-nostdin -hide_banner -loglevel error -nostats -progress pipe:1 -y -protocol_whitelist file,pipe -i file:/tmp/in.x "),
             "{a}"
         );
         assert!(a.ends_with(&format!("-f mp4 file:{TEMP}")), "{a}");
@@ -857,6 +860,31 @@ mod tests {
             &|e| e != "libx264",
         )
         .unwrap();
+    }
+
+    /// DD-11 by construction: FFmpeg may open local files and its own
+    /// progress pipe, nothing else, however the input is crafted.
+    #[test]
+    fn inputs_are_local_only() {
+        let reg = crate::registry::Registry::builtin();
+        for cap in reg.capabilities() {
+            if cap.backend != Backend::Ffmpeg {
+                continue;
+            }
+            let from = cap.from;
+            let info = if reg.format(from).kind == crate::format::MediaKind::Audio {
+                tone("aac")
+            } else {
+                clip("h264", "aac")
+            };
+            let a = build(&task(from, cap.to), &info, &JobOptions::default()).unwrap();
+            assert_eq!(a.matches(" -i ").count(), 1, "{a}");
+            assert!(
+                a.contains(" -protocol_whitelist file,pipe -i "),
+                "{from:?} → {:?}: {a}",
+                cap.to
+            );
+        }
     }
 
     #[test]

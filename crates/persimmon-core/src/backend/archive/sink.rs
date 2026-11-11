@@ -116,6 +116,9 @@ pub(crate) struct Sink {
     written: HashMap<PathBuf, PathBuf>,
     /// Folder modification times, applied by `finish`.
     dir_times: Vec<(PathBuf, i64)>,
+    /// Names chosen by numbering, per folder (folded), so a real entry of
+    /// the same name is numbered in turn instead of replacing it.
+    numbered: std::collections::HashSet<(PathBuf, String)>,
     /// The archive's own path of each symlink recreated, so a hard link to
     /// one can say so.
     links: std::collections::HashSet<PathBuf>,
@@ -131,6 +134,7 @@ impl Sink {
             names: HashMap::new(),
             written: HashMap::new(),
             dir_times: Vec::new(),
+            numbered: std::collections::HashSet::new(),
             links: std::collections::HashSet::new(),
         }
     }
@@ -182,8 +186,15 @@ impl Sink {
             let leaf = i + 1 == parts.len();
             let key = (actual.clone(), fold(part));
             let chosen = match self.names.get(&key).cloned() {
-                // Folders merge into the first spelling; so do repeats.
-                Some(existing) if !leaf || kind == Kind::Dir || existing == *part => existing,
+                // Folders merge into the first spelling; so do repeats, unless
+                // the name was one a clash was numbered to.
+                Some(existing)
+                    if !leaf
+                        || kind == Kind::Dir
+                        || (existing == *part && !self.numbered.contains(&key)) =>
+                {
+                    existing
+                }
                 Some(_) => {
                     let mut n = 1;
                     while self
@@ -195,6 +206,7 @@ impl Sink {
                     let name = numbered(part, n);
                     self.names
                         .insert((actual.clone(), fold(&name)), name.clone());
+                    self.numbered.insert((actual.clone(), fold(&name)));
                     name
                 }
                 None => {
@@ -544,6 +556,23 @@ mod tests {
         let e = s.hardlink("b.txt", "l").unwrap_err();
         assert_eq!(e.code, ErrorCode::CorruptInput);
         assert_eq!(e.reason, "it has a hard link to a link: l");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real entry whose name a clash already took gets its own number:
+    /// nothing is overwritten.
+    #[test]
+    fn real_name_after_numbered_clash_is_numbered_again() {
+        let dir = scratch("renumber");
+        let mut s = sink(&dir);
+        put(&mut s, "A.txt", b"upper").unwrap();
+        put(&mut s, "a.txt", b"lower").unwrap();
+        put(&mut s, "a (1).txt", b"real").unwrap();
+        s.finish("other").unwrap();
+        assert_eq!(read(&dir, "A.txt"), "upper");
+        assert_eq!(read(&dir, "a (1).txt"), "lower");
+        // Numbered by its own name, as every clash is.
+        assert_eq!(read(&dir, "a (1) (1).txt"), "real");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -96,8 +96,7 @@ impl Ffmpeg {
     /// terminal's Ctrl-C reaches it too) is `CANCELLED`.
     pub fn probe_with(&self, path: &Path, cancel: &CancelToken) -> Result<MediaInfo, Error> {
         let out = Command::new(&self.ffprobe)
-            .args(["-v", "error", "-show_entries", ENTRIES, "-of", "flat"])
-            .arg(file_url(path))
+            .args(probe_args(path))
             .stdin(Stdio::null())
             .output()
             .map_err(|e| {
@@ -189,9 +188,35 @@ fn rate(v: &str) -> Option<f64> {
     (a > 0.0 && b > 0.0).then(|| a / b)
 }
 
+/// ffprobe's arguments for `path`.
+fn probe_args(path: &Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> =
+        ["-v", "error", "-show_entries", ENTRIES, "-of", "flat"]
+            .map(Into::into)
+            .to_vec();
+    // Local files only (DD-11), whatever the file asks to open.
+    args.extend(["-protocol_whitelist".into(), "file".into()]);
+    args.push(file_url(path));
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_is_local_only() {
+        let args: Vec<String> = probe_args(Path::new("/tmp/x.mov"))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let n = args.len();
+        assert_eq!(
+            args[n - 3..],
+            ["-protocol_whitelist", "file", "file:/tmp/x.mov"],
+            "{args:?}"
+        );
+    }
     use crate::error::ErrorCode;
     use persimmon_corpus::media::{media_sample, test_ffmpeg};
 
