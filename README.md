@@ -4,7 +4,7 @@
 
 An open-source file conversion toolkit for Linux, Windows and macOS. Everything runs locally; there is no network code in the build.
 
-> Pre-release. Every v0.1 job works today: `prsm` converts and compresses images, audio and video; makes, merges, splits and renders PDFs; and extracts and creates archives.
+> Version 0.1, the command line. Today `prsm` converts and compresses images, audio and video; makes, merges, splits and renders PDFs; and extracts and creates archives.
 >
 > **macOS comes first.** The engine and CLI are platform-neutral and build on all three from the first commit, but the GUI and shell integration are built out on macOS through to v1.0 before Windows and Linux begin.
 
@@ -15,6 +15,38 @@ An open-source file conversion toolkit for Linux, Windows and macOS. Everything 
 **Out:** editing, timelines, colour grading, cloud sync, accounts, AI features, mobile.
 
 This boundary is a decision, not an oversight.
+
+## Installing
+
+### Release archives
+
+Each [GitHub Release](https://github.com/persimmon-app/persimmon/releases) has one archive per platform, each with a `.sha256` checksum beside it. Every archive holds `prsm`, this README, the licence, `THIRD-PARTY.md` and `THIRD-PARTY-LICENSES.html`.
+
+| Archive | For | Install first |
+|---|---|---|
+| `prsm-<version>-aarch64-apple-darwin.tar.gz` | macOS 14 or later, Apple silicon | `brew install vips libarchive ffmpeg` |
+| `prsm-<version>-x86_64-apple-darwin.tar.gz` | macOS 14 or later, Intel | `brew install vips libarchive ffmpeg` |
+| `prsm-<version>-x86_64-unknown-linux-gnu.tar.gz` | Ubuntu 26.04 or later, x86-64 | `sudo apt-get install libvips42t64 libheif-plugin-libde265 libheif-plugin-dav1d libheif-plugin-aomenc libarchive13t64 ffmpeg` |
+| `prsm-<version>-x86_64-pc-windows-msvc.zip` | Windows 10 or later, x86-64 | `winget install Gyan.FFmpeg` |
+
+The macOS and Linux binaries link the system's libvips and libarchive, so **without those installed, `prsm` won't start at all**. FFmpeg is needed only for audio and video; without it, those conversions fail with `BACKEND_MISSING` and everything else works. The Windows build has no image conversions and no RAR extraction yet: those fail with `BACKEND_MISSING`.
+
+The binaries aren't signed. On macOS, after unpacking, clear the quarantine flag once, or Gatekeeper refuses to run `prsm`:
+
+```sh
+xattr -d com.apple.quarantine prsm
+```
+
+Then put `prsm` somewhere on your `PATH`, such as `/usr/local/bin` or `~/.local/bin`.
+
+### With Cargo
+
+```sh
+brew install vips libarchive pkgconf    # macOS; on Debian and Ubuntu, the -dev packages under Building
+cargo install persimmon-cli
+```
+
+Without libvips and libarchive, use `cargo install persimmon-cli --no-default-features`: image conversions and RAR extraction then fail with `BACKEND_MISSING`, and everything else works.
 
 ## Building
 
@@ -36,7 +68,7 @@ cargo build --release
 
 RAR archives are read by [libarchive](https://www.libarchive.org/)'s own reader (never unRAR), which must be installed too: `brew install libarchive` on macOS, `sudo apt-get install libarchive-dev` on Debian and Ubuntu. ZIP, TAR (plain, gz, bz2, xz, zst) and 7z need nothing installed.
 
-To build without libvips and libarchive, add `--no-default-features`. Image conversions and RAR extraction then fail with `BACKEND_MISSING`; everything else works.
+A default build links libvips and libarchive, so it won't start where they aren't installed. To build without them, add `--no-default-features`. Image conversions and RAR extraction then fail with `BACKEND_MISSING`; everything else works.
 
 Audio and video go through [FFmpeg](https://ffmpeg.org/) 7 or later, which `prsm` runs as a separate program; it is never built in. `prsm` uses the `ffmpeg` on your `PATH`, with `ffprobe` beside it, or the one you name with `--ffmpeg <path>`:
 
@@ -116,6 +148,7 @@ Errors go to stderr as `prsm: {file}: {reason}`, followed by `  fix: {fix}` on t
 |---|---|
 | [`crates/`](crates) | The Rust workspace: `persimmon-core` and `persimmon-cli` (`prsm`). |
 | [`THIRD-PARTY.md`](THIRD-PARTY.md) | Licence inventory of everything bundled or linked. |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release. |
 
 ## Licence
 

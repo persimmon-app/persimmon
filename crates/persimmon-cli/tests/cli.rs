@@ -1324,3 +1324,24 @@ mod sweep {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The README's install section covers every release archive and what each
+/// one needs before `prsm` starts.
+#[test]
+fn readme_lists_every_release_archive() {
+    let readme = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+    )
+    .unwrap();
+    for needle in [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "xattr -d com.apple.quarantine",
+        "brew install vips libarchive ffmpeg",
+        "cargo install persimmon-cli",
+    ] {
+        assert!(readme.contains(needle), "README.md lacks {needle:?}");
+    }
+}
