@@ -23,6 +23,9 @@ rar = ["persimmon-core/rar"]
 persimmon-core = { path = "../persimmon-core", default-features = false, features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.12", features = [] }
+# The macOS open panel, called from Rust only: the window gets no
+# dialog permission.
+tauri-plugin-dialog = "2"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 persimmon-corpus = { path = "../persimmon-corpus" }

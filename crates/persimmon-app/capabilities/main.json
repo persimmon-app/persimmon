@@ -1,7 +1,22 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The main window may call the app's own commands and nothing else: no core defaults, no plugins.",
+  "description": "The main window may call the app's own commands and listen for its events, and nothing else: no other core defaults, no plugins.",
   "windows": ["main"],
-  "permissions": ["allow-engine-version"]
+  "permissions": [
+    "allow-add-paths",
+    "allow-cancel-row",
+    "allow-engine-version",
+    "allow-pick-files",
+    "allow-queue-rows",
+    "allow-quit-now",
+    "allow-remove-rows",
+    "allow-retry-row",
+    "allow-reveal-row",
+    "allow-set-target",
+    "allow-start",
+    "allow-targets",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }
