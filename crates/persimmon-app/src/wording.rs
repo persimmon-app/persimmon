@@ -292,6 +292,7 @@ mod tests {
                 output: OutputPolicy {
                     dir: Some(out.to_path_buf()),
                     overwrite: false,
+                    fallback: None,
                 },
                 options: JobOptions::default(),
             })

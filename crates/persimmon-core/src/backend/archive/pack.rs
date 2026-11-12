@@ -475,6 +475,7 @@ mod tests {
             output: OutputPolicy {
                 dir: out.map(Path::to_path_buf),
                 overwrite: false,
+                fallback: None,
             },
             options: JobOptions::default(),
         };

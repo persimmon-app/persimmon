@@ -421,6 +421,7 @@ fn run(
         output: OutputPolicy {
             dir: out.out,
             overwrite: out.overwrite,
+            fallback: None,
         },
         options,
     };

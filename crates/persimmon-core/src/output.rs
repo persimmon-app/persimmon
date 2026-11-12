@@ -39,6 +39,12 @@ pub struct OutputPolicy {
     /// Never deserialised: a client such as the app can't turn it on.
     #[cfg_attr(feature = "serde", serde(skip_deserializing))]
     pub overwrite: bool,
+    /// Where output goes when its source's own folder can't be written
+    /// (the Photos library, Mail's container, a read-only volume). The app
+    /// sets it; the CLI never does, so `prsm` fails with `--out` as the
+    /// fix instead. An explicit `dir` never falls back.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub fallback: Option<PathBuf>,
 }
 
 impl OutputPolicy {
@@ -56,8 +62,27 @@ impl OutputPolicy {
                 .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)
             })?;
         }
-        ensure_writable(&dir)?;
-        Ok(dir)
+        match ensure_writable(&dir) {
+            Ok(()) => Ok(dir),
+            Err(e) if self.dir.is_none() && e.code == ErrorCode::OutputNotWritable => {
+                match &self.fallback {
+                    Some(fallback) => {
+                        std::fs::create_dir_all(fallback).map_err(|err| {
+                            Error::new(
+                                ErrorCode::OutputNotWritable,
+                                format!("can't create this folder ({err})"),
+                            )
+                            .with_file(fallback)
+                            .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)
+                        })?;
+                        ensure_writable(fallback)?;
+                        Ok(fallback.clone())
+                    }
+                    None => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// The folder the output for `input` would go in, touching nothing: no
@@ -490,5 +515,104 @@ mod tests {
         assert_eq!(e.file.as_deref(), Some(locked.as_path()));
         assert_eq!(e.reason, "can't write to this folder");
         assert_eq!(e.fix_text(), Some("choose another folder with --out <dir>"));
+    }
+
+    /// A folder nobody can write into, made writable again on drop so it
+    /// can be removed.
+    #[cfg(unix)]
+    struct Locked(PathBuf);
+
+    #[cfg(unix)]
+    impl Locked {
+        fn new(dir: &Path) -> Locked {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Locked(dir.to_path_buf())
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Locked {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_source_falls_back() {
+        let dir = scratch("fallback");
+        let src_dir = dir.join("locked");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("a.png"), b"x").unwrap();
+        let _lock = Locked::new(&src_dir);
+        let fb = dir.join("fb");
+        let policy = OutputPolicy {
+            fallback: Some(fb.clone()),
+            ..OutputPolicy::default()
+        };
+        assert_eq!(policy.output_dir(&src_dir.join("a.png")).unwrap(), fb);
+        assert!(fb.is_dir());
+        drop(_lock);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_fallback_is_an_error() {
+        let dir = scratch("fallback-locked");
+        let src_dir = dir.join("locked");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("a.png"), b"x").unwrap();
+        let fb = dir.join("fb");
+        let _a = Locked::new(&src_dir);
+        let _b = Locked::new(&fb);
+        let policy = OutputPolicy {
+            fallback: Some(fb.clone()),
+            ..OutputPolicy::default()
+        };
+        let e = policy.output_dir(&src_dir.join("a.png")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::OutputNotWritable);
+        assert_eq!(e.file.as_deref(), Some(fb.as_path()));
+        drop((_a, _b));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_fallback_keeps_the_cli_error() {
+        let dir = scratch("no-fallback");
+        let src_dir = dir.join("locked");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("a.png"), b"x").unwrap();
+        let _lock = Locked::new(&src_dir);
+        let e = OutputPolicy::default()
+            .output_dir(&src_dir.join("a.png"))
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::OutputNotWritable);
+        assert_eq!(e.file.as_deref(), Some(src_dir.as_path()));
+        assert_eq!(e.fix_text(), Some(OUT_FIX));
+        drop(_lock);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_explicit_out_never_falls_back() {
+        let dir = scratch("explicit");
+        let out = dir.join("out");
+        let _lock = Locked::new(&out);
+        let policy = OutputPolicy {
+            dir: Some(out.clone()),
+            fallback: Some(dir.join("fb")),
+            ..OutputPolicy::default()
+        };
+        let e = policy.output_dir(&dir.join("a.png")).unwrap_err();
+        assert_eq!(e.file.as_deref(), Some(out.as_path()));
+        assert!(!dir.join("fb").exists());
+        drop(_lock);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
