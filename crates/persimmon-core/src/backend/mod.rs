@@ -13,8 +13,8 @@ pub mod archive;
 pub mod ffmpeg;
 pub mod pdf;
 
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::error::Error;
 use crate::exec::CancelToken;
@@ -48,16 +48,45 @@ pub trait Run {
 }
 
 /// Every backend this build has, dispatched by [`PlannedTask::backend`].
-/// FFmpeg is found once, on the first audio or video task, using that
-/// task's `--ffmpeg`.
+///
+/// FFmpeg is looked up on the first audio or video task: the task's own
+/// `--ffmpeg` if it has one, else the one given to [`Backends::with_ffmpeg`],
+/// else the one on `PATH`. A successful lookup is kept for later tasks that
+/// ask for the same FFmpeg; a failed one is tried again on the next task,
+/// so installing FFmpeg needs no restart.
 #[derive(Debug, Default)]
 pub struct Backends {
-    ffmpeg: OnceLock<Result<ffmpeg::FfmpegBackend, Error>>,
+    ffmpeg_path: Option<PathBuf>,
+    ffmpeg: Mutex<Option<(Option<PathBuf>, Arc<ffmpeg::FfmpegBackend>)>>,
 }
 
 impl Backends {
     pub fn new() -> Backends {
         Backends::default()
+    }
+
+    /// Use this FFmpeg (with its `ffprobe` beside it) unless a task names
+    /// its own; for example, the copy an app bundles.
+    pub fn with_ffmpeg(mut self, path: impl Into<PathBuf>) -> Backends {
+        self.ffmpeg_path = Some(path.into());
+        self
+    }
+
+    /// The FFmpeg backend for a task whose `--ffmpeg` is `explicit`.
+    pub(crate) fn ffmpeg_for(
+        &self,
+        explicit: Option<&Path>,
+    ) -> Result<Arc<ffmpeg::FfmpegBackend>, Error> {
+        let want = explicit.or(self.ffmpeg_path.as_deref());
+        let mut cache = self.ffmpeg.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((key, backend)) = cache.as_ref()
+            && key.as_deref() == want
+        {
+            return Ok(Arc::clone(backend));
+        }
+        let backend = Arc::new(ffmpeg::FfmpegBackend::new(ffmpeg::Ffmpeg::locate(want)?));
+        *cache = Some((want.map(Path::to_path_buf), Arc::clone(&backend)));
+        Ok(backend)
     }
 }
 
@@ -86,18 +115,92 @@ impl Run for Backends {
                     "install a build of prsm made with libvips",
                 ))
             }
-            Backend::Ffmpeg => {
-                let found = self.ffmpeg.get_or_init(|| {
-                    ffmpeg::Ffmpeg::locate(options.ffmpeg.as_deref())
-                        .map(ffmpeg::FfmpegBackend::new)
-                });
-                match found {
-                    Ok(backend) => backend.run(task, options, temp, cancel, progress),
-                    Err(e) => Err(e.clone().with_file(&task.inputs[0])),
-                }
-            }
+            Backend::Ffmpeg => match self.ffmpeg_for(options.ffmpeg.as_deref()) {
+                Ok(backend) => backend.run(task, options, temp, cancel, progress),
+                Err(e) => Err(e.with_file(&task.inputs[0])),
+            },
             Backend::Pdf => pdf::PdfBackend.run(task, options, temp, cancel, progress),
             Backend::Archive => archive::ArchiveBackend.run(task, options, temp, cancel, progress),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use crate::error::{ErrorCode, FixKind};
+
+    #[test]
+    fn backends_are_send_and_sync() {
+        fn check<T: Send + Sync>() {}
+        check::<Backends>();
+    }
+
+    /// A fresh folder in the system temp folder, removed when dropped.
+    #[cfg(unix)]
+    struct Scratch(PathBuf);
+
+    #[cfg(unix)]
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir =
+                std::env::temp_dir().join(format!("prsm-backends-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn script(&self, name: &str, body: &str) -> PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+            let p = self.0.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    const VERSION_7: &str = "echo 'ffmpeg version 7.1 Copyright'";
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_ffmpeg_lookup_is_retried() {
+        let dir = Scratch::new("retry");
+        let backends = Backends::new().with_ffmpeg(dir.0.join("ffmpeg"));
+        let e = backends.ffmpeg_for(None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::BackendMissing);
+        assert_eq!(e.fix.as_ref().unwrap().kind, FixKind::InstallFfmpeg);
+        dir.script("ffmpeg", VERSION_7);
+        dir.script("ffprobe", VERSION_7);
+        assert!(backends.ffmpeg_for(None).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_ffmpeg_that_is_a_folder_is_missing() {
+        let dir = Scratch::new("folder");
+        let backends = Backends::new().with_ffmpeg(&dir.0);
+        let e = backends.ffmpeg_for(None).unwrap_err();
+        assert_eq!(e.code, ErrorCode::BackendMissing);
+        assert_eq!(e.fix.unwrap().kind, FixKind::InstallFfmpeg);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn job_ffmpeg_beats_the_configured_one() {
+        let dir = Scratch::new("beats");
+        let backends = Backends::new().with_ffmpeg(dir.0.join("missing/ffmpeg"));
+        let ff = dir.script("ffmpeg", VERSION_7);
+        dir.script("ffprobe", VERSION_7);
+        assert!(backends.ffmpeg_for(Some(&ff)).is_ok());
+        assert!(backends.ffmpeg_for(None).is_err());
     }
 }
