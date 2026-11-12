@@ -16,6 +16,17 @@ use crate::wording::{Shown, shown};
 
 pub type RowId = u64;
 
+/// How newly added files become rows (spec D1, the sidebar's modes).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueMode {
+    #[default]
+    Convert,
+    Compress,
+    Extract,
+    Combine,
+}
+
 /// Where a row is.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(
