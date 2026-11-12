@@ -81,7 +81,10 @@ impl Run for Backends {
                     "this build has no image backend",
                 )
                 .with_file(&task.inputs[0])
-                .with_fix("install a build of prsm made with libvips"))
+                .with_fix_as(
+                    crate::error::FixKind::InstallLibvips,
+                    "install a build of prsm made with libvips",
+                ))
             }
             Backend::Ffmpeg => {
                 let found = self.ffmpeg.get_or_init(|| {

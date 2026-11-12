@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 use crate::platform;
 
@@ -162,7 +162,10 @@ impl Sink {
             format!("couldn't write {name} ({e})"),
         )
         .with_file(&self.archive)
-        .with_fix("choose another folder with --out <dir>")
+        .with_fix_as(
+            FixKind::ChooseOutputFolder,
+            "choose another folder with --out <dir>",
+        )
     }
 
     fn conflict(&self, name: &str) -> Error {

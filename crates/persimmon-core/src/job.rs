@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::pdf::pdf_info;
 use crate::detect::detect;
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::format::{FormatId, format_for_name};
 use crate::output::{OutputPolicy, free_name, reserve};
 use crate::registry::{Backend, Operation, Registry};
@@ -55,8 +55,10 @@ impl PageRanges {
     /// Parse `"1-3,5,7-"`.
     pub fn parse(s: &str) -> Result<PageRanges, Error> {
         let bad = || {
-            Error::new(ErrorCode::Usage, format!("\"{s}\" isn't a page range"))
-                .with_fix("use page numbers from 1, e.g. --pages 1-3,5,7-")
+            Error::new(ErrorCode::Usage, format!("\"{s}\" isn't a page range")).with_fix_as(
+                FixKind::PageRange,
+                "use page numbers from 1, e.g. --pages 1-3,5,7-",
+            )
         };
         let page = |t: &str| t.trim().parse::<u32>().ok().filter(|&n| n >= 1);
         let mut ranges = Vec::new();
@@ -98,8 +100,10 @@ pub fn select_pages(ranges: Option<&PageRanges>, count: u32) -> Result<Vec<u32>,
         if first > count || last > count {
             let noun = if count == 1 { "page" } else { "pages" };
             return Err(
-                Error::new(ErrorCode::Usage, format!("it has {count} {noun}"))
-                    .with_fix(format!("use --pages between 1 and {count}")),
+                Error::new(ErrorCode::Usage, format!("it has {count} {noun}")).with_fix_as(
+                    FixKind::PageRange,
+                    format!("use --pages between 1 and {count}"),
+                ),
             );
         }
         pages.extend(first..=last);
@@ -220,7 +224,7 @@ impl Job {
                 if self.op == Operation::Convert && self.target.is_none() {
                     plan.error(
                         Error::new(ErrorCode::Usage, "no target format")
-                            .with_fix("add --to <format>"),
+                            .with_fix_as(FixKind::AddTarget, "add --to <format>"),
                     );
                     return plan;
                 }
@@ -322,21 +326,35 @@ impl Job {
         let renders_pdf = self.op == Operation::Convert && from == Pdf && matches!(out, Png | Jpeg);
         if self.options.pages.is_some() && !renders_pdf && self.op != Operation::Split {
             return Err(
-                Error::new(ErrorCode::Usage, "--pages is for PDFs").with_fix("drop --pages")
+                Error::new(ErrorCode::Usage, "--pages is for PDFs").with_fix_as(
+                    FixKind::DropOption {
+                        option: "pages".into(),
+                    },
+                    "drop --pages",
+                ),
             );
         }
         let video = backend == Backend::Ffmpeg && matches!(out, Mp4 | Mov | Webm);
         if self.options.preset.is_some() && !video {
             return Err(
                 Error::new(ErrorCode::Usage, "--preset is for mp4, mov and webm video")
-                    .with_fix("drop --preset"),
+                    .with_fix_as(
+                        FixKind::DropOption {
+                            option: "preset".into(),
+                        },
+                        "drop --preset",
+                    ),
             );
         }
         let audio = backend == Backend::Ffmpeg && matches!(out, Mp3 | M4a | Wav | Flac | Opus);
         if self.options.max_size.is_some() && audio {
             return Err(
-                Error::new(ErrorCode::Usage, "--max-size is for images and video")
-                    .with_fix("drop --max-size"),
+                Error::new(ErrorCode::Usage, "--max-size is for images and video").with_fix_as(
+                    FixKind::DropOption {
+                        option: "max-size".into(),
+                    },
+                    "drop --max-size",
+                ),
             );
         }
         Ok(())
@@ -413,7 +431,7 @@ impl Job {
     ) -> Result<PlannedTask, Error> {
         let Some(pages) = &self.options.pages else {
             return Err(Error::new(ErrorCode::Usage, "no pages given")
-                .with_fix("add --pages, e.g. --pages 1-3,5"));
+                .with_fix_as(FixKind::PageRange, "add --pages, e.g. --pages 1-3,5"));
         };
         let [input] = inputs else {
             return Err(Error::new(ErrorCode::Usage, "split takes exactly one PDF"));
@@ -485,15 +503,21 @@ fn unsupported(reg: &Registry, op: Operation, from: FormatId, to: Option<FormatI
         (op, _) => format!("can't {} {from_name} files", op.as_str()),
     };
     // Point at compress only where compress takes the format.
-    let fix = if op == Operation::Convert
+    let (kind, fix) = if op == Operation::Convert
         && to == Some(from)
         && reg.find(Operation::Compress, from, None).is_some()
     {
-        "to resize or strip metadata in the same format, use prsm compress".to_string()
+        (
+            FixKind::UseCompress,
+            "to resize or strip metadata in the same format, use prsm compress".to_string(),
+        )
     } else {
-        format!("run prsm formats to see what {} can become", from.as_str())
+        (
+            FixKind::SeeFormats,
+            format!("run prsm formats to see what {} can become", from.as_str()),
+        )
     };
-    Error::new(ErrorCode::UnsupportedConversion, reason).with_fix(fix)
+    Error::new(ErrorCode::UnsupportedConversion, reason).with_fix_as(kind, fix)
 }
 
 #[cfg(test)]
@@ -660,7 +684,7 @@ mod tests {
         assert_eq!(e.code, ErrorCode::UnsupportedConversion);
         assert_eq!(e.reason, "can't convert PNG to MP3");
         assert_eq!(
-            e.fix.as_deref(),
+            e.fix_text(),
             Some("run prsm formats to see what png can become")
         );
     }
@@ -698,7 +722,7 @@ mod tests {
         assert_eq!(e.code, ErrorCode::UnsupportedConversion);
         assert_eq!(e.reason, "can't convert JPEG to JPEG");
         assert_eq!(
-            e.fix.as_deref(),
+            e.fix_text(),
             Some("to resize or strip metadata in the same format, use prsm compress")
         );
         // Compress can't take a PDF: no pointing the user at another error.
@@ -706,7 +730,7 @@ mod tests {
         let plan =
             job(Operation::Convert, vec![pdf], Some(FormatId::Pdf)).plan(&Registry::builtin());
         assert_eq!(
-            plan.errors[0].fix.as_deref(),
+            plan.errors[0].fix_text(),
             Some("run prsm formats to see what pdf can become")
         );
     }
@@ -773,7 +797,7 @@ mod tests {
         assert!(plan.tasks.is_empty());
         assert_eq!(plan.errors[0].code, ErrorCode::Usage);
         assert_eq!(
-            plan.errors[0].fix.as_deref(),
+            plan.errors[0].fix_text(),
             Some("add --pages, e.g. --pages 1-3,5")
         );
     }
@@ -829,7 +853,7 @@ mod tests {
         let e = &plan.errors[0];
         assert_eq!(e.code, ErrorCode::Usage);
         assert_eq!(e.reason, "--preset is for mp4, mov and webm video");
-        assert_eq!(e.fix.as_deref(), Some("drop --preset"));
+        assert_eq!(e.fix_text(), Some("drop --preset"));
         assert_eq!(e.file.as_deref(), Some(a.as_path()));
     }
 
@@ -907,7 +931,7 @@ mod tests {
         let e = &plan.errors[0];
         assert_eq!(e.code, ErrorCode::Usage);
         assert_eq!(e.reason, "--max-size is for images and video");
-        assert_eq!(e.fix.as_deref(), Some("drop --max-size"));
+        assert_eq!(e.fix_text(), Some("drop --max-size"));
         let plan = with_options(job(Operation::Convert, vec![m], Some(FormatId::Mp4)), opts)
             .plan(&Registry::builtin());
         assert!(plan.errors.is_empty(), "{:?}", plan.errors);
@@ -949,7 +973,7 @@ mod tests {
         let e = select_pages(pages("4").as_ref(), 3).unwrap_err();
         assert_eq!(e.code, ErrorCode::Usage);
         assert_eq!(e.reason, "it has 3 pages");
-        assert_eq!(e.fix.as_deref(), Some("use --pages between 1 and 3"));
+        assert_eq!(e.fix_text(), Some("use --pages between 1 and 3"));
         assert_eq!(e.file, None);
         let e = select_pages(pages("2").as_ref(), 1).unwrap_err();
         assert_eq!(e.reason, "it has 1 page");
@@ -1022,7 +1046,7 @@ mod tests {
         let e = &plan.errors[0];
         assert_eq!(e.code, ErrorCode::Usage);
         assert_eq!(e.reason, "--pages is for PDFs");
-        assert_eq!(e.fix.as_deref(), Some("drop --pages"));
+        assert_eq!(e.fix_text(), Some("drop --pages"));
     }
 
     #[test]
@@ -1061,7 +1085,7 @@ mod tests {
         .plan(&Registry::builtin())
         .errors[0];
         assert_eq!(
-            locked.fix.as_deref(),
+            locked.fix_text(),
             Some("remove the password in another app, then try again")
         );
         let owner = write_pdf_sample(&dir, "pdf-owner");

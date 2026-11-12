@@ -64,7 +64,8 @@ impl Run for ArchiveBackend {
                 return Err(
                     Error::new(ErrorCode::BackendMissing, "this build can't read RAR")
                         .with_file(input)
-                        .with_fix(
+                        .with_fix_as(
+                            crate::error::FixKind::InstallLibarchive,
                             "install libarchive (brew install libarchive, or libarchive-dev), \
                              or use a build of prsm made with it",
                         ),
@@ -362,10 +363,7 @@ pub(crate) mod tests {
         let e = extract(&dir, write_archive_sample(&dir, "arc-locked-zip")).unwrap_err();
         assert_eq!(e.code, ErrorCode::UnsupportedInput);
         assert_eq!(e.reason, "it's password-protected");
-        assert_eq!(
-            e.fix.as_deref(),
-            Some("extract it with the app that made it")
-        );
+        assert_eq!(e.fix_text(), Some("extract it with the app that made it"));
         assert!(!dir.join("out/secret.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

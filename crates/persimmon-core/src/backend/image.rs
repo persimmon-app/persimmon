@@ -23,7 +23,7 @@ use rs_vips::voption::{Setter, VOption};
 use rs_vips::{Vips, VipsImage, VipsSource};
 
 use crate::backend::{Done, Run};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask, Quality};
@@ -293,7 +293,10 @@ fn started(input: &Path) -> Result<(), Error> {
     init().map_err(|reason| {
         Error::new(ErrorCode::BackendMissing, reason)
             .with_file(input)
-            .with_fix("install or update libvips (brew upgrade vips, or a newer libvips-dev)")
+            .with_fix_as(
+                FixKind::InstallLibvips,
+                "install or update libvips (brew upgrade vips, or a newer libvips-dev)",
+            )
     })
 }
 
@@ -395,7 +398,10 @@ impl Run for ImageBackend {
         init().map_err(|reason| {
             Error::new(ErrorCode::BackendMissing, reason)
                 .with_file(input)
-                .with_fix("install or update libvips (brew upgrade vips, or a newer libvips-dev)")
+                .with_fix_as(
+                    FixKind::InstallLibvips,
+                    "install or update libvips (brew upgrade vips, or a newer libvips-dev)",
+                )
         })?;
         // libvips keeps one error buffer per process; start each task clean.
         Vips::error_clear();
@@ -463,9 +469,12 @@ impl ImageBackend {
                 ),
             )
             .with_file(input)
-            .with_fix(format!(
-                "add --max-size {WEBP_MAX}, or convert to png or jpeg"
-            )));
+            .with_fix_as(
+                FixKind::ShrinkOrPickTarget {
+                    max: WEBP_MAX as u32,
+                },
+                format!("add --max-size {WEBP_MAX}, or convert to png or jpeg"),
+            ));
         }
 
         let q = quality(options.quality.unwrap_or(if compress {
@@ -484,7 +493,10 @@ impl ImageBackend {
                 "the output folder's path isn't valid UTF-8",
             )
             .with_file(temp)
-            .with_fix("choose another folder with --out <dir>")
+            .with_fix_as(
+                FixKind::ChooseOutputFolder,
+                "choose another folder with --out <dir>",
+            )
         })?;
         let saved = match target {
             FormatId::Jpeg => img.jpegsave_with_opts(path, opts.set("Q", q.jpeg)),
@@ -526,7 +538,10 @@ impl ImageBackend {
                     format!("couldn't write the image ({msg})"),
                 )
                 .with_file(input)
-                .with_fix("choose another folder with --out <dir>")
+                .with_fix_as(
+                    FixKind::ChooseOutputFolder,
+                    "choose another folder with --out <dir>",
+                )
             });
         }
 
@@ -946,7 +961,7 @@ mod tests {
             "WebP can't be wider or taller than 16383 pixels (this image is 17000×8)"
         );
         assert_eq!(
-            e.fix.as_deref(),
+            e.fix_text(),
             Some("add --max-size 16383, or convert to png or jpeg")
         );
         assert!(!temp.exists());

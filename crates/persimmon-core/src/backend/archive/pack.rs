@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::backend::Done;
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 use crate::format::FormatId;
 use crate::job::PlannedTask;
@@ -102,7 +102,10 @@ fn not_writable(output: &Path, e: &dyn std::fmt::Display) -> Error {
         format!("couldn't write the archive ({e})"),
     )
     .with_file(output)
-    .with_fix("choose another folder with --out <dir>")
+    .with_fix_as(
+        FixKind::ChooseOutputFolder,
+        "choose another folder with --out <dir>",
+    )
 }
 
 fn litter(name: &str) -> bool {

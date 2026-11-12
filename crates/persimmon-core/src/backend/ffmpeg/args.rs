@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use super::{MediaInfo, Stream, file_url};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask, Preset, Quality};
 
@@ -86,7 +86,7 @@ impl Args<'_> {
             format!("this ffmpeg can't encode {label} (no {encoder})"),
         )
         .with_file(self.input)
-        .with_fix(crate::platform::ffmpeg_install()))
+        .with_fix_as(FixKind::InstallFfmpeg, crate::platform::ffmpeg_install()))
     }
 }
 
@@ -146,7 +146,10 @@ pub(crate) fn build_args(
 fn no_video(input: &Path) -> Error {
     Error::new(ErrorCode::UnsupportedInput, "there's no video track")
         .with_file(input)
-        .with_fix("convert it to an audio format, such as --to m4a")
+        .with_fix_as(
+            FixKind::PickAudioTarget,
+            "convert it to an audio format, such as --to m4a",
+        )
 }
 
 fn video_target(
@@ -311,7 +314,10 @@ fn audio_target(
             "there's no audio track to convert",
         )
         .with_file(a.input)
-        .with_fix("pick a video format, such as --to mp4"));
+        .with_fix_as(
+            FixKind::PickVideoTarget,
+            "pick a video format, such as --to mp4",
+        ));
     };
     a.push(&format!("-map 0:{}", s.index));
     if let Some(c) = info.cover()
@@ -802,7 +808,7 @@ mod tests {
         assert_eq!(e.code, ErrorCode::UnsupportedInput);
         assert_eq!(e.reason, "there's no video track");
         assert_eq!(
-            e.fix.as_deref(),
+            e.fix_text(),
             Some("convert it to an audio format, such as --to m4a")
         );
         assert_eq!(e.file.as_deref(), Some(Path::new("/tmp/in.x")));
@@ -824,10 +830,7 @@ mod tests {
         let e = build(&task(Mp4, Some(Mp3)), &silent, &JobOptions::default()).unwrap_err();
         assert_eq!(e.code, ErrorCode::UnsupportedInput);
         assert_eq!(e.reason, "there's no audio track to convert");
-        assert_eq!(
-            e.fix.as_deref(),
-            Some("pick a video format, such as --to mp4")
-        );
+        assert_eq!(e.fix_text(), Some("pick a video format, such as --to mp4"));
         let a = args(Mp4, Some(Webm), &silent, &JobOptions::default());
         assert!(!a.contains("-c:a"), "{a}");
     }
@@ -843,7 +846,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(e.code, ErrorCode::BackendMissing);
         assert_eq!(e.reason, "this ffmpeg can't encode HEVC (no libx265)");
-        assert_eq!(e.fix.as_deref(), Some(crate::platform::ffmpeg_install()));
+        assert_eq!(e.fix_text(), Some(crate::platform::ffmpeg_install()));
         let e = build_with(
             &task(Wav, Some(Mp3)),
             &tone("pcm_s16le"),

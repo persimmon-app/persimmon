@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::{Ffmpeg, child, file_url, message};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 
 /// The entries `ffprobe` is asked for.
@@ -105,7 +105,7 @@ impl Ffmpeg {
                     format!("{} didn't run: {e}", self.ffprobe.display()),
                 )
                 .with_file(path)
-                .with_fix(crate::platform::ffmpeg_install())
+                .with_fix_as(FixKind::InstallFfmpeg, crate::platform::ffmpeg_install())
             })?;
         if !out.status.success() {
             if child::was_cancelled(Some(&out.status), cancel) {

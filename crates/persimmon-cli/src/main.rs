@@ -17,7 +17,7 @@ use persimmon_core::backend::Backends;
 use persimmon_core::backend::ffmpeg::Ffmpeg;
 use persimmon_core::backend::pdf::pdf_info;
 use persimmon_core::detect::detect;
-use persimmon_core::error::{Error, ErrorCode};
+use persimmon_core::error::{Error, ErrorCode, FixKind};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
 use persimmon_core::format::{FormatId, MediaKind};
 use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Preset, Quality};
@@ -285,7 +285,7 @@ fn parse_target(reg: &Registry, name: &str) -> Result<FormatId, Error> {
             ErrorCode::UnsupportedConversion,
             format!("\"{name}\" isn't a format prsm knows"),
         )
-        .with_fix("run prsm formats to see every format")
+        .with_fix_as(FixKind::SeeFormats, "run prsm formats to see every format")
     })
 }
 

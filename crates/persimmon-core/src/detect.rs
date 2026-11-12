@@ -148,7 +148,7 @@ mod tests {
         let e = detect(&p, all_formats()).unwrap_err();
         assert_eq!(e.code, ErrorCode::UnsupportedInput);
         assert_eq!(e.reason, "is a folder");
-        assert_eq!(e.fix.as_deref(), Some("pass the files inside it"));
+        assert_eq!(e.fix_text(), Some("pass the files inside it"));
     }
 
     #[test]

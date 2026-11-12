@@ -382,7 +382,10 @@ fn decoded_page(input: &Path, _: FormatId, _: &JobOptions, _: u32) -> Result<Ima
     Err(
         Error::new(ErrorCode::BackendMissing, "this build has no image backend")
             .with_file(input)
-            .with_fix("install a build of prsm made with libvips"),
+            .with_fix_as(
+                crate::error::FixKind::InstallLibvips,
+                "install a build of prsm made with libvips",
+            ),
     )
 }
 

@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::platform;
 
 /// A usable FFmpeg: 7.0 or later, with `ffprobe` beside it.
@@ -32,8 +32,12 @@ impl Ffmpeg {
         let ffmpeg = match explicit {
             Some(path) if path.is_file() => path.to_path_buf(),
             Some(path) => {
-                return Err(missing(format!("no ffmpeg at {}", path.display()))
-                    .with_fix("check the --ffmpeg path, or leave it out to use the one on PATH"));
+                return Err(
+                    missing(format!("no ffmpeg at {}", path.display())).with_fix_as(
+                        FixKind::InstallFfmpeg,
+                        "check the --ffmpeg path, or leave it out to use the one on PATH",
+                    ),
+                );
             }
             None => find_in(
                 "ffmpeg",
@@ -41,8 +45,10 @@ impl Ffmpeg {
                 platform::ffmpeg_dirs(),
             )
             .ok_or_else(|| {
-                missing("ffmpeg isn't installed".into())
-                    .with_fix(format!("{install}, or pass --ffmpeg <path>"))
+                missing("ffmpeg isn't installed".into()).with_fix_as(
+                    FixKind::InstallFfmpeg,
+                    format!("{install}, or pass --ffmpeg <path>"),
+                )
             })?,
         };
         let run = |arg: &str| -> Result<String, Error> {
@@ -51,12 +57,13 @@ impl Ffmpeg {
                 .stdin(Stdio::null())
                 .output()
                 .map_err(|e| {
-                    missing(format!("{} didn't run: {e}", ffmpeg.display())).with_fix(install)
+                    missing(format!("{} didn't run: {e}", ffmpeg.display()))
+                        .with_fix_as(FixKind::InstallFfmpeg, install)
                 })?;
             if !out.status.success() {
                 return Err(
                     missing(format!("{} didn't run: {}", ffmpeg.display(), out.status))
-                        .with_fix(install),
+                        .with_fix_as(FixKind::InstallFfmpeg, install),
                 );
             }
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -72,13 +79,13 @@ impl Ffmpeg {
             return Err(missing(format!(
                 "ffmpeg {major}.{minor} is too old; prsm needs 7.0 or later"
             ))
-            .with_fix(install));
+            .with_fix_as(FixKind::InstallFfmpeg, install));
         }
         let ffprobe = ffmpeg.with_file_name(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
         if !ffprobe.is_file() {
             return Err(
                 missing(format!("there's no ffprobe next to {}", ffmpeg.display()))
-                    .with_fix(install),
+                    .with_fix_as(FixKind::InstallFfmpeg, install),
             );
         }
         let encoders = parse_encoders(&run("-encoders")?);
@@ -218,7 +225,7 @@ mod tests {
         assert_eq!(e.code, ErrorCode::BackendMissing);
         assert_eq!(e.reason, "no ffmpeg at /nonexistent/ffmpeg");
         assert_eq!(
-            e.fix.as_deref(),
+            e.fix_text(),
             Some("check the --ffmpeg path, or leave it out to use the one on PATH")
         );
     }
@@ -241,7 +248,7 @@ mod tests {
         let e = Ffmpeg::locate(Some(&ff)).unwrap_err();
         assert_eq!(e.code, ErrorCode::BackendMissing);
         assert_eq!(e.reason, "ffmpeg 6.1 is too old; prsm needs 7.0 or later");
-        assert_eq!(e.fix.as_deref(), Some(crate::platform::ffmpeg_install()));
+        assert_eq!(e.fix_text(), Some(crate::platform::ffmpeg_install()));
     }
 
     #[cfg(unix)]

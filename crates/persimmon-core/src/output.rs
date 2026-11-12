@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 
 /// The longest file name, in bytes, that APFS, ext4 and NTFS all accept.
 const NAME_MAX: usize = 255;
@@ -45,7 +45,7 @@ impl OutputPolicy {
                         format!("can't create this folder ({e})"),
                     )
                     .with_file(dir)
-                    .with_fix(OUT_FIX)
+                    .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)
                 })?;
                 dir.clone()
             }
@@ -84,7 +84,7 @@ pub fn ensure_writable(dir: &Path) -> Result<(), Error> {
             };
             Err(Error::new(ErrorCode::OutputNotWritable, reason)
                 .with_file(dir)
-                .with_fix(OUT_FIX))
+                .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX))
         }
     }
 }
@@ -190,7 +190,7 @@ impl PendingOutput {
             let exists = || {
                 Error::new(ErrorCode::OutputExists, "already exists")
                     .with_file(&self.dest)
-                    .with_fix("use --overwrite to replace it")
+                    .with_fix_as(FixKind::Overwrite, "use --overwrite to replace it")
             };
             if std::fs::symlink_metadata(&self.temp).is_ok_and(|m| m.is_file()) {
                 // A hard link refuses to replace an existing file, atomically.
@@ -215,7 +215,7 @@ impl PendingOutput {
                 format!("couldn't move the finished file into place ({e})"),
             )
             .with_file(&self.dest)
-            .with_fix(OUT_FIX)
+            .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)
         })?;
         self.committed = true;
         Ok(self.dest.clone())
@@ -468,9 +468,6 @@ mod tests {
         assert_eq!(e.code, ErrorCode::OutputNotWritable);
         assert_eq!(e.file.as_deref(), Some(locked.as_path()));
         assert_eq!(e.reason, "can't write to this folder");
-        assert_eq!(
-            e.fix.as_deref(),
-            Some("choose another folder with --out <dir>")
-        );
+        assert_eq!(e.fix_text(), Some("choose another folder with --out <dir>"));
     }
 }

@@ -16,7 +16,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use super::{Done, Run};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 use crate::job::{JobOptions, PlannedTask};
 
@@ -54,12 +54,13 @@ impl Run for FfmpegBackend {
             let e = match f.code {
                 ErrorCode::Cancelled => Error::new(f.code, "cancelled"),
                 ErrorCode::OutputNotWritable => {
-                    Error::new(f.code, format!("can't write the output: {why}"))
-                        .with_fix("use --out to write somewhere else")
+                    Error::new(f.code, format!("can't write the output: {why}")).with_fix_as(
+                        FixKind::ChooseOutputFolder,
+                        "use --out to write somewhere else",
+                    )
                 }
-                ErrorCode::BackendMissing => {
-                    Error::new(f.code, why).with_fix(crate::platform::ffmpeg_install())
-                }
+                ErrorCode::BackendMissing => Error::new(f.code, why)
+                    .with_fix_as(FixKind::InstallFfmpeg, crate::platform::ffmpeg_install()),
                 code => Error::new(code, format!("ffmpeg can't convert it: {why}")),
             };
             e.with_file(input)
@@ -359,10 +360,7 @@ mod backend_tests {
         let e = r.unwrap_err();
         assert_eq!(e.code, ErrorCode::UnsupportedInput);
         assert_eq!(e.reason, "there's no audio track to convert");
-        assert_eq!(
-            e.fix.as_deref(),
-            Some("pick a video format, such as --to mp4")
-        );
+        assert_eq!(e.fix_text(), Some("pick a video format, such as --to mp4"));
         assert_eq!(e.file.as_deref(), Some(input.as_path()));
         assert!(!t.exists());
     }

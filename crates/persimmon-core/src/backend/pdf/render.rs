@@ -25,7 +25,7 @@ use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 
 use crate::backend::Done;
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask, Quality, select_pages, stem_of};
@@ -177,7 +177,10 @@ fn not_writable(output: &Path, e: &dyn std::fmt::Display) -> Error {
         format!("couldn't write the image ({e})"),
     )
     .with_file(output)
-    .with_fix("choose another folder with --out <dir>")
+    .with_fix_as(
+        FixKind::ChooseOutputFolder,
+        "choose another folder with --out <dir>",
+    )
 }
 
 #[cfg(test)]

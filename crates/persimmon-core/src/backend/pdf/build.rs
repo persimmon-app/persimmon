@@ -13,7 +13,7 @@ use lopdf::{Document, Object, ObjectId, SaveOptions, dictionary};
 use super::assemble::{append_pages, checked_page_count, load_pdf};
 use super::images::{add_image_page, image_page, image_pages};
 use crate::backend::Done;
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, FixKind};
 use crate::exec::CancelToken;
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask, Quality, select_pages};
@@ -100,7 +100,10 @@ fn save(doc: &mut Document, temp: &Path, output: &Path) -> Result<(), Error> {
             format!("couldn't write the PDF ({e})"),
         )
         .with_file(output)
-        .with_fix("choose another folder with --out <dir>")
+        .with_fix_as(
+            FixKind::ChooseOutputFolder,
+            "choose another folder with --out <dir>",
+        )
     };
     let mut out = BufWriter::new(File::create(temp).map_err(|e| fail(&e))?);
     let options = SaveOptions::builder()
