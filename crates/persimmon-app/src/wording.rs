@@ -264,6 +264,9 @@ mod tests {
 
         #[test]
         fn corpus_failures_read_in_app_words() {
+            let _serial = crate::FFMPEG_TESTS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let reg = Registry::builtin();
             let backends = Backends::new();
             let dir = std::env::temp_dir().join(format!("prsm-app-wording-{}", std::process::id()));

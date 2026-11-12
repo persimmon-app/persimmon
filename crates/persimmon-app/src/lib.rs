@@ -7,4 +7,11 @@
 #[cfg(target_os = "macos")]
 pub mod queue;
 #[cfg(target_os = "macos")]
+pub mod runner;
+#[cfg(target_os = "macos")]
 pub mod wording;
+
+/// Tests that start FFmpeg hold this, so a test that checks no FFmpeg child
+/// is left can't see another test's.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) static FFMPEG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
