@@ -15,6 +15,9 @@
   --accent: #e8632c;
   --accent-text: #f7834f;
   --accent-tint: rgba(232, 99, 44, 0.14);
+  /* A label on a Persimmon fill: Ground or white, whichever has the higher
+     contrast (DD-26). */
+  --on-accent: #171512;
   --error: #e8695e;
   --error-text: #f37367;
   --control-border: #736b63;
@@ -61,6 +64,7 @@
     --accent: #c0460d;
     --accent-text: #b53c00;
     --accent-tint: rgba(192, 70, 13, 0.12);
+    --on-accent: #ffffff;
     /* The canvas has no light error colour; #E8695E is under AA here. Same
        hue, 5.1–5.7:1 on light surfaces, 4.54:1 on its tint (owner, 2026-11-12). */
     --error: #c4291c;
