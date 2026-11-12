@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "The Settings window may read the settings and change where output goes, and nothing else.",
+  "windows": [
+    "settings"
+  ],
+  "permissions": [
+    "allow-choose-fallback-folder",
+    "allow-choose-output-folder",
+    "allow-get-settings",
+    "allow-set-output-beside",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

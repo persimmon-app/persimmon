@@ -19,6 +19,16 @@ fn main() {
             "retry_row",
             "reveal_row",
             "quit_now",
+            "remove_input",
+            "reorder_input",
+            "get_settings",
+            "set_mode",
+            "set_output_beside",
+            "choose_output_folder",
+            "choose_fallback_folder",
+            "toggle_drop_window",
+            "drop_paths",
+            "open_settings",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("tauri-build failed");

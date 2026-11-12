@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "drop",
+  "description": "The drop window may add dropped files (and start them) and watch the queue, and nothing else.",
+  "windows": [
+    "drop"
+  ],
+  "permissions": [
+    "allow-drop-paths",
+    "allow-queue-rows",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}
