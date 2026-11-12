@@ -18,6 +18,8 @@ use crate::registry::{Backend, Operation, Registry};
 
 /// `--quality`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum Quality {
     Low,
     Medium,
@@ -40,6 +42,8 @@ impl Quality {
 
 /// `--preset`: how video is encoded, per container (DD-35).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum Preset {
     /// H.264 (MP4, MOV) or VP9 (WebM), 8-bit 4:2:0: plays anywhere.
     Compatible,
@@ -49,6 +53,8 @@ pub enum Preset {
 
 /// `--pages`: 1-based, inclusive ranges. `(7, None)` is "7 to the end".
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct PageRanges(pub Vec<(u32, Option<u32>)>);
 
 impl PageRanges {
@@ -111,6 +117,20 @@ pub fn select_pages(ranges: Option<&PageRanges>, count: u32) -> Result<Vec<u32>,
     Ok(pages.into_iter().collect())
 }
 
+impl TryFrom<String> for PageRanges {
+    type Error = Error;
+
+    fn try_from(s: String) -> Result<PageRanges, Error> {
+        PageRanges::parse(&s)
+    }
+}
+
+impl From<PageRanges> for String {
+    fn from(r: PageRanges) -> String {
+        r.to_string()
+    }
+}
+
 impl fmt::Display for PageRanges {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, &(a, b)) in self.0.iter().enumerate() {
@@ -129,6 +149,8 @@ impl fmt::Display for PageRanges {
 
 /// Options that tune a job without changing what it does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "camelCase"))]
 pub struct JobOptions {
     pub quality: Option<Quality>,
     pub preset: Option<Preset>,
@@ -138,29 +160,40 @@ pub struct JobOptions {
     /// `--strip-metadata`: drop EXIF, XMP, tags and colour profiles
     /// (images convert to sRGB first).
     pub strip_metadata: bool,
-    /// `--ffmpeg`: the FFmpeg to use instead of the one on `PATH`.
+    /// `--ffmpeg`: the FFmpeg to use instead of the one on `PATH`. Never
+    /// serialised: a client must not choose which program runs.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub ffmpeg: Option<PathBuf>,
 }
 
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Job {
     pub op: Operation,
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::paths"))]
     pub inputs: Vec<PathBuf>,
     pub target: Option<FormatId>,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub output: OutputPolicy,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub options: JobOptions,
 }
 
 /// One unit of work, ready for a backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct PlannedTask {
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::paths"))]
     pub inputs: Vec<PathBuf>,
     /// The detected format of each input, in order. Empty for merging into
     /// an archive, which takes files and folders without detection.
     pub from: Vec<FormatId>,
     pub to: Option<FormatId>,
     pub backend: Backend,
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::path"))]
     pub output: PathBuf,
 }
 

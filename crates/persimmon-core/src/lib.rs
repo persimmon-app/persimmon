@@ -16,6 +16,9 @@ pub mod job;
 pub mod output;
 pub mod platform;
 pub mod registry;
+#[cfg(feature = "serde")]
+mod serde_util;
+pub mod update;
 
 /// The engine's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

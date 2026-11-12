@@ -20,6 +20,9 @@ vips = ["dep:rs-vips"]
 # (DD-37, BL-T20). Needs libarchive 3.6 or later (Homebrew `libarchive`,
 # apt `libarchive-dev`); build with --no-default-features without it.
 rar = ["dep:compress-tools"]
+# Serialize and Deserialize for the types a client such as the app
+# exchanges with the engine. The CLI never enables it.
+serde = ["dep:serde"]
 
 [dependencies]
 unicode-normalization = "0.1"
@@ -37,6 +40,7 @@ lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "x
 ruzstd = "0.9"
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["bzip2", "ppmd", "deflate", "util"] }
 compress-tools = { version = "0.16", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 rs-vips = { version = "0.7", optional = true }
 # BMP decoding, which libvips can't do without ImageMagick (DD-34), and
 # PNG and JPEG for rendered PDF pages, which needs no libvips (DD-36).
@@ -44,6 +48,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "png", 
 
 [dev-dependencies]
 persimmon-corpus = { path = "../persimmon-corpus" }
+serde_json = "1"
 
 [lints]
 workspace = true

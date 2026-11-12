@@ -37,7 +37,10 @@ impl CancelToken {
 
 /// What a finished task produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub enum Outcome {
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::path"))]
     Written(PathBuf),
     /// Compressing wouldn't make the file smaller; nothing was written.
     NotSmaller,

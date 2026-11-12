@@ -26,8 +26,14 @@ const OUT_FIX: &str = "choose another folder with --out <dir>";
 
 /// Where a job's outputs go.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "camelCase"))]
 pub struct OutputPolicy {
     /// `--out <dir>`: write here instead of next to each source.
+    #[cfg_attr(
+        feature = "serde",
+        serde(serialize_with = "crate::serde_util::opt_path")
+    )]
     pub dir: Option<PathBuf>,
     /// `--overwrite`: replace existing files instead of numbering around them.
     pub overwrite: bool,

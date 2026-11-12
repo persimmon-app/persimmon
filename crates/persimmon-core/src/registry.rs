@@ -9,6 +9,8 @@ use crate::format::{Format, FormatId, all_formats, format_for_name};
 
 /// What a job does to its inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum Operation {
     Convert,
     Compress,
@@ -31,6 +33,8 @@ impl Operation {
 
 /// The engine component that carries out a capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum Backend {
     Image,
     Ffmpeg,

@@ -8,6 +8,8 @@
 
 /// A format Persimmon reads or writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum FormatId {
     Jpeg,
     Png,
@@ -30,10 +32,15 @@ pub enum FormatId {
     Pdf,
     Zip,
     Tar,
+    #[cfg_attr(feature = "serde", serde(rename = "tar.gz"))]
     TarGz,
+    #[cfg_attr(feature = "serde", serde(rename = "tar.bz2"))]
     TarBz2,
+    #[cfg_attr(feature = "serde", serde(rename = "tar.xz"))]
     TarXz,
+    #[cfg_attr(feature = "serde", serde(rename = "tar.zst"))]
     TarZst,
+    #[cfg_attr(feature = "serde", serde(rename = "7z"))]
     SevenZ,
     Rar,
 }

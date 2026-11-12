@@ -12,6 +12,8 @@ use std::path::PathBuf;
 /// What kind of failure an [`Error`] is. The exit codes never change once
 /// released: scripts depend on them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "SCREAMING_SNAKE_CASE"))]
 pub enum ErrorCode {
     Internal,
     Usage,
@@ -84,6 +86,8 @@ impl fmt::Display for ErrorCode {
 /// it in its own words. `Plain` fixes read the same anywhere; every other
 /// kind's text names a `prsm` flag, command or install step.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "camelCase"))]
 pub enum FixKind {
     Plain,
     /// Write the output somewhere else (`--out`).
@@ -122,7 +126,9 @@ pub enum FixKind {
 
 /// How to get past a failure: its kind, and the CLI's wording.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Fix {
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub kind: FixKind,
     /// The wording `prsm` prints.
     pub text: String,
@@ -136,8 +142,13 @@ impl fmt::Display for Fix {
 
 /// A failure, shaped for people and scripts alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Error {
     pub code: ErrorCode,
+    #[cfg_attr(
+        feature = "serde",
+        serde(serialize_with = "crate::serde_util::opt_path")
+    )]
     pub file: Option<PathBuf>,
     pub reason: String,
     pub fix: Option<Fix>,
