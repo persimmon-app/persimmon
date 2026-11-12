@@ -9,6 +9,8 @@
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
   import * as ipc from "./lib/ipc";
   import { badge, plural } from "./lib/format";
+  import { clicked, moved } from "./lib/selection";
+  import { queueOwnsKey } from "./lib/keys";
   import type { FormatId, RowId, RowView } from "./lib/types";
 
   let rows: RowView[] = $state([]);
@@ -54,31 +56,19 @@
     selected = selected.filter((id) => !gone.includes(id));
   }
 
-  function select(id: RowId, extend: boolean) {
-    if (extend && anchor !== null) {
-      const ids = rows.map((r) => r.id);
-      const [a, b] = [ids.indexOf(anchor), ids.indexOf(id)].sort((x, y) => x - y);
-      selected = ids.slice(a, b + 1);
-    } else {
-      selected = [id];
-      anchor = id;
-    }
+  function select(id: RowId, mode: "replace" | "range" | "toggle") {
+    ({ selected, anchor } = clicked(rows.map((r) => r.id), { selected, anchor }, id, mode));
   }
 
   function move(by: number, extend: boolean) {
-    if (!rows.length) return;
-    const ids = rows.map((r) => r.id);
-    const last = selected.at(-1);
-    const at = last === undefined
-      ? (by > 0 ? 0 : ids.length - 1)
-      : Math.min(Math.max(ids.indexOf(last) + by, 0), ids.length - 1);
-    select(ids[at], extend);
+    ({ selected, anchor } = moved(rows.map((r) => r.id), { selected, anchor }, by, extend));
   }
 
   const running = () => rows.find((r) => r.state === "running");
   const chosen = () => rows.filter((r) => selected.includes(r.id));
 
   function onKey(e: KeyboardEvent) {
+    if (!queueOwnsKey(e, confirmQuit)) return;
     const cmd = e.metaKey;
     if (cmd && e.key === "o") { e.preventDefault(); ipc.pickFiles().then((r) => r.forEach(upsert)); }
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
@@ -89,6 +79,7 @@
     else if (e.key === "Backspace" || e.key === "Delete") { if (selected.length) { e.preventDefault(); remove(selected); } }
     else if (e.key === "ArrowDown") { e.preventDefault(); move(1, e.shiftKey); }
     else if (e.key === "ArrowUp") { e.preventDefault(); move(-1, e.shiftKey); }
+    else if (e.key === "Escape") { selected = []; anchor = null; }
   }
 
   onMount(() => {
@@ -109,9 +100,14 @@
 <div class="window">
   <Toolbar count={rows.length} {totalBytes} {targets} {current} {canStart}
     onAdd={() => ipc.pickFiles().then((r) => r.forEach(upsert))} onPick={pick} onStart={() => ipc.start()} />
-  <div class="queue" role="listbox" aria-label="Queue" aria-multiselectable="true">
+  <!-- A click on the queue's empty space clears the selection, so the
+       Output menu acts on every row again (spec D1). -->
+  <div class="queue" role="listbox" aria-label="Queue" aria-multiselectable="true" tabindex="-1"
+    onclick={(e) => { if (e.target === e.currentTarget) { selected = []; anchor = null; } }}
+    onkeydown={() => {}}>
     {#each rows as row (row.id)}
-      <QueueRow {row} selected={selected.includes(row.id)} onSelect={select}
+      <QueueRow {row} selected={selected.includes(row.id)}
+        onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
         onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)} />
     {:else}
       <p class="empty">Drop files here, or choose Add files (⌘O).</p>

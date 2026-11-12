@@ -10,11 +10,20 @@
   }: {
     row: RowView; selected: boolean;
     onCancel: (id: RowId) => void; onRetry: (id: RowId) => void;
-    onReveal: (id: RowId) => void; onSelect: (id: RowId, extend: boolean) => void;
+    onReveal: (id: RowId) => void; onSelect: (id: RowId, e: MouseEvent) => void;
   } = $props();
 
   const percent = $derived(row.state === "running" && row.fraction !== null ? Math.round(row.fraction * 100) : null);
   const outputName = $derived(row.output ? row.output.split("/").pop() : "");
+  /** What VoiceOver reads for the row: its state and why (DD-17). */
+  const label = $derived.by(() => {
+    switch (row.state) {
+      case "running": return `${row.name}, running, ${percent === null ? "working" : `${percent}%`}`;
+      case "failed": return `${row.name}, failed: ${row.error.reason}.${row.error.fix ? ` ${row.error.fix}` : ""}`;
+      case "notSmaller": return `${row.name}, already small`;
+      default: return `${row.name}, ${row.state}`;
+    }
+  });
   const sizes = $derived(
     row.state === "done" && row.outputSize !== null ? `${size(row.size)} → ${size(row.outputSize)}` : size(row.size),
   );
@@ -26,9 +35,9 @@
   class:selected
   role="option"
   aria-selected={selected}
-  aria-label="{row.name}, {row.state === 'notSmaller' ? 'already small' : row.state}"
+  aria-label={label}
   tabindex="-1"
-  onclick={(e) => onSelect(row.id, e.shiftKey || e.metaKey)}
+  onclick={(e) => onSelect(row.id, e)}
   onkeydown={() => {}}
 >
   <span class="badge">{badge(row.from)}</span>

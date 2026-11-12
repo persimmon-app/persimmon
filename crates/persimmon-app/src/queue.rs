@@ -138,7 +138,7 @@ impl Queue {
     }
 
     /// Point rows at `to`. Rows that can't become it keep their target and
-    /// count as skipped; running and finished rows are left alone.
+    /// count as skipped; running, finished and cancelled rows are left alone.
     pub fn set_target(&mut self, ids: &[RowId], to: FormatId) -> SetTarget {
         let mut changed = Vec::new();
         let mut skipped = 0;
@@ -265,32 +265,31 @@ impl Queue {
         }
     }
 
-    /// The last target picked for this kind, else the kind's default, else
-    /// the first format this file can become: never its own format.
+    /// The last target picked for this kind, else the first of the kind's
+    /// usual formats this file can become, else anything it can become:
+    /// never its own format, and a video never defaults to GIF.
     fn default_target(&self, from: FormatId, kind: MediaKind) -> Option<FormatId> {
-        let reachable = |t: FormatId| self.reg.find(Operation::Convert, from, Some(t)).is_some();
-        let natural = match kind {
-            MediaKind::Image => Some(FormatId::Jpeg),
-            MediaKind::Video => Some(FormatId::Mp4),
-            MediaKind::Audio => Some(FormatId::Mp3),
-            MediaKind::Document => Some(FormatId::Png),
-            MediaKind::Archive => None,
+        let reachable = |t: &FormatId| self.reg.find(Operation::Convert, from, Some(*t)).is_some();
+        let usual: &[FormatId] = match kind {
+            MediaKind::Image => &[FormatId::Jpeg, FormatId::Png, FormatId::Webp],
+            MediaKind::Video => &[FormatId::Mp4, FormatId::Mov, FormatId::Webm],
+            MediaKind::Audio => &[FormatId::Mp3, FormatId::M4a],
+            MediaKind::Document => &[FormatId::Png, FormatId::Jpeg],
+            MediaKind::Archive => &[],
         };
         self.last
             .get(&kind)
+            .filter(|t| reachable(t))
+            .or_else(|| usual.iter().find(|t| reachable(t)))
             .copied()
-            .filter(|&t| reachable(t))
-            .or(natural.filter(|&t| reachable(t)))
             .or_else(|| self.reg.targets(Operation::Convert, from).first().copied())
     }
 }
 
-/// Queued, failed and cancelled rows can be pointed at another format.
+/// Queued and failed rows can be pointed at another format. A cancelled
+/// row stays cancelled until retried: picking a format mustn't run it.
 fn editable(state: &RowState) -> bool {
-    matches!(
-        state,
-        RowState::Queued | RowState::Failed { .. } | RowState::Cancelled
-    )
+    matches!(state, RowState::Queued | RowState::Failed { .. })
 }
 
 fn blank_job(path: &Path) -> Job {
@@ -568,5 +567,33 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["outputSize"], 7);
         assert_eq!(v["size"], PNG_1X1.len() as u64);
+    }
+
+    #[test]
+    fn video_never_defaults_to_gif() {
+        // Sniffed as MP4 from its header; MP4 can't become MP4, and the
+        // fallback must stay a video format, never a whole-video GIF.
+        let d = Dir::new("mp4");
+        let mut head = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2".to_vec();
+        head.resize(64, 0);
+        let r = queue().add(&[d.put("clip.mp4", &head)]);
+        assert_eq!(r[0].from, Some(FormatId::Mp4), "{:?}", r[0]);
+        assert_eq!(r[0].to, Some(FormatId::Mov));
+    }
+
+    #[test]
+    fn picking_a_format_leaves_cancelled_rows_cancelled() {
+        let d = Dir::new("cancelled");
+        let mut q = queue();
+        let ids: Vec<RowId> = q
+            .add(&[d.put("a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)])
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        q.update(ids[0], RowState::Cancelled);
+        let result = q.set_target(&ids, FormatId::Webp);
+        assert_eq!(result.changed.len(), 1);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(q.get(ids[0]).unwrap().state, RowState::Cancelled);
     }
 }

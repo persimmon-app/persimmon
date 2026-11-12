@@ -72,6 +72,19 @@ describe("QueueRow", () => {
     expect(onRetry).toHaveBeenCalledWith(1);
   });
 
+  it("gives VoiceOver the reason and fix of a failure, and a running row's progress", () => {
+    show(row({
+      state: "failed",
+      error: { code: "INPUT_NOT_FOUND", file: "/x/a.png", reason: "no such file", fix: "Pick an output format." },
+    }));
+    expect(screen.getByRole("option", { name: "a.png, failed: no such file. Pick an output format." })).toBeTruthy();
+  });
+
+  it("names a running row's progress for VoiceOver", () => {
+    show(row({ state: "running", fraction: 0.62 }));
+    expect(screen.getByRole("option", { name: "a.png, running, 62%" })).toBeTruthy();
+  });
+
   it("shows a cancelled row with Retry", () => {
     show(row({ state: "cancelled" }));
     expect(screen.getByText("Cancelled")).toBeTruthy();

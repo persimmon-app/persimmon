@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use persimmon_core::backend::Backends;
 use persimmon_core::format::FormatId;
 use persimmon_core::registry::Registry;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
@@ -121,6 +122,82 @@ fn quit_now(app: AppHandle, state: State<'_, AppState>) {
     app.exit(0);
 }
 
+/// What quitting does now.
+#[derive(Debug, PartialEq, Eq)]
+enum QuitAction {
+    /// A row is running: ask in the window first.
+    Confirm,
+    Exit,
+}
+
+fn quit_action(busy: bool) -> QuitAction {
+    if busy {
+        QuitAction::Confirm
+    } else {
+        QuitAction::Exit
+    }
+}
+
+/// The app's own Quit (⌘Q). macOS's standard Quit item calls
+/// `terminate:`, which never reaches Tauri's ExitRequested, so it could
+/// neither ask nor cancel the running row.
+fn quit_requested(app: &AppHandle) {
+    match quit_action(app.state::<AppState>().runner.is_busy()) {
+        QuitAction::Confirm => {
+            let _ = app.emit("confirm-quit", ());
+        }
+        QuitAction::Exit => app.exit(0),
+    }
+}
+
+/// The menu bar: the standard items, with the app's own Quit.
+fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let sep = || PredefinedMenuItem::separator(app);
+    let quit = MenuItem::with_id(app, "quit", "Quit Persimmon", true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = Submenu::with_items(
+        app,
+        "Persimmon",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, None)?,
+            &sep()?,
+            &PredefinedMenuItem::services(app, None)?,
+            &sep()?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &sep()?,
+            &quit,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &sep()?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let window = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &sep()?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit, &window])
+}
+
 /// Start the app.
 pub fn run() {
     let app = tauri::Builder::default()
@@ -133,7 +210,13 @@ pub fn run() {
                 let _ = handle.emit("row", &row);
             });
             app.manage(AppState { queue, runner });
+            app.set_menu(menu(app.handle())?)?;
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "quit" {
+                quit_requested(app);
+            }
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event
@@ -159,22 +242,35 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("Persimmon couldn't start");
-    app.run(|app, event| {
-        // ⌘Q with a conversion running: ask first. app.exit() from
-        // quit_now has a code, so it goes through.
-        if let RunEvent::ExitRequested {
+    app.run(|app, event| match event {
+        // Closing the last window with a conversion running: ask first.
+        // app.exit() from the Quit item or quit_now has a code, so it goes
+        // through.
+        RunEvent::ExitRequested {
             api, code: None, ..
-        } = event
-            && app.state::<AppState>().runner.is_busy()
-        {
+        } if app.state::<AppState>().runner.is_busy() => {
             api.prevent_exit();
             let _ = app.emit("confirm-quit", ());
         }
+        // Every way out, Dock Quit and logout included (they can't ask):
+        // cancel the running row, so no .part and no FFmpeg is left.
+        RunEvent::Exit => app.state::<AppState>().runner.shutdown(),
+        _ => {}
     });
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{QuitAction, quit_action};
+
+    /// ⌘Q (the app's own Quit item) asks first while a row runs, and
+    /// quits at once otherwise.
+    #[test]
+    fn quit_asks_only_while_a_row_runs() {
+        assert_eq!(quit_action(true), QuitAction::Confirm);
+        assert_eq!(quit_action(false), QuitAction::Exit);
+    }
+
     /// The window may call the app's own commands and nothing else: no
     /// core defaults (tray, menus, paths, devtools), no plugins.
     #[test]

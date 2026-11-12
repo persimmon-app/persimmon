@@ -63,7 +63,8 @@ fn reason(r: &str) -> String {
             rest.replace("; prsm needs ", "; Persimmon needs ")
         );
     }
-    r.to_string()
+    // The app is Persimmon, not prsm ("it uses encryption prsm can't read").
+    r.replace("prsm", "Persimmon")
 }
 
 fn fix(f: &Fix) -> String {
@@ -201,6 +202,51 @@ mod tests {
             "FFmpeg 6.1 is too old; Persimmon needs 7.0 or later"
         );
         assert_eq!(r("it has 3 pages"), "it has 3 pages");
+        assert_eq!(
+            r("it uses encryption prsm can't read"),
+            "it uses encryption Persimmon can't read"
+        );
+    }
+
+    /// Every reason literal in the engine that names a flag or `prsm`
+    /// reads cleanly once the app words it: new ones fail here.
+    #[test]
+    fn no_engine_reason_reaches_the_window_with_cli_words() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../persimmon-core/src");
+        let mut files = vec![src];
+        let mut checked = 0;
+        while let Some(f) = files.pop() {
+            if f.is_dir() {
+                files.extend(std::fs::read_dir(&f).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let Some(at) = line.find("Error::new(") else {
+                    continue;
+                };
+                // The reason is the first string after `Error::new(`.
+                let window = lines[i..lines.len().min(i + 3)].join(" ")[at..].to_string();
+                let Some(start) = window.find('"') else {
+                    continue;
+                };
+                let Some(len) = window[start + 1..].find('"') else {
+                    continue;
+                };
+                let lit = &window[start + 1..start + 1 + len];
+                if lit.contains("--") || lit.contains("prsm") {
+                    checked += 1;
+                    let shown = reason(lit);
+                    assert!(
+                        !shown.contains("--") && !shown.contains("prsm"),
+                        "{}: {lit:?} shows as {shown:?}",
+                        f.display()
+                    );
+                }
+            }
+        }
+        assert!(checked >= 4, "only {checked} CLI-worded reasons found");
     }
 
     #[test]
