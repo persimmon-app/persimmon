@@ -24,13 +24,30 @@ export type RowState =
 export type RowView = {
   id: RowId;
   path: string;
+  inputs: string[];
   name: string;
   from: FormatId | null;
   to: FormatId | null;
   op: Operation;
   size: number;
   output: string | null;
+  note: string | null;
+  rev: number;
 } & RowState;
+
+export type QueueMode = "convert" | "compress" | "extract" | "combine";
+
+export type OutputMode = { mode: "beside" } | { mode: "folder"; folder: string };
+
+/** The settings as the app sends them (settings.rs, SettingsView). */
+export interface SettingsView {
+  output: OutputMode;
+  fallback: string;
+  mode: QueueMode;
+  dropWindow: boolean;
+  outputLabel: string;
+  fallbackLabel: string;
+}
 
 export interface SetTarget {
   changed: RowView[];

@@ -5,13 +5,17 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import Toolbar from "./components/Toolbar.svelte";
   import QueueRow from "./components/QueueRow.svelte";
+  import CombineRow from "./components/CombineRow.svelte";
+  import Sidebar from "./components/Sidebar.svelte";
+  import EmptyState from "./components/EmptyState.svelte";
+  import { upsert as merge, without } from "./lib/rows";
   import StatusBar from "./components/StatusBar.svelte";
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
   import * as ipc from "./lib/ipc";
   import { badge, plural } from "./lib/format";
   import { clicked, moved } from "./lib/selection";
   import { queueOwnsKey } from "./lib/keys";
-  import type { FormatId, RowId, RowView } from "./lib/types";
+  import type { FormatId, QueueMode, RowId, RowView, SettingsView } from "./lib/types";
 
   let rows: RowView[] = $state([]);
   let selected: RowId[] = $state([]);
@@ -19,6 +23,9 @@
   let targets: FormatId[] = $state([]);
   let message: string | null = $state(null);
   let confirmQuit = $state(false);
+  let settings = $state<SettingsView | null>(null);
+  const mode: QueueMode = $derived(settings?.mode ?? "convert");
+  let picking = false;
 
   /** The rows the toolbar acts on: the selection, else every row. */
   const scope = $derived(selected.length ? selected : rows.map((r) => r.id));
@@ -30,9 +37,27 @@
   const totalBytes = $derived(rows.reduce((n, r) => n + r.size, 0));
 
   function upsert(row: RowView) {
-    const i = rows.findIndex((r) => r.id === row.id);
-    if (i === -1) rows.push(row);
-    else rows[i] = row;
+    rows = merge(rows, row);
+  }
+
+  /** The open panel, once at a time: a repeated ⌘O or a second click while
+   * it's open does nothing. */
+  async function pick() {
+    if (picking) return;
+    picking = true;
+    try { (await ipc.pickFiles()).forEach(upsert); } finally { picking = false; }
+  }
+
+  async function chooseMode(m: QueueMode) {
+    settings = await ipc.setMode(m);
+  }
+
+  function reorder(id: RowId, from: number, to: number) {
+    ipc.reorderInput(id, from, to).then((r) => r && upsert(r));
+  }
+
+  function removeInput(id: RowId, index: number) {
+    ipc.removeInput(id, index).then((r) => { if (r) upsert(r); else rows = without(rows, [id]); });
   }
 
   $effect(() => {
@@ -44,7 +69,7 @@
     if (paths.length) (await ipc.addPaths(paths)).forEach(upsert);
   }
 
-  async function pick(to: FormatId) {
+  async function pickTarget(to: FormatId) {
     const result = await ipc.setTarget($state.snapshot(scope), to);
     result.changed.forEach(upsert);
     message = result.skipped ? `${plural(result.skipped, "file")} can't become ${badge(to)}` : null;
@@ -52,7 +77,7 @@
 
   async function remove(ids: RowId[]) {
     const gone = await ipc.removeRows(ids);
-    rows = rows.filter((r) => !gone.includes(r.id));
+    rows = without(rows, gone);
     selected = selected.filter((id) => !gone.includes(id));
   }
 
@@ -70,7 +95,11 @@
   function onKey(e: KeyboardEvent) {
     if (!queueOwnsKey(e, confirmQuit)) return;
     const cmd = e.metaKey;
-    if (cmd && e.key === "o") { e.preventDefault(); ipc.pickFiles().then((r) => r.forEach(upsert)); }
+    if (cmd && e.ctrlKey && ["1", "2", "3", "4"].includes(e.key)) {
+      e.preventDefault();
+      chooseMode((["convert", "compress", "extract", "combine"] as const)[Number(e.key) - 1]);
+    }
+    else if (cmd && e.key === "o") { e.preventDefault(); if (!e.repeat) pick(); }
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
     else if (cmd && e.key === "a") { e.preventDefault(); selected = rows.map((r) => r.id); }
     else if (cmd && e.key === ".") { e.preventDefault(); const r = running(); if (r) ipc.cancelRow(r.id); }
@@ -83,10 +112,12 @@
   }
 
   onMount(() => {
-    ipc.queueRows().then((r) => (rows = r));
+    ipc.queueRows().then((r) => r.forEach(upsert));
+    ipc.getSettings().then((s) => (settings = s));
     const off = [
       ipc.onRow(upsert),
       ipc.onConfirmQuit(() => (confirmQuit = true)),
+      ipc.onSettings((s) => (settings = s)),
       getCurrentWebview().onDragDropEvent((e) => {
         if (e.payload.type === "drop") add(e.payload.paths);
       }),
@@ -98,27 +129,39 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="window">
-  <Toolbar count={rows.length} {totalBytes} {targets} {current} {canStart}
-    onAdd={() => ipc.pickFiles().then((r) => r.forEach(upsert))} onPick={pick} onStart={() => ipc.start()} />
-  <!-- A click on the queue's empty space clears the selection, so the
-       Output menu acts on every row again (spec D1). -->
-  <div class="queue" role="listbox" aria-label="Queue" aria-multiselectable="true" tabindex="-1"
-    onclick={(e) => { if (e.target === e.currentTarget) { selected = []; anchor = null; } }}
-    onkeydown={() => {}}>
-    {#each rows as row (row.id)}
-      <QueueRow {row} selected={selected.includes(row.id)}
-        onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
-        onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)} />
+  <Sidebar {mode} onMode={chooseMode} />
+  <div class="main">
+    <Toolbar count={rows.length} {totalBytes} {targets} {current} {canStart}
+      onAdd={pick} onPick={pickTarget} onStart={() => ipc.start()} />
+    {#if rows.length === 0}
+      <div class="queue"><EmptyState onAdd={pick} /></div>
     {:else}
-      <p class="empty">Drop files here, or choose Add files (⌘O).</p>
-    {/each}
+      <!-- A click on the queue's empty space clears the selection, so the
+           Output menu acts on every row again (spec D1). -->
+      <div class="queue" role="listbox" aria-label="Queue" aria-multiselectable="true" tabindex="-1"
+        onclick={(e) => { if (e.target === e.currentTarget) { selected = []; anchor = null; } }}
+        onkeydown={() => {}}>
+        {#each rows as row (row.id)}
+          {#if row.op === "merge"}
+            <CombineRow {row} selected={selected.includes(row.id)}
+              onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
+              onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)}
+              onReorder={reorder} onRemoveInput={removeInput} />
+          {:else}
+            <QueueRow {row} selected={selected.includes(row.id)}
+              onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
+              onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)} />
+          {/if}
+        {/each}
+      </div>
+    {/if}
+    <StatusBar {rows} {message} output={settings?.outputLabel ?? "beside original"} onOutput={() => ipc.openSettings()} />
   </div>
-  <StatusBar {rows} {message} />
 </div>
 <ConfirmQuit open={confirmQuit} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />
 
 <style>
-  .window { height: 100vh; display: flex; flex-direction: column; }
+  .window { height: 100vh; display: flex; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .queue { flex: 1; overflow-y: auto; }
-  .empty { margin: var(--space-6); color: var(--muted); }
 </style>

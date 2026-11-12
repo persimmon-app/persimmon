@@ -5,7 +5,7 @@ import StatusBar from "./StatusBar.svelte";
 import type { RowView } from "../lib/types";
 
 const r = (id: number, state: object) =>
-  ({ id, path: "", name: "", from: "png", to: "jpeg", op: "convert", size: 1, output: null, ...state }) as RowView;
+  ({ id, path: "", inputs: [], name: "", from: "png", to: "jpeg", op: "convert", size: 1, output: null, note: null, rev: 1, ...state }) as unknown as RowView;
 
 describe("StatusBar", () => {
   it("counts rows by state", () => {
@@ -15,9 +15,10 @@ describe("StatusBar", () => {
         r(3, { state: "running", fraction: 0.1 }), r(4, { state: "queued" }), r(5, { state: "queued" }),
         r(6, { state: "failed", error: { code: "X", file: null, reason: "r", fix: null } }),
       ],
-      message: null,
+      message: null, output: "beside original", onOutput: () => {},
     });
     expect(screen.getByText("2 done")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("2 done · 1 running · 2 queued · 1 failed");
     expect(screen.getByText("1 running")).toBeTruthy();
     expect(screen.getByText("2 queued")).toBeTruthy();
     expect(screen.getByText("1 failed")).toBeTruthy();
@@ -25,8 +26,10 @@ describe("StatusBar", () => {
   });
 
   it("shows a message, such as rows a format skipped", () => {
-    render(StatusBar, { rows: [], message: "2 files can't become MP4" });
+    render(StatusBar, { rows: [], message: "2 files can't become MP4", output: "~/Converted", onOutput: () => {} });
     expect(screen.getByText("2 files can't become MP4")).toBeTruthy();
     expect(screen.getByText("Queue empty")).toBeTruthy();
+    expect(screen.getByText("Offline — no network access")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Output → ~/Converted" })).toBeTruthy();
   });
 });

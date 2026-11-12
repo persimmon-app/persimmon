@@ -20,3 +20,18 @@ export const onRow = (f: (row: RowView) => void): Promise<UnlistenFn> =>
   listen<RowView>("row", (e) => f(e.payload));
 export const onConfirmQuit = (f: () => void): Promise<UnlistenFn> =>
   listen("confirm-quit", () => f());
+
+import type { QueueMode, SettingsView } from "./types";
+
+export const dropPaths = (paths: string[]) => invoke<RowView[]>("drop_paths", { paths });
+export const reorderInput = (id: RowId, from: number, to: number) => invoke<RowView | null>("reorder_input", { id, from, to });
+export const removeInput = (id: RowId, index: number) => invoke<RowView | null>("remove_input", { id, index });
+export const getSettings = () => invoke<SettingsView>("get_settings");
+export const setMode = (mode: QueueMode) => invoke<SettingsView>("set_mode", { mode });
+export const setOutputBeside = () => invoke<SettingsView>("set_output_beside");
+export const chooseOutputFolder = () => invoke<SettingsView>("choose_output_folder");
+export const chooseFallbackFolder = () => invoke<SettingsView>("choose_fallback_folder");
+export const toggleDropWindow = () => invoke<boolean>("toggle_drop_window");
+export const openSettings = () => invoke<void>("open_settings");
+export const onSettings = (f: (s: SettingsView) => void): Promise<UnlistenFn> =>
+  listen<SettingsView>("settings", (e) => f(e.payload));

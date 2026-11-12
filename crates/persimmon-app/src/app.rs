@@ -17,7 +17,9 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::queue::{Queue, QueueMode, RowId, RowView, SetTarget};
 use crate::runner::Runner;
-use crate::settings::{OutputMode, Settings, load, output_policy, save, settings_path};
+use crate::settings::{
+    OutputMode, Settings, SettingsView, load, output_policy, save, settings_path, view,
+};
 
 /// The app's state, shared by every command.
 pub struct AppState {
@@ -49,7 +51,11 @@ fn emit_rows(app: &AppHandle, rows: &[RowView]) {
 
 /// Change the settings, save them, apply output changes to the queue, and
 /// tell every window.
-fn change_settings(app: &AppHandle, state: &AppState, f: impl FnOnce(&mut Settings)) -> Settings {
+fn change_settings(
+    app: &AppHandle,
+    state: &AppState,
+    f: impl FnOnce(&mut Settings),
+) -> SettingsView {
     let (new, output_changed) = {
         let mut settings = lock(&state.settings);
         let before = (settings.output.clone(), settings.fallback.clone());
@@ -62,8 +68,9 @@ fn change_settings(app: &AppHandle, state: &AppState, f: impl FnOnce(&mut Settin
         let rows = state.queue().set_policy(output_policy(&new));
         emit_rows(app, &rows);
     }
-    let _ = app.emit("settings", &new);
-    new
+    let shown = view(&new);
+    let _ = app.emit("settings", &shown);
+    shown
 }
 
 /// File URLs from the Dock or Open With, as paths; anything else is
@@ -203,17 +210,17 @@ fn reveal_row(state: State<'_, AppState>, id: RowId) -> bool {
 }
 
 #[tauri::command]
-fn get_settings(state: State<'_, AppState>) -> Settings {
-    lock(&state.settings).clone()
+fn get_settings(state: State<'_, AppState>) -> SettingsView {
+    view(&lock(&state.settings))
 }
 
 #[tauri::command]
-fn set_mode(app: AppHandle, state: State<'_, AppState>, mode: QueueMode) -> Settings {
+fn set_mode(app: AppHandle, state: State<'_, AppState>, mode: QueueMode) -> SettingsView {
     change_settings(&app, &state, |s| s.mode = mode)
 }
 
 #[tauri::command]
-fn set_output_beside(app: AppHandle, state: State<'_, AppState>) -> Settings {
+fn set_output_beside(app: AppHandle, state: State<'_, AppState>) -> SettingsView {
     change_settings(&app, &state, |s| s.output = OutputMode::Beside)
 }
 
@@ -229,10 +236,10 @@ fn pick_folder(app: &AppHandle) -> Option<PathBuf> {
 async fn choose_output_folder(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<Settings, String> {
+) -> Result<SettingsView, String> {
     Ok(match pick_folder(&app) {
         Some(folder) => change_settings(&app, &state, |s| s.output = OutputMode::Folder { folder }),
-        None => lock(&state.settings).clone(),
+        None => view(&lock(&state.settings)),
     })
 }
 
@@ -240,10 +247,10 @@ async fn choose_output_folder(
 async fn choose_fallback_folder(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<Settings, String> {
+) -> Result<SettingsView, String> {
     Ok(match pick_folder(&app) {
         Some(folder) => change_settings(&app, &state, |s| s.fallback = folder),
-        None => lock(&state.settings).clone(),
+        None => view(&lock(&state.settings)),
     })
 }
 

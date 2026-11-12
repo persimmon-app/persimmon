@@ -5,12 +5,12 @@ import QueueRow from "./QueueRow.svelte";
 import type { RowView } from "../lib/types";
 
 const base = {
-  id: 1, path: "/x/a.png", name: "a.png", from: "png", to: "jpeg",
-  op: "convert", size: 1_400_000_000, output: "/x/a.jpg",
-} as const;
+  id: 1, path: "/x/a.png", inputs: ["/x/a.png"], name: "a.png", from: "png", to: "jpeg",
+  op: "convert", size: 1_400_000_000, output: "/x/a.jpg", note: null, rev: 1,
+};
 
 function row(state: object): RowView {
-  return { ...base, ...state } as RowView;
+  return { ...base, ...state } as unknown as RowView;
 }
 
 function show(r: RowView) {
@@ -55,6 +55,11 @@ describe("QueueRow", () => {
     expect(onReveal).toHaveBeenCalledWith(1);
   });
 
+  it("shows where a fallen-back output went", () => {
+    show(row({ state: "done", outputSize: 3, note: "Saved to ~/Downloads/Persimmon — the original's folder isn't writable" }));
+    expect(screen.getByText("Saved to ~/Downloads/Persimmon — the original's folder isn't writable")).toBeTruthy();
+  });
+
   it("shows a row that was already small", () => {
     show(row({ state: "notSmaller" }));
     expect(screen.getByText("Already small")).toBeTruthy();
@@ -92,7 +97,7 @@ describe("QueueRow", () => {
   });
 
   it("names EXTRACT as the target of an archive", () => {
-    show({ ...base, from: "zip", to: null, op: "extract", state: "queued" } as RowView);
+    show({ ...base, from: "zip", to: null, op: "extract", state: "queued" } as unknown as RowView);
     expect(screen.getByText("EXTRACT")).toBeTruthy();
   });
 });

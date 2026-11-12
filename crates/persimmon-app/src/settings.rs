@@ -93,6 +93,29 @@ pub fn output_policy(settings: &Settings) -> OutputPolicy {
     }
 }
 
+/// The settings as the windows show them: with folders named the way
+/// Finder does, the home folder as `~`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsView {
+    #[serde(flatten)]
+    pub settings: Settings,
+    /// "beside original", or the output folder.
+    pub output_label: String,
+    pub fallback_label: String,
+}
+
+pub fn view(settings: &Settings) -> SettingsView {
+    SettingsView {
+        output_label: match &settings.output {
+            OutputMode::Beside => "beside original".into(),
+            OutputMode::Folder { folder } => crate::queue::tilde(folder),
+        },
+        fallback_label: crate::queue::tilde(&settings.fallback),
+        settings: settings.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +233,21 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["settings.json"]);
+    }
+
+    #[test]
+    fn the_view_names_folders_the_way_the_window_shows_them() {
+        let home = home();
+        let s = Settings {
+            output: OutputMode::Folder {
+                folder: home.join("Converted"),
+            },
+            ..Settings::default()
+        };
+        let v = serde_json::to_value(view(&s)).unwrap();
+        assert_eq!(v["outputLabel"], "~/Converted");
+        assert_eq!(v["fallbackLabel"], "~/Downloads/Persimmon");
+        assert_eq!(v["mode"], "convert");
+        assert_eq!(view(&Settings::default()).output_label, "beside original");
     }
 }

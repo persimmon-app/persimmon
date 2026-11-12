@@ -40,7 +40,7 @@
   onclick={(e) => onSelect(row.id, e)}
   onkeydown={() => {}}
 >
-  <span class="badge">{badge(row.from)}</span>
+  <span class="badge">{row.op === "merge" ? `${row.inputs.length} FILES` : badge(row.from)}</span>
   <span class="arrow"><Icon name="arrow" size={14} /></span>
   <span class="badge to">{target(row)}</span>
   <div class="file">
@@ -54,6 +54,7 @@
         <div class="bar indeterminate" role="progressbar" aria-label="Progress of {row.name}"><div class="fill"></div></div>
       {/if}
     {/if}
+    {#if row.note}<span class="note">{row.note}</span>{/if}
     {#if row.state === "failed"}
       <span class="why">{row.error.reason}{#if row.error.fix}{" — "}{row.error.fix}{/if}</span>
     {/if}
@@ -119,6 +120,7 @@
     text-overflow: ellipsis;
   }
   .why { font-size: var(--text-meta); color: var(--error-text); }
+  .note { font-size: var(--text-meta); color: var(--muted); }
   .bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
   .fill { height: 100%; background: var(--accent); }
   .indeterminate .fill { width: 30%; animation: slide 1.2s ease-in-out infinite; }
