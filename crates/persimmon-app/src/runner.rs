@@ -207,7 +207,10 @@ impl Inner {
                     .ok()
                     .filter(|m| m.is_file())
                     .map(|m| m.len());
-                RowState::Done { output, size }
+                RowState::Done {
+                    output,
+                    output_size: size,
+                }
             }
             Some(Ok(Outcome::NotSmaller)) => RowState::NotSmaller,
             Some(Err(e)) if e.code == ErrorCode::Cancelled => RowState::Cancelled,
@@ -228,6 +231,7 @@ impl Inner {
 mod tests {
     use super::*;
     use crate::queue::RowState;
+    #[cfg(feature = "vips")]
     use persimmon_core::error::ErrorCode;
     use persimmon_core::format::FormatId;
     use persimmon_corpus::PNG_1X1;
@@ -321,6 +325,8 @@ mod tests {
         (v, p)
     }
 
+    // Converts images, so needs the image backend (libvips).
+    #[cfg(feature = "vips")]
     #[test]
     fn runs_rows_in_order() {
         let d = Dir::new("order");
@@ -337,7 +343,11 @@ mod tests {
             ids.iter().all(|&i| finished(&state(&q, i)))
         });
         for &i in &ids {
-            let RowState::Done { output, size } = state(&q, i) else {
+            let RowState::Done {
+                output,
+                output_size: size,
+            } = state(&q, i)
+            else {
                 panic!("{:?}", state(&q, i))
             };
             assert!(output.is_file());
@@ -358,6 +368,8 @@ mod tests {
         );
     }
 
+    // Converts images, so needs the image backend (libvips).
+    #[cfg(feature = "vips")]
     #[test]
     fn start_replans_and_reports_a_vanished_file() {
         let d = Dir::new("vanished");
@@ -382,6 +394,8 @@ mod tests {
         assert!(matches!(state(&q, ids[1]), RowState::Done { .. }));
     }
 
+    // Converts images, so needs the image backend (libvips).
+    #[cfg(feature = "vips")]
     #[test]
     fn cancel_one_row_leaves_the_rest_running() {
         let Some(ff) = ffmpeg() else { return };
@@ -425,6 +439,8 @@ mod tests {
         assert!(!d.0.join("a.jpg").exists());
     }
 
+    // Converts images, so needs the image backend (libvips).
+    #[cfg(feature = "vips")]
     #[test]
     fn retry_after_failure() {
         let d = Dir::new("retry");

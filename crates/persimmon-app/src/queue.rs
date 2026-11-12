@@ -18,17 +18,23 @@ pub type RowId = u64;
 
 /// Where a row is.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RowState {
     Queued,
     /// `fraction` is `None` while a backend can't tell (images).
     Running {
         fraction: Option<f32>,
     },
+    /// `output` is also the row's own `output`, so only `outputSize` is
+    /// serialised here: a flattened duplicate key would hide one of them.
     Done {
-        #[serde(serialize_with = "lossy")]
+        #[serde(skip)]
         output: PathBuf,
-        size: Option<u64>,
+        output_size: Option<u64>,
     },
     /// Compressing wouldn't make it smaller; nothing was written.
     NotSmaller,
@@ -530,8 +536,8 @@ mod tests {
     fn row_view_json_shape() {
         let d = Dir::new("json");
         let mut q = queue();
-        let r = &q.add(&[d.put("a.png", &PNG_1X1)])[0];
-        let v = serde_json::to_value(r).unwrap();
+        let r = q.add(&[d.put("a.png", &PNG_1X1)])[0].clone();
+        let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["state"], "queued");
         assert_eq!(v["from"], "png");
         assert_eq!(v["to"], "jpeg");
@@ -545,5 +551,22 @@ mod tests {
             running,
             serde_json::json!({"state": "running", "fraction": 0.5})
         );
+        // A done row: one "size" (the source's) and one "output" (the
+        // path), never a duplicate key from the flattened state.
+        let done = q
+            .update(
+                r.id,
+                RowState::Done {
+                    output: d.0.join("a.jpg"),
+                    output_size: Some(7),
+                },
+            )
+            .unwrap();
+        let text = serde_json::to_string(&done).unwrap();
+        assert_eq!(text.matches("\"size\"").count(), 1, "{text}");
+        assert_eq!(text.matches("\"output\"").count(), 1, "{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["outputSize"], 7);
+        assert_eq!(v["size"], PNG_1X1.len() as u64);
     }
 }
