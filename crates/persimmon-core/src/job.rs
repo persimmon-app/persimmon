@@ -303,7 +303,7 @@ impl Job {
     fn output_dir(&self, input: &Path, mode: PlanMode) -> Result<PathBuf, Error> {
         match mode {
             PlanMode::Commit => self.output.output_dir(input),
-            PlanMode::Preview => Ok(self.output.preview_dir(input)),
+            PlanMode::Preview => self.output.preview_dir(input),
         }
     }
 
@@ -1240,6 +1240,29 @@ mod tests {
         assert_eq!(outputs(&preview), vec![dir.join("a (1).webp")]);
         assert_eq!(outputs(&preview), outputs(&commit));
         assert_eq!(j.plan(&Registry::builtin()).tasks, commit.tasks);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preview_rejects_an_out_that_is_a_file() {
+        let dir = scratch("preview-out-file");
+        let src = put(&dir, "a.png", &PNG_1X1);
+        let out = put(&dir, "out.txt", b"not a folder");
+        let j = webp_job(vec![src], Some(out.clone()));
+        for mode in [PlanMode::Preview, PlanMode::Commit] {
+            let plan = j.plan_with(&Registry::builtin(), mode);
+            assert!(plan.tasks.is_empty(), "{mode:?}");
+            assert_eq!(
+                plan.errors[0].code,
+                ErrorCode::OutputNotWritable,
+                "{mode:?}"
+            );
+            assert_eq!(
+                plan.errors[0].reason, "it's a file, not a folder",
+                "{mode:?}"
+            );
+            assert_eq!(plan.errors[0].file.as_deref(), Some(out.as_path()));
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

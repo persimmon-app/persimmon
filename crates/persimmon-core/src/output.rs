@@ -45,7 +45,7 @@ impl OutputPolicy {
     /// The folder the output for `input` goes in. With `--out`, the folder
     /// is created if it's missing. Either way it must be writable.
     pub fn output_dir(&self, input: &Path) -> Result<PathBuf, Error> {
-        let dir = self.preview_dir(input);
+        let dir = self.preview_dir(input)?;
         if self.dir.is_some() {
             std::fs::create_dir_all(&dir).map_err(|e| {
                 Error::new(
@@ -61,14 +61,21 @@ impl OutputPolicy {
     }
 
     /// The folder the output for `input` would go in, touching nothing: no
-    /// folder is created and nothing checks that it's writable.
-    pub fn preview_dir(&self, input: &Path) -> PathBuf {
+    /// folder is created and nothing checks that it's writable. Only an
+    /// `--out` that is an existing file is an error here.
+    pub fn preview_dir(&self, input: &Path) -> Result<PathBuf, Error> {
         match &self.dir {
-            Some(dir) => dir.clone(),
-            None => match input.parent() {
+            Some(dir) if dir.exists() && !dir.is_dir() => Err(Error::new(
+                ErrorCode::OutputNotWritable,
+                "it's a file, not a folder",
+            )
+            .with_file(dir)
+            .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)),
+            Some(dir) => Ok(dir.clone()),
+            None => Ok(match input.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
                 _ => PathBuf::from("."),
-            },
+            }),
         }
     }
 }
