@@ -90,6 +90,15 @@ describe("QueueRow", () => {
     expect(screen.getByRole("option", { name: "a.png, running, 62%" })).toBeTruthy();
   });
 
+  it("names the file that failed in a Combine row", () => {
+    show(row({
+      op: "merge", from: null, to: "pdf", name: "merged.pdf", inputs: ["/x/a.png", "/x/b.jpeg"],
+      state: "failed",
+      error: { code: "UNSUPPORTED_INPUT", file: "/x/Photos Library.photoslibrary/b.jpeg", reason: "This is Photos' preview, not your original", fix: null },
+    }));
+    expect(screen.getByText(/b\.jpeg: This is Photos' preview/)).toBeTruthy();
+  });
+
   it("shows a cancelled row with Retry", () => {
     show(row({ state: "cancelled" }));
     expect(screen.getByText("Cancelled")).toBeTruthy();

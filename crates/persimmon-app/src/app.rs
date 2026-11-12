@@ -300,6 +300,21 @@ async fn quit_now(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Every window hides when closed. Closing the main window must not leave
+/// the app running with nothing on screen (the hidden drop and Settings
+/// windows keep it alive), so it hides too and the Dock icon brings it
+/// back; a running conversion carries on.
+pub fn hides_on_close(label: &str) -> bool {
+    matches!(label, "main" | "drop" | "settings")
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// What quitting does now.
 #[derive(Debug, PartialEq, Eq)]
 enum QuitAction {
@@ -322,6 +337,8 @@ fn quit_action(busy: bool) -> QuitAction {
 fn quit_requested(app: &AppHandle) {
     match quit_action(app.state::<AppState>().runner.is_busy()) {
         QuitAction::Confirm => {
+            // The question is asked in the main window, so show it.
+            show_main(app);
             let _ = app.emit("confirm-quit", ());
         }
         QuitAction::Exit => app.exit(0),
@@ -446,25 +463,16 @@ pub fn run() {
             _ => {}
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                match window.label() {
-                    // The drop and Settings windows hide; they're shown again
-                    // from the menu.
-                    "drop" | "settings" => {
-                        api.prevent_close();
-                        let _ = window.hide();
-                        if window.label() == "drop" {
-                            let app = window.app_handle();
-                            let state = app.state::<AppState>();
-                            change_settings(app, &state, |s| s.drop_window = false);
-                            set_drop_window(app, false);
-                        }
-                    }
-                    _ if window.state::<AppState>().runner.is_busy() => {
-                        api.prevent_close();
-                        let _ = window.emit("confirm-quit", ());
-                    }
-                    _ => {}
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && hides_on_close(window.label())
+            {
+                api.prevent_close();
+                let _ = window.hide();
+                if window.label() == "drop" {
+                    let app = window.app_handle();
+                    let state = app.state::<AppState>();
+                    change_settings(app, &state, |s| s.drop_window = false);
+                    set_drop_window(app, false);
                 }
             }
         })
@@ -497,6 +505,8 @@ pub fn run() {
     app.run(|app, event| match event {
         // Files dropped on the Dock icon or opened with Persimmon: queued
         // with the current mode, shown when the window loads its rows.
+        // A click on the Dock icon brings the main window back.
+        RunEvent::Reopen { .. } => show_main(app),
         RunEvent::Opened { urls } => {
             let paths = paths_from_urls(&urls);
             match app.try_state::<AppState>() {
@@ -538,6 +548,15 @@ mod tests {
 
     /// ⌘Q (the app's own Quit item) asks first while a row runs, and
     /// quits at once otherwise.
+    /// Closing any window hides it: the main window comes back from the
+    /// Dock, and conversions keep running.
+    #[test]
+    fn closing_a_window_hides_it() {
+        for label in ["main", "drop", "settings"] {
+            assert!(super::hides_on_close(label), "{label}");
+        }
+    }
+
     #[test]
     fn quit_asks_only_while_a_row_runs() {
         assert_eq!(quit_action(true), QuitAction::Confirm);

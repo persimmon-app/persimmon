@@ -53,16 +53,21 @@ pub fn settings_path(data_dir: &Path) -> PathBuf {
 /// The settings at `path`: defaults when there are none, and when the file
 /// is damaged, which is then kept beside it as `settings.json.bad`.
 pub fn load(path: &Path) -> Settings {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Settings::default();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Settings::default(),
+        // Unreadable: keep it aside rather than overwrite it on the next save.
+        Err(_) => return keep_aside(path),
     };
-    match serde_json::from_str(&text) {
+    match serde_json::from_slice(&bytes) {
         Ok(settings) => settings,
-        Err(_) => {
-            let _ = std::fs::rename(path, path.with_extension("json.bad"));
-            Settings::default()
-        }
+        Err(_) => keep_aside(path),
     }
+}
+
+fn keep_aside(path: &Path) -> Settings {
+    let _ = std::fs::rename(path, path.with_extension("json.bad"));
+    Settings::default()
 }
 
 /// Write the settings through a temporary file renamed into place.
@@ -249,5 +254,18 @@ mod tests {
         assert_eq!(v["fallbackLabel"], "~/Downloads/Persimmon");
         assert_eq!(v["mode"], "convert");
         assert_eq!(view(&Settings::default()).output_label, "beside original");
+    }
+
+    /// A file that isn't text is damaged too: kept aside, never overwritten.
+    #[test]
+    fn unreadable_settings_are_kept_aside() {
+        let d = Dir::new("binary");
+        let path = d.0.join("settings.json");
+        std::fs::write(&path, b"\xff\xfe\x00garbage").unwrap();
+        assert_eq!(load(&path), Settings::default());
+        assert_eq!(
+            std::fs::read(d.0.join("settings.json.bad")).unwrap(),
+            b"\xff\xfe\x00garbage"
+        );
     }
 }

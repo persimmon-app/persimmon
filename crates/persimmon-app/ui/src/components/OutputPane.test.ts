@@ -30,6 +30,16 @@ describe("OutputPane", () => {
     expect(h.onChooseFolder).toHaveBeenCalled();
   });
 
+  it("doesn't tick In a folder until a folder is chosen", async () => {
+    const h = show(beside);
+    const radio = screen.getByRole("radio", { name: /In a folder/ }) as HTMLInputElement;
+    await fireEvent.click(radio);
+    expect(h.onChooseFolder).toHaveBeenCalled();
+    // The panel was cancelled: settings unchanged, so Beside stays ticked.
+    expect(radio.checked).toBe(false);
+    expect((screen.getByRole("radio", { name: "Beside the original" }) as HTMLInputElement).checked).toBe(true);
+  });
+
   it("changes the fallback folder", async () => {
     const h = show(beside);
     await fireEvent.click(screen.getByRole("button", { name: "Change fallback folder" }));

@@ -13,9 +13,14 @@
   <h2 id="output-title">Output</h2>
   <fieldset>
     <legend>Save converted files</legend>
-    <label><input type="radio" name="output" checked={!folder} onchange={onBeside} /> Beside the original</label>
+    <!-- A radio only shows what the settings say: a click asks for the
+         change (a folder panel the user may cancel), and the ticked radio
+         follows the settings that come back. -->
+    <label><input type="radio" name="output" checked={!folder}
+      onclick={(e) => { e.preventDefault(); if (folder) onBeside(); }} /> Beside the original</label>
     <label class="folder">
-      <input type="radio" name="output" checked={folder} onchange={onChooseFolder} /> In a folder:
+      <input type="radio" name="output" checked={folder}
+        onclick={(e) => { e.preventDefault(); onChooseFolder(); }} /> In a folder:
       {#if folder}<span class="path">{settings.outputLabel}</span>{/if}
       <button aria-label="Choose output folder" onclick={onChooseFolder}>Choose…</button>
     </label>

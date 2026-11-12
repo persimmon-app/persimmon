@@ -257,7 +257,8 @@ impl Queue {
         row.inputs.insert(to, input);
         let key = row.keys.remove(from);
         row.keys.insert(to, key);
-        let target = row.job.target;
+        // A picked target sticks; a defaulted one follows the inputs.
+        let target = row.job.target.filter(|_| row.picked);
         Some(self.refresh_at(i, target))
     }
 
@@ -275,7 +276,7 @@ impl Queue {
             self.rows.remove(i);
             return None;
         }
-        let target = self.rows[i].job.target;
+        let target = self.rows[i].job.target.filter(|_| self.rows[i].picked);
         Some(self.refresh_at(i, target))
     }
 
@@ -515,14 +516,17 @@ impl Queue {
     /// When a done row's output isn't beside its first input and the user
     /// asked for "beside", it fell back: say where it went.
     fn fallback_note(&self, id: RowId, output: &Path) -> Option<String> {
+        // The policy the row ran with: set_policy leaves a running row's
+        // job alone, so a setting changed mid-run can't mislabel it.
         let row = self.rows.iter().find(|r| r.id == id)?;
-        let fallback = self.policy.fallback.as_ref()?;
+        let policy = &row.job.output;
+        let fallback = policy.fallback.as_deref()?;
         let source_dir = row.inputs.first()?.parent()?;
         let out_dir = output.parent()?;
-        (self.policy.dir.is_none() && out_dir != source_dir).then(|| {
+        (policy.dir.is_none() && out_dir == fallback && out_dir != source_dir).then(|| {
             format!(
                 "Saved to {} — the original's folder isn't writable",
-                tilde(fallback)
+                tilde(out_dir)
             )
         })
     }
@@ -1097,5 +1101,51 @@ mod tests {
             "~/Downloads/Persimmon"
         );
         assert_eq!(tilde(Path::new("/Volumes/x")), "/Volumes/x");
+    }
+
+    /// The note follows the policy the row ran with, not one changed while
+    /// it ran, and names the folder the file actually went to.
+    #[test]
+    fn the_fallback_note_follows_the_rows_own_policy() {
+        let d = Dir::new("note-policy");
+        let src = d.put("a.png", &PNG_1X1);
+        let folder = d.0.join("out");
+        let mut q = Queue::new(
+            Registry::builtin(),
+            OutputPolicy {
+                dir: Some(folder.clone()),
+                ..OutputPolicy::default()
+            },
+        );
+        let id = q.add(&[src], QueueMode::Convert)[0].id;
+        q.next_queued().unwrap();
+        q.set_policy(OutputPolicy {
+            fallback: Some(d.0.join("fb")),
+            ..OutputPolicy::default()
+        });
+        let v = q
+            .update(
+                id,
+                RowState::Done {
+                    output: folder.join("a.jpg"),
+                    output_size: Some(1),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            v.note, None,
+            "it went where the user asked, not to a fallback"
+        );
+    }
+
+    #[test]
+    fn a_defaulted_combine_target_follows_removed_inputs() {
+        let d = Dir::new("combine-remove");
+        let mut q = queue();
+        q.add(&[d.put("a.png", &PNG_1X1)], QueueMode::Combine);
+        let r = q.add(&[d.put("b.wav", &WAV_HEADER)], QueueMode::Combine);
+        assert_eq!(r[0].to, Some(FormatId::Zip));
+        let after = q.remove_input(r[0].id, 1).unwrap();
+        assert_eq!(after.to, Some(FormatId::Pdf));
     }
 }

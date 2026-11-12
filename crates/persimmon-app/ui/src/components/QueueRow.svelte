@@ -15,11 +15,15 @@
 
   const percent = $derived(row.state === "running" && row.fraction !== null ? Math.round(row.fraction * 100) : null);
   const outputName = $derived(row.output ? row.output.split("/").pop() : "");
+  /** A Combine row combines many files: say which one failed (DD-17). */
+  const culprit = $derived(
+    row.op === "merge" && row.state === "failed" && row.error.file ? `${row.error.file.split("/").pop()}: ` : "",
+  );
   /** What VoiceOver reads for the row: its state and why (DD-17). */
   const label = $derived.by(() => {
     switch (row.state) {
       case "running": return `${row.name}, running, ${percent === null ? "working" : `${percent}%`}`;
-      case "failed": return `${row.name}, failed: ${row.error.reason}.${row.error.fix ? ` ${row.error.fix}` : ""}`;
+      case "failed": return `${row.name}, failed: ${culprit}${row.error.reason}.${row.error.fix ? ` ${row.error.fix}` : ""}`;
       case "notSmaller": return `${row.name}, already small`;
       default: return `${row.name}, ${row.state}`;
     }
@@ -56,7 +60,7 @@
     {/if}
     {#if row.note}<span class="note">{row.note}</span>{/if}
     {#if row.state === "failed"}
-      <span class="why">{row.error.reason}{#if row.error.fix}{" — "}{row.error.fix}{/if}</span>
+      <span class="why">{culprit}{row.error.reason}{#if row.error.fix}{" — "}{row.error.fix}{/if}</span>
     {/if}
   </div>
   <span class="sizes">{sizes}</span>
