@@ -61,7 +61,10 @@
     --accent: #c0460d;
     --accent-text: #b53c00;
     --accent-tint: rgba(192, 70, 13, 0.12);
-    --error: #e8695e;
+    /* The canvas has no light error colour; #E8695E is under AA here. Same
+       hue, 5.1–5.7:1 on light surfaces, 4.54:1 on its tint (owner, 2026-11-12). */
+    --error: #c4291c;
+    --error-text: #c4291c;
     --control-border: #8f8b86;
   }
 }

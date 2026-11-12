@@ -37,4 +37,33 @@ mod tests {
             serde_json::json!(["allow-engine-version"])
         );
     }
+
+    /// Every colour token has a light value too (DD-19: both themes at
+    /// parity), and the light error colour is the owner's AA value.
+    #[test]
+    fn light_theme_defines_every_colour_token() {
+        let css = include_str!("../ui/src/tokens.css");
+        let (dark, light) = css
+            .split_once("@media (prefers-color-scheme: light)")
+            .unwrap();
+        let colours = |block: &str| -> Vec<(String, String)> {
+            block
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("--"))
+                .filter_map(|l| l.split_once(':'))
+                .filter(|(_, v)| v.trim().starts_with('#') || v.trim().starts_with("rgba"))
+                .map(|(k, v)| (k.to_string(), v.trim().trim_end_matches(';').to_string()))
+                .collect()
+        };
+        let light = colours(light);
+        for (name, _) in colours(dark) {
+            assert!(
+                light.iter().any(|(k, _)| *k == name),
+                "light theme has no --{name}"
+            );
+        }
+        let value = |n: &str| light.iter().find(|(k, _)| k == n).unwrap().1.clone();
+        assert_eq!(value("error"), "#c4291c");
+        assert_eq!(value("error-text"), "#c4291c");
+    }
 }
