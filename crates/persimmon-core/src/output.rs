@@ -36,6 +36,8 @@ pub struct OutputPolicy {
     )]
     pub dir: Option<PathBuf>,
     /// `--overwrite`: replace existing files instead of numbering around them.
+    /// Never deserialised: a client such as the app can't turn it on.
+    #[cfg_attr(feature = "serde", serde(skip_deserializing))]
     pub overwrite: bool,
 }
 

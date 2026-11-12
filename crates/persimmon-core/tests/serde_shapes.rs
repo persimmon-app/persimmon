@@ -167,3 +167,11 @@ fn non_utf8_path_serialises_lossily() {
         "/tmp/a\u{fffd}.png"
     );
 }
+
+#[test]
+fn output_policy_never_deserialises_overwrite() {
+    // The app never overwrites (DD-42): a client can't turn it on.
+    let p: OutputPolicy = serde_json::from_str(r#"{"dir":"/x","overwrite":true}"#).unwrap();
+    assert!(!p.overwrite);
+    assert_eq!(p.dir, Some("/x".into()));
+}

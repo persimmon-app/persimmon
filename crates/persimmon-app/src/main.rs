@@ -22,3 +22,19 @@ fn main() {
 fn main() {
     eprintln!("Persimmon's app is macOS-only for now");
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    /// The window may call the app's own commands and nothing else: no
+    /// core defaults (tray, menus, paths, devtools), no plugins.
+    #[test]
+    fn capability_allows_only_the_apps_commands() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
+        assert_eq!(cap["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            cap["permissions"],
+            serde_json::json!(["allow-engine-version"])
+        );
+    }
+}

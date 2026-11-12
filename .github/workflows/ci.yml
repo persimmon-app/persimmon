@@ -78,9 +78,8 @@ jobs:
           command -v ffmpeg
           ffmpeg -hide_banner -version | head -1
 
-      # The app (macOS only) embeds its built UI, so the UI is checked and
-      # built before anything compiles the workspace. The licence check is
-      # the npm counterpart of deny.toml.
+      # The app's UI (macOS only): its npm licences (the counterpart of
+      # deny.toml), its types, and its production build.
       - name: Set up Node (macOS)
         if: runner.os == 'macOS'
         uses: actions/setup-node@v5
@@ -109,6 +108,11 @@ jobs:
         env:
           PERSIMMON_CORPUS_LARGE: ${{ runner.os != 'Windows' && '1' || '' }}
           PERSIMMON_REQUIRE_FFMPEG: "1"
+
+      # The serde shapes the app relies on, on every runner (DD-22): only the
+      # macOS app turns the feature on, so nothing else would compile it.
+      - name: Test serde shapes
+        run: cargo test -p persimmon-core --features serde --test serde_shapes --locked ${{ matrix.features }}
 
       # The licence guard (DD-04): every Rust dependency, direct or
       # transitive, must carry a licence on the deny.toml list. The
