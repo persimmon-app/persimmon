@@ -73,6 +73,11 @@ fn change_settings(
     shown
 }
 
+/// Files opened before the app finished starting (a cold launch from the
+/// Dock or Open With delivers them first): queued once startup is done.
+#[derive(Default)]
+struct Pending(Mutex<Vec<PathBuf>>);
+
 /// File URLs from the Dock or Open With, as paths; anything else is
 /// dropped.
 pub fn paths_from_urls(urls: &[tauri::Url]) -> Vec<PathBuf> {
@@ -399,6 +404,7 @@ fn settings_file(app: &AppHandle) -> PathBuf {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(Pending::default())
         .setup(|app| {
             let file = settings_file(app.handle());
             let settings = load(&file);
@@ -418,6 +424,12 @@ pub fn run() {
                 settings: Mutex::new(settings),
                 settings_file: file,
             });
+            let pending = std::mem::take(&mut *lock(&app.state::<Pending>().0));
+            if !pending.is_empty() {
+                let state = app.state::<AppState>();
+                let mode = state.mode();
+                state.queue().add(&pending, mode);
+            }
             app.set_menu(menu(app.handle(), drop_window)?)?;
             if drop_window {
                 set_drop_window(app.handle(), true);
@@ -486,23 +498,36 @@ pub fn run() {
         // Files dropped on the Dock icon or opened with Persimmon: queued
         // with the current mode, shown when the window loads its rows.
         RunEvent::Opened { urls } => {
-            let state = app.state::<AppState>();
-            let mode = state.mode();
-            let rows = state.queue().add(&paths_from_urls(&urls), mode);
-            emit_rows(app, &rows);
+            let paths = paths_from_urls(&urls);
+            match app.try_state::<AppState>() {
+                Some(state) => {
+                    let mode = state.mode();
+                    let rows = state.queue().add(&paths, mode);
+                    emit_rows(app, &rows);
+                }
+                // Not started yet: setup queues these.
+                None => lock(&app.state::<Pending>().0).extend(paths),
+            }
         }
         // Closing the last window with a conversion running: ask first.
         // app.exit() from the Quit item or quit_now has a code, so it goes
         // through.
         RunEvent::ExitRequested {
             api, code: None, ..
-        } if app.state::<AppState>().runner.is_busy() => {
+        } if app
+            .try_state::<AppState>()
+            .is_some_and(|s| s.runner.is_busy()) =>
+        {
             api.prevent_exit();
             let _ = app.emit("confirm-quit", ());
         }
         // Every way out, Dock Quit and logout included (they can't ask):
         // cancel the running row, so no .part and no FFmpeg is left.
-        RunEvent::Exit => app.state::<AppState>().runner.shutdown(),
+        RunEvent::Exit => {
+            if let Some(state) = app.try_state::<AppState>() {
+                state.runner.shutdown();
+            }
+        }
         _ => {}
     });
 }
