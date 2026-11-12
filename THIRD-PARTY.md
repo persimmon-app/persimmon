@@ -37,6 +37,17 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 
 Persimmon doesn't use libvips's ImageMagick, poppler or libimagequant modules, and a bundled build leaves them out.
 
+**The macOS app** (`persimmon-app`, not yet released) adds these:
+
+| Component | Version | Licence | Used for | Linked how |
+|---|---|---|---|---|
+| [Tauri](https://tauri.app/) (`tauri`, `tauri-build`, `@tauri-apps/api`, `@tauri-apps/cli`) | 2.12 | Apache-2.0 OR MIT | The app's window, its web view (the system WKWebView) and the bridge to the engine | Statically linked (Rust crates); the API package is bundled into the app's UI; the CLI is a build tool only |
+| [Svelte](https://svelte.dev/) | 5 | MIT | The app's interface | Compiled into the app's UI |
+| [Inter](https://rsms.me/inter/), from [Fontsource](https://fontsource.org/) | 5.3 (variable) | OFL-1.1 | The interface typeface | Bundled font files |
+| [JetBrains Mono](https://www.jetbrains.com/lp/mono/), from [Fontsource](https://fontsource.org/) | 5.3 (variable) | OFL-1.1 | File names, sizes, formats and commands | Bundled font files |
+
+Build tools that never ship in the app: Vite (MIT), TypeScript (Apache-2.0), svelte-check (MIT). Every npm package is checked by `crates/persimmon-app/ui/scripts/check-licences.mjs`, the counterpart of `deny.toml`.
+
 ## Run as a separate program
 
 | Component | Version | Licence | Used for | How |

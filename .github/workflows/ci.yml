@@ -78,6 +78,26 @@ jobs:
           command -v ffmpeg
           ffmpeg -hide_banner -version | head -1
 
+      # The app (macOS only) embeds its built UI, so the UI is checked and
+      # built before anything compiles the workspace. The licence check is
+      # the npm counterpart of deny.toml.
+      - name: Set up Node (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/persimmon-app/ui/package-lock.json
+
+      - name: Check and build the app's UI (macOS)
+        if: runner.os == 'macOS'
+        working-directory: crates/persimmon-app/ui
+        run: |
+          npm ci --ignore-scripts
+          npm run licences
+          npm run check
+          npm run build
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked ${{ matrix.features }} -- -D warnings
 
@@ -102,9 +122,15 @@ jobs:
         env:
           RUSTFLAGS: ""
 
+      # The app is macOS-only, so it's checked for the macOS targets alone:
+      # Tauri's Linux GTK stack never compiles into it.
       - name: Check licences and advisories
         if: runner.os == 'Linux'
-        run: cargo deny check licenses advisories
+        run: |
+          cargo deny --workspace --exclude persimmon-app check licenses advisories
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo deny --manifest-path crates/persimmon-app/Cargo.toml --target "$target" check licenses advisories
+          done
 
       - name: Build release
         run: cargo build --workspace --release --locked ${{ matrix.features }}

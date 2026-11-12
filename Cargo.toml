@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/persimmon-core", "crates/persimmon-cli", "crates/persimmon-corpus"]
+members = ["crates/persimmon-core", "crates/persimmon-cli", "crates/persimmon-corpus", "crates/persimmon-app"]
 resolver = "3"
 
 [workspace.package]

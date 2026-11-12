@@ -6,6 +6,18 @@
 # is an owner decision: never add a licence just to make
 # a red build green.
 
+# Check the dependency graph only for the platforms Persimmon builds.
+# The macOS-only app is checked on its own for its macOS targets (see CI),
+# because cargo-deny can't tell that Tauri's Linux GTK stack never compiles
+# into it. Owner-approved, 2026-11-12.
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+
 [licenses]
 allow = [
     "MIT",

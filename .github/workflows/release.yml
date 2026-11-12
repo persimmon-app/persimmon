@@ -114,7 +114,9 @@ jobs:
           $exe.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Test
-        run: cargo test --workspace --locked ${{ matrix.features }}
+        # The app isn't released yet (it's packaged from Phase 2 week 5), and it
+        # needs its built UI to compile.
+        run: cargo test --workspace --exclude persimmon-app --locked ${{ matrix.features }}
         env:
           PERSIMMON_REQUIRE_FFMPEG: "1"
 

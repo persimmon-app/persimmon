@@ -1,0 +1,77 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* The design tokens (DD-12 … DD-20, DD-26): the only source of colour, type,
+   radii, sizes and spacing. Dark is the default; light follows the system. */
+
+:root {
+  color-scheme: dark light;
+
+  --ground: #171512;
+  --surface: #1e1b17;
+  --raised: #262220;
+  --line: #332e29;
+  --text: #f4f1ec;
+  --muted: #b5ada2;
+  --faint: #948b81;
+  --accent: #e8632c;
+  --accent-text: #f7834f;
+  --accent-tint: rgba(232, 99, 44, 0.14);
+  --error: #e8695e;
+  --error-text: #f37367;
+  --control-border: #736b63;
+
+  --font-ui: "Inter Variable", "Inter", system-ui, sans-serif;
+  --font-data: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  --text-display: 28px;
+  --text-section: 20px;
+  --text-body: 14px;
+  --text-row: 13px;
+  --text-meta: 12px;
+  --text-label: 11px;
+  --line-body: 1.6;
+
+  --radius-badge: 4px;
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-chip: 999px;
+
+  --titlebar: 48px;
+  --toolbar: 56px;
+  --statusbar: 34px;
+  --sidebar: 208px;
+  --button: 36px;
+  --button-toolbar: 32px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 40px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ground: #f3f2f0;
+    --surface: #ffffff;
+    --raised: #f7f6f4;
+    --line: #e2dfda;
+    --text: #1b1917;
+    --muted: #5c564e;
+    --faint: #6e675d;
+    --accent: #c0460d;
+    --accent-text: #b53c00;
+    --accent-tint: rgba(192, 70, 13, 0.12);
+    --error: #e8695e;
+    --control-border: #8f8b86;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: var(--line-body);
+}

@@ -15,3 +15,8 @@
 /notes/
 /private/
 *.local.md
+
+# The app: npm installs, Vite builds and Tauri-generated schemas.
+crates/persimmon-app/ui/node_modules/
+crates/persimmon-app/ui/dist/
+crates/persimmon-app/gen/

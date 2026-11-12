@@ -1,0 +1,30 @@
+[package]
+name = "persimmon-app"
+description = "Persimmon's macOS app: a Tauri shell over persimmon-core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+# The app is macOS-only until the port (WD-10). Elsewhere this crate builds
+# a stub with no dependencies, so the workspace still builds and tests on
+# Windows and Linux CI.
+# The engine's backends come through the app's own features, so a
+# workspace build with --no-default-features leaves them out here too.
+[features]
+default = ["vips", "rar"]
+vips = ["persimmon-core/vips"]
+rar = ["persimmon-core/rar"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+persimmon-core = { path = "../persimmon-core", default-features = false, features = ["serde"] }
+tauri = { version = "2.12", features = [] }
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[lints]
+workspace = true
