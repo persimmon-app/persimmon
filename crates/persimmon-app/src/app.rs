@@ -14,7 +14,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::queue::{Queue, RowId, RowView, SetTarget};
+use crate::queue::{Queue, QueueMode, RowId, RowView, SetTarget};
 use crate::runner::Runner;
 
 /// The app's state, shared by every command.
@@ -42,7 +42,7 @@ fn engine_version() -> String {
 
 #[tauri::command]
 fn add_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
-    let rows = state.queue().add(&paths);
+    let rows = state.queue().add(&paths, QueueMode::Convert);
     emit_rows(&app, &rows);
     rows
 }
@@ -59,7 +59,7 @@ async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Ro
         .into_iter()
         .filter_map(|f| f.into_path().ok())
         .collect();
-    let rows = state.queue().add(&paths);
+    let rows = state.queue().add(&paths, QueueMode::Convert);
     emit_rows(&app, &rows);
     Ok(rows)
 }
@@ -203,7 +203,10 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let queue = Arc::new(Mutex::new(Queue::new(Registry::builtin())));
+            let queue = Arc::new(Mutex::new(Queue::new(
+                Registry::builtin(),
+                persimmon_core::output::OutputPolicy::default(),
+            )));
             let handle = app.handle().clone();
             // FFmpeg from PATH or Homebrew until the app bundles its own.
             let runner = Runner::new(Arc::clone(&queue), Backends::new(), move |row| {

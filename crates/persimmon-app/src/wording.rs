@@ -26,6 +26,22 @@ fn lossy<S: serde::Serializer>(p: &Option<PathBuf>, s: S) -> Result<S::Ok, S::Er
     }
 }
 
+/// An error the app itself finds, before the engine sees the file (a
+/// Photos preview, a folder outside Combine).
+pub fn app_error(
+    code: ErrorCode,
+    file: &std::path::Path,
+    reason: &str,
+    fix: Option<&str>,
+) -> Shown {
+    Shown {
+        code,
+        file: Some(file.to_path_buf()),
+        reason: reason.into(),
+        fix: fix.map(Into::into),
+    }
+}
+
 /// The app's wording for `e`.
 pub fn shown(e: &Error) -> Shown {
     Shown {

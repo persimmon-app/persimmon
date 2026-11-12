@@ -230,7 +230,7 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queue::RowState;
+    use crate::queue::{QueueMode, RowState};
     #[cfg(feature = "vips")]
     use persimmon_core::error::ErrorCode;
     use persimmon_core::format::FormatId;
@@ -269,7 +269,10 @@ mod tests {
     type Seen = Arc<Mutex<Vec<RowView>>>;
 
     fn setup(backends: Backends) -> (Arc<Mutex<Queue>>, Runner, Seen) {
-        let queue = Arc::new(Mutex::new(Queue::new(Registry::builtin())));
+        let queue = Arc::new(Mutex::new(Queue::new(
+            Registry::builtin(),
+            persimmon_core::output::OutputPolicy::default(),
+        )));
         let seen: Seen = Arc::default();
         let s = Arc::clone(&seen);
         let runner = Runner::new(Arc::clone(&queue), backends, move |v| {
@@ -319,9 +322,9 @@ mod tests {
         let video = d.0.join(src.file_name().unwrap());
         std::fs::copy(&src, &video).unwrap();
         let mut q = q.lock().unwrap();
-        let v = q.add(&[video])[0].id;
+        let v = q.add(&[video], QueueMode::Convert)[0].id;
         q.set_target(&[v], FormatId::Webm);
-        let p = q.add(&[d.put("b.png", &PNG_1X1)])[0].id;
+        let p = q.add(&[d.put("b.png", &PNG_1X1)], QueueMode::Convert)[0].id;
         (v, p)
     }
 
@@ -334,7 +337,10 @@ mod tests {
         let ids: Vec<RowId> = q
             .lock()
             .unwrap()
-            .add(&[d.put("a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)])
+            .add(
+                &[d.put("a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)],
+                QueueMode::Convert,
+            )
             .iter()
             .map(|v| v.id)
             .collect();
@@ -378,7 +384,7 @@ mod tests {
         let ids: Vec<RowId> = q
             .lock()
             .unwrap()
-            .add(&[a.clone(), d.put("b.png", &PNG_1X1)])
+            .add(&[a.clone(), d.put("b.png", &PNG_1X1)], QueueMode::Convert)
             .iter()
             .map(|v| v.id)
             .collect();
@@ -427,7 +433,10 @@ mod tests {
         let ids: Vec<RowId> = q
             .lock()
             .unwrap()
-            .add(&[d.put("a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)])
+            .add(
+                &[d.put("a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)],
+                QueueMode::Convert,
+            )
             .iter()
             .map(|v| v.id)
             .collect();
@@ -446,7 +455,11 @@ mod tests {
         let d = Dir::new("retry");
         let (q, r, _) = setup(Backends::new());
         let a = d.0.join("a.png");
-        let id = q.lock().unwrap().add(std::slice::from_ref(&a))[0].id;
+        let id = q
+            .lock()
+            .unwrap()
+            .add(std::slice::from_ref(&a), QueueMode::Convert)[0]
+            .id;
         assert!(matches!(state(&q, id), RowState::Failed { .. }));
         std::fs::write(&a, PNG_1X1).unwrap();
         assert!(r.retry(id).is_some());
@@ -478,5 +491,43 @@ mod tests {
         assert!(!r.is_busy());
         assert!(d.no_partials());
         assert!(no_ffmpeg_child());
+    }
+
+    /// A file in a folder nobody can write lands in the fallback, and the
+    /// row says so.
+    #[cfg(feature = "vips")]
+    #[test]
+    fn fallback_row_says_where_it_went() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("fallback");
+        let locked = d.0.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let src = locked.join("a.png");
+        std::fs::write(&src, PNG_1X1).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let fb = d.0.join("fb");
+        let policy = persimmon_core::output::OutputPolicy {
+            fallback: Some(fb.clone()),
+            ..Default::default()
+        };
+        let queue = Arc::new(Mutex::new(Queue::new(Registry::builtin(), policy)));
+        let r = Runner::new(Arc::clone(&queue), Backends::new(), |_| {});
+        let id = queue.lock().unwrap().add(&[src], QueueMode::Convert)[0].id;
+        r.start();
+        wait("the row", 30, || finished(&state(&queue, id)));
+        let v = queue.lock().unwrap().get(id).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(v.state, RowState::Done { .. }), "{:?}", v.state);
+        assert_eq!(v.output.as_deref(), Some(fb.join("a.jpg").as_path()));
+        assert_eq!(
+            v.note.as_deref(),
+            Some(
+                format!(
+                    "Saved to {} — the original's folder isn't writable",
+                    crate::queue::tilde(&fb)
+                )
+                .as_str()
+            )
+        );
     }
 }
