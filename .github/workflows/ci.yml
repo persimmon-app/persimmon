@@ -79,7 +79,7 @@ jobs:
           ffmpeg -hide_banner -version | head -1
 
       # The app's UI (macOS only): its npm licences (the counterpart of
-      # deny.toml), its types, and its production build.
+      # deny.toml), its types, its component tests, and its production build.
       - name: Set up Node (macOS)
         if: runner.os == 'macOS'
         uses: actions/setup-node@v5
@@ -95,6 +95,7 @@ jobs:
           npm ci --ignore-scripts
           npm run licences
           npm run check
+          npm test
           npm run build
 
       - name: Clippy
