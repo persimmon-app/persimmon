@@ -241,11 +241,29 @@ impl Plan {
     }
 }
 
+/// How much planning may touch the disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanMode {
+    /// Before running: `--out` is created if missing, and each output
+    /// folder is checked for writability with a probe file.
+    Commit,
+    /// To show what would happen: nothing is created or written, and
+    /// unwritable folders aren't reported. Every other check runs, and the
+    /// output names are the ones `Commit` would choose now.
+    Preview,
+}
+
 impl Job {
-    /// Plan the job: detect every input, check the capability graph, and
-    /// choose output names. Writes nothing but the output folder (`--out`
-    /// is created if missing) and the writability probe.
+    /// Plan the job to run it: [`PlanMode::Commit`].
     pub fn plan(&self, reg: &Registry) -> Plan {
+        self.plan_with(reg, PlanMode::Commit)
+    }
+
+    /// Plan the job: detect every input, check the capability graph, and
+    /// choose output names. Inputs are read, never written. In `Commit`
+    /// mode the only writes are the `--out` folder and the writability
+    /// probe; in `Preview` mode there are none.
+    pub fn plan_with(&self, reg: &Registry, mode: PlanMode) -> Plan {
         let inputs = dedupe(&self.inputs);
         let mut taken = HashSet::new();
         for input in &inputs {
@@ -262,17 +280,17 @@ impl Job {
                     return plan;
                 }
                 for input in &inputs {
-                    match self.plan_one(reg, input, &mut taken) {
+                    match self.plan_one(reg, input, &mut taken, mode) {
                         Ok(task) => plan.task(task),
                         Err(e) => plan.error(e),
                     }
                 }
             }
-            Operation::Merge => match self.plan_merge(reg, &inputs, &mut taken) {
+            Operation::Merge => match self.plan_merge(reg, &inputs, &mut taken, mode) {
                 Ok(task) => plan.task(task),
                 Err(errors) => errors.into_iter().for_each(|e| plan.error(e)),
             },
-            Operation::Split => match self.plan_split(reg, &inputs, &mut taken) {
+            Operation::Split => match self.plan_split(reg, &inputs, &mut taken, mode) {
                 Ok(task) => plan.task(task),
                 Err(e) => plan.error(e),
             },
@@ -280,11 +298,21 @@ impl Job {
         plan
     }
 
+    /// The folder an input's output goes in, created and checked only in
+    /// `Commit` mode.
+    fn output_dir(&self, input: &Path, mode: PlanMode) -> Result<PathBuf, Error> {
+        match mode {
+            PlanMode::Commit => self.output.output_dir(input),
+            PlanMode::Preview => Ok(self.output.preview_dir(input)),
+        }
+    }
+
     fn plan_one(
         &self,
         reg: &Registry,
         input: &Path,
         taken: &mut HashSet<PathBuf>,
+        mode: PlanMode,
     ) -> Result<PlannedTask, Error> {
         let from = detect(input, reg.formats())?.format;
         let to = match self.op {
@@ -307,7 +335,7 @@ impl Job {
             }
             _ => None,
         };
-        let dir = self.output.output_dir(input)?;
+        let dir = self.output_dir(input, mode)?;
         let stem = stem_of(input, reg);
         let ow = self.output.overwrite;
         let output = match self.op {
@@ -398,6 +426,7 @@ impl Job {
         reg: &Registry,
         inputs: &[PathBuf],
         taken: &mut HashSet<PathBuf>,
+        mode: PlanMode,
     ) -> Result<PlannedTask, Vec<Error>> {
         let target = match self.target {
             Some(t @ (FormatId::Pdf | FormatId::Zip | FormatId::TarGz)) => t,
@@ -445,7 +474,7 @@ impl Job {
         let Some(first) = inputs.first() else {
             return Err(vec![Error::new(ErrorCode::Usage, "no files given")]);
         };
-        let dir = self.output.output_dir(first).map_err(|e| vec![e])?;
+        let dir = self.output_dir(first, mode).map_err(|e| vec![e])?;
         let ext = reg.format(target).extensions[0];
         Ok(PlannedTask {
             inputs: inputs.to_vec(),
@@ -461,6 +490,7 @@ impl Job {
         reg: &Registry,
         inputs: &[PathBuf],
         taken: &mut HashSet<PathBuf>,
+        mode: PlanMode,
     ) -> Result<PlannedTask, Error> {
         let Some(pages) = &self.options.pages else {
             return Err(Error::new(ErrorCode::Usage, "no pages given")
@@ -477,7 +507,7 @@ impl Job {
             })?;
         let info = pdf_info(input)?;
         select_pages(Some(pages), info.pages).map_err(|e| e.with_file(input))?;
-        let dir = self.output.output_dir(input)?;
+        let dir = self.output_dir(input, mode)?;
         let stem = format!("{} (pages {pages})", stem_of(input, reg));
         Ok(PlannedTask {
             inputs: vec![input.clone()],
@@ -1137,5 +1167,79 @@ mod tests {
         let plan = job(Operation::Merge, inputs, Some(FormatId::Pdf)).plan(&Registry::builtin());
         assert!(plan.tasks.is_empty());
         assert_eq!(plan.errors.len(), 2, "{:?}", plan.errors);
+    }
+
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn webp_job(inputs: Vec<PathBuf>, out: Option<PathBuf>) -> Job {
+        let mut j = job(Operation::Convert, inputs, Some(FormatId::Webp));
+        j.output.dir = out;
+        j
+    }
+
+    #[test]
+    fn preview_creates_no_folder_and_no_probe() {
+        let dir = scratch("preview-nothing");
+        let src = put(&dir, "a.png", &PNG_1X1);
+        let out = dir.join("not-yet");
+        let before = listing(&dir);
+        let plan = webp_job(vec![src], Some(out.clone()))
+            .plan_with(&Registry::builtin(), PlanMode::Preview);
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert_eq!(outputs(&plan), vec![out.join("a.webp")]);
+        assert!(!out.exists());
+        assert_eq!(listing(&dir), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_skips_the_writability_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("preview-locked");
+        let locked = dir.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let src = put(&locked, "a.png", &PNG_1X1);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let j = webp_job(vec![src], None);
+        let commit = j.plan_with(&Registry::builtin(), PlanMode::Commit);
+        let preview = j.plan_with(&Registry::builtin(), PlanMode::Preview);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(commit.errors[0].code, ErrorCode::OutputNotWritable);
+        assert!(preview.errors.is_empty(), "{:?}", preview.errors);
+        assert_eq!(outputs(&preview), vec![locked.join("a.webp")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preview_reports_missing_input() {
+        let dir = scratch("preview-missing");
+        let j = webp_job(vec![dir.join("gone.png")], None);
+        let commit = j.plan_with(&Registry::builtin(), PlanMode::Commit);
+        let preview = j.plan_with(&Registry::builtin(), PlanMode::Preview);
+        assert_eq!(preview.errors, commit.errors);
+        assert_eq!(preview.errors[0].code, ErrorCode::InputNotFound);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preview_and_commit_choose_the_same_names() {
+        let dir = scratch("preview-names");
+        let src = put(&dir, "a.png", &PNG_1X1);
+        put(&dir, "a.webp", b"taken");
+        let j = webp_job(vec![src], None);
+        let commit = j.plan_with(&Registry::builtin(), PlanMode::Commit);
+        let preview = j.plan_with(&Registry::builtin(), PlanMode::Preview);
+        assert_eq!(outputs(&preview), vec![dir.join("a (1).webp")]);
+        assert_eq!(outputs(&preview), outputs(&commit));
+        assert_eq!(j.plan(&Registry::builtin()).tasks, commit.tasks);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

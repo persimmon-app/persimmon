@@ -43,25 +43,31 @@ impl OutputPolicy {
     /// The folder the output for `input` goes in. With `--out`, the folder
     /// is created if it's missing. Either way it must be writable.
     pub fn output_dir(&self, input: &Path) -> Result<PathBuf, Error> {
-        let dir = match &self.dir {
-            Some(dir) => {
-                std::fs::create_dir_all(dir).map_err(|e| {
-                    Error::new(
-                        ErrorCode::OutputNotWritable,
-                        format!("can't create this folder ({e})"),
-                    )
-                    .with_file(dir)
-                    .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)
-                })?;
-                dir.clone()
-            }
+        let dir = self.preview_dir(input);
+        if self.dir.is_some() {
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                Error::new(
+                    ErrorCode::OutputNotWritable,
+                    format!("can't create this folder ({e})"),
+                )
+                .with_file(&dir)
+                .with_fix_as(FixKind::ChooseOutputFolder, OUT_FIX)
+            })?;
+        }
+        ensure_writable(&dir)?;
+        Ok(dir)
+    }
+
+    /// The folder the output for `input` would go in, touching nothing: no
+    /// folder is created and nothing checks that it's writable.
+    pub fn preview_dir(&self, input: &Path) -> PathBuf {
+        match &self.dir {
+            Some(dir) => dir.clone(),
             None => match input.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
                 _ => PathBuf::from("."),
             },
-        };
-        ensure_writable(&dir)?;
-        Ok(dir)
+        }
     }
 }
 
