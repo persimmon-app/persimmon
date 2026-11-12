@@ -5,4 +5,6 @@
 //! and the runner. macOS only for now (WD-10).
 
 #[cfg(target_os = "macos")]
+pub mod queue;
+#[cfg(target_os = "macos")]
 pub mod wording;
