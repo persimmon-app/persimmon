@@ -3,6 +3,7 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import PresetList from "./PresetList.svelte";
+  import { nextRadio } from "../lib/radio";
   import type { PresetView, QueueMode } from "../lib/types";
 
   let { mode, onMode, preset = null, presets = [], onPreset = () => {}, view = "queue", onHistory = () => {} }: {
@@ -16,13 +17,24 @@
     { id: "extract", label: "Extract", key: "⌃⌘3", icon: "folder" },
     { id: "combine", label: "Combine", key: "⌃⌘4", icon: "add" },
   ];
+  /** One tab stop for the group: the checked mode, or the current one
+   * while a preset is active. The arrow keys move and select (macOS). */
+  const buttons: HTMLButtonElement[] = $state([]);
+  function key(e: KeyboardEvent, from: QueueMode) {
+    const to = nextRadio(modes.map((m) => m.id), from, e.key) as QueueMode | null;
+    if (!to) return;
+    e.preventDefault(); e.stopPropagation();
+    onMode(to);
+    buttons[modes.findIndex((m) => m.id === to)]?.focus();
+  }
 </script>
 
 <nav class="sidebar" aria-label="Sidebar">
   <p class="label" id="mode-label">MODE</p>
   <div role="radiogroup" aria-labelledby="mode-label">
-    {#each modes as m (m.id)}
+    {#each modes as m, i (m.id)}
       <button role="radio" aria-checked={mode === m.id && !preset} class:current={mode === m.id && !preset && view === "queue"}
+        tabindex={mode === m.id ? 0 : -1} bind:this={buttons[i]} onkeydown={(e) => key(e, m.id)}
         title="{m.label} ({m.key})" onclick={() => onMode(m.id)}>
         <Icon name={m.icon} size={16} /> <span>{m.label}</span> <span class="key">{m.key}</span>
       </button>

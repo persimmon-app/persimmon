@@ -41,4 +41,27 @@ describe("CombineRow", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Remove b.png" }));
     expect(h.onRemoveInput).toHaveBeenCalledWith(7, 1);
   });
+
+  it("moves an input with ⌥↓ without moving the queue's selection", async () => {
+    const onReorder = vi.fn();
+    const parent = vi.fn();
+    render(CombineRow, { row, selected: false, active: true, onCancel() {}, onRetry() {}, onReveal() {}, onSelect() {}, onReorder, onRemoveInput() {} });
+    window.addEventListener("keydown", parent);
+    await fireEvent.click(screen.getByRole("button", { name: /Show the/ }));
+    const handle = screen.getAllByRole("button", { name: /^Move / })[0];
+    await fireEvent.keyDown(handle, { key: "ArrowDown", altKey: true });
+    window.removeEventListener("keydown", parent);
+    expect(onReorder).toHaveBeenCalledTimes(1);
+    expect(parent).not.toHaveBeenCalled();
+  });
+
+  it("picks an input up with Enter and puts it down with Enter", async () => {
+    render(CombineRow, { row, selected: false, active: true, onCancel() {}, onRetry() {}, onReveal() {}, onSelect() {}, onReorder() {}, onRemoveInput() {} });
+    await fireEvent.click(screen.getByRole("button", { name: /Show the/ }));
+    const handle = screen.getAllByRole("button", { name: /^Move / })[0];
+    await fireEvent.keyDown(handle, { key: "Enter" });
+    expect(handle.getAttribute("aria-pressed")).toBe("true");
+    await fireEvent.keyDown(handle, { key: "Enter" });
+    expect(handle.getAttribute("aria-pressed")).toBe("false");
+  });
 });

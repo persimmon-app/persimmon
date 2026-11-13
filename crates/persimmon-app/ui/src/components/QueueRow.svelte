@@ -1,17 +1,24 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- One queue row, as the canvas's macOS window draws it (DD-13 … DD-17). -->
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import { badge, size, target } from "../lib/format";
   import type { RowId, RowView } from "../lib/types";
 
   let {
-    row, selected, onCancel, onRetry, onReveal, onSelect,
+    row, selected, active = false, onCancel, onRetry, onReveal, onSelect, lead, after,
   }: {
     row: RowView; selected: boolean;
+    /** The grid's active row: only its controls are in the tab order. */
+    active?: boolean;
     onCancel: (id: RowId) => void; onRetry: (id: RowId) => void;
     onReveal: (id: RowId) => void; onSelect: (id: RowId, e: MouseEvent) => void;
+    /** Before the row's line, and below it: the Combine row's disclosure
+     * and its inputs, inside the row's one grid cell. */
+    lead?: Snippet; after?: Snippet;
   } = $props();
+  const tab = $derived(active ? 0 : -1);
 
   const percent = $derived(row.state === "running" && row.fraction !== null ? Math.round(row.fraction * 100) : null);
   const outputName = $derived(row.output ? row.output.split("/").pop() : "");
@@ -33,16 +40,13 @@
   );
 </script>
 
+<div id="row-{row.id}" role="row" tabindex="-1" aria-selected={selected} aria-label={label} onclick={(e) => onSelect(row.id, e)} onkeydown={() => {}}>
+<div role="gridcell" class="cell" class:lead={!!lead}>
+{#if lead}{@render lead()}{/if}
 <div
   class="row {row.state}"
   class:running={row.state === "running"}
   class:selected
-  role="option"
-  aria-selected={selected}
-  aria-label={label}
-  tabindex="-1"
-  onclick={(e) => onSelect(row.id, e)}
-  onkeydown={() => {}}
 >
   <span class="badge">{row.op === "merge" ? `${row.inputs.length} FILES` : badge(row.from)}</span>
   <span class="arrow"><Icon name="arrow" size={14} /></span>
@@ -74,17 +78,23 @@
   </span>
   <span class="action">
     {#if row.state === "running"}
-      <button class="icon" aria-label="Cancel {row.name}" title="Cancel (⌘.)" onclick={(e) => { e.stopPropagation(); onCancel(row.id); }}><Icon name="close" size={14} /></button>
+      <button class="icon" tabindex={tab} aria-label="Cancel {row.name}" title="Cancel (⌘.)" onclick={(e) => { e.stopPropagation(); onCancel(row.id); }}><Icon name="close" size={14} /></button>
     {:else if row.state === "done"}
-      <button class="text" aria-label="Reveal {outputName} in Finder" title="Reveal in Finder (⇧⌘R)" onclick={(e) => { e.stopPropagation(); onReveal(row.id); }}>Reveal</button>
+      <button class="text" tabindex={tab} aria-label="Reveal {outputName} in Finder" title="Reveal in Finder (⇧⌘R)" onclick={(e) => { e.stopPropagation(); onReveal(row.id); }}>Reveal</button>
     {:else if row.state === "failed" || row.state === "cancelled"}
-      <button class="text" aria-label="Retry {row.name}" title="Retry (⌘R)" onclick={(e) => { e.stopPropagation(); onRetry(row.id); }}>Retry</button>
+      <button class="text" tabindex={tab} aria-label="Retry {row.name}" title="Retry (⌘R)" onclick={(e) => { e.stopPropagation(); onRetry(row.id); }}>Retry</button>
     {/if}
   </span>
+</div>
+{#if after}<div class="after">{@render after()}</div>{/if}
+</div>
 </div>
 
 
 <style>
+  .cell { display: grid; grid-template-columns: 1fr; }
+  .cell.lead { grid-template-columns: auto 1fr; }
+  .after { grid-column: 1 / -1; }
   .row {
     display: grid;
     grid-template-columns: auto auto auto 1fr auto 104px 72px;

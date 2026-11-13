@@ -198,17 +198,21 @@
     {:else}
       <!-- A click on the queue's empty space clears the selection, so the
            Output menu acts on every row again (spec D1). -->
-      <div class="queue" role="listbox" aria-label="Queue" aria-multiselectable="true" tabindex="-1"
+      <!-- A grid, not a listbox: rows hold buttons, which an option can't.
+           It keeps focus and points at the active row, so VoiceOver reads
+           each row the arrow keys reach. -->
+      <div class="queue" role="grid" aria-label="Queue" aria-multiselectable="true" tabindex="0"
+        aria-activedescendant={anchor !== null && rows.some((r) => r.id === anchor) ? `row-${anchor}` : undefined}
         onclick={(e) => { if (e.target === e.currentTarget) { selected = []; anchor = null; } }}
         onkeydown={() => {}}>
         {#each rows as row (row.id)}
           {#if row.op === "merge"}
-            <CombineRow {row} selected={selected.includes(row.id)}
+            <CombineRow {row} selected={selected.includes(row.id)} active={anchor === row.id}
               onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
               onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)}
               onReorder={reorder} onRemoveInput={removeInput} />
           {:else}
-            <QueueRow {row} selected={selected.includes(row.id)}
+            <QueueRow {row} selected={selected.includes(row.id)} active={anchor === row.id}
               onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
               onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)} />
           {/if}

@@ -2,13 +2,27 @@
 <!-- The sidebar's presets (spec D4): ⌘1–⌘9, active for new files. -->
 <script lang="ts">
   import type { PresetView } from "../lib/types";
+  import { nextRadio } from "../lib/radio";
   let { presets, active, onPreset }: { presets: PresetView[]; active: string | null; onPreset: (id: string) => void } = $props();
+
+  /** One tab stop: the active preset, else the first. Arrows move and
+   * select, as the modes above do. */
+  const stop = $derived(presets.some((p) => p.id === active) ? active : (presets[0]?.id ?? null));
+  const buttons: HTMLButtonElement[] = $state([]);
+  function key(e: KeyboardEvent, from: string) {
+    const to = nextRadio(presets.map((p) => p.id), from, e.key);
+    if (!to) return;
+    e.preventDefault(); e.stopPropagation();
+    onPreset(to);
+    buttons[presets.findIndex((p) => p.id === to)]?.focus();
+  }
 </script>
 
 <p class="label" id="presets-label">PRESETS</p>
 <div role="radiogroup" aria-labelledby="presets-label">
-  {#each presets as p (p.id)}
+  {#each presets as p, i (p.id)}
     <button role="radio" aria-checked={active === p.id} class:current={active === p.id}
+      tabindex={stop === p.id ? 0 : -1} bind:this={buttons[i]} onkeydown={(e) => key(e, p.id)}
       title="{p.name} ({p.command})" onclick={() => onPreset(p.id)}>
       <span class="name">{p.name}</span>
       {#if p.shortcut}<span class="key">⌘{p.shortcut}</span>{/if}
