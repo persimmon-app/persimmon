@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Every source the macOS app's native libraries and FFmpeg are built from,
+# Every source the macOS app's native libraries and FFmpeg are built from
+# (FFmpeg's codecs last; x264 has no releases, so it's its stable branch,
+# pinned by commit),
 # one per line: name, version, URL, SHA-256. lib.sh's fetch refuses a
 # download whose checksum differs. Changing a line here changes the release
 # workflow's cache key, so the prefix is rebuilt. proxy-libintl is the
@@ -26,4 +28,10 @@ libheif 1.23.7 https://github.com/strukturag/libheif/releases/download/v1.23.7/l
 cgif 0.5.4 https://github.com/dloebl/cgif/archive/refs/tags/v0.5.4.tar.gz 83a70a15bc2da41f081a44ebc58ee48e2e1d524a6d3fdb4a24064afa08d5ad4d
 libvips 8.18.7 https://github.com/libvips/libvips/releases/download/v8.18.7/vips-8.18.7.tar.xz 5baaead3b0bb20ffdb9e9ff09aa9fda08620923df77b63b436654cb5e0b3bf94
 libarchive 3.8.11 https://github.com/libarchive/libarchive/releases/download/v3.8.11/libarchive-3.8.11.tar.xz a3dc0872b1b39da34dc18ef1b944f0f11ffd37425d70ae04be679279f1cf43d2
+ffmpeg 9.0.2 https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+x264 b35605ace3ddf7c1a5d67a2eb553f034aef41d55 https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2 6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224
+x265 4.2 https://download.videolan.org/videolan/x265/x265_4.2.tar.gz 40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210
+libvpx 1.17.0 https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz 1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a
+opus 1.6.1 https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+lame 3.100 https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
 "
