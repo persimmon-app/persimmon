@@ -7,15 +7,25 @@
 #   build/    unpacked trees, deleted when a script finishes
 #   prefix/   what's bundled: lib/*.dylib, bin/ffmpeg, bin/ffprobe,
 #             share/licenses/<name>/, share/ffmpeg-<version>-configure.txt
-# A finished step leaves prefix/.done-<name>, so a rerun (or the release
-# workflow's cached prefix) skips it.
+# A finished step leaves prefix/.done-<name>-<version>, so a rerun (or the
+# release workflow's cached prefix) skips it, and a version bump doesn't.
 set -euo pipefail
 PACKAGING=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=versions.sh
 . "$PACKAGING/versions.sh"
 NATIVE=${1:-$PACKAGING/../../../target/native}
+# CFLAGS, LDFLAGS and the install-name pass split on spaces, so a spaced
+# path would fail far into the build; refuse it before anything starts.
+no_spaces() {
+  case "$1" in *[[:space:]]*)
+    echo "lib.sh: the native folder's path can't contain spaces: $1" >&2
+    exit 1 ;;
+  esac
+}
+no_spaces "$NATIVE"
 mkdir -p "$NATIVE"
 NATIVE=$(cd "$NATIVE" && pwd)
+no_spaces "$NATIVE"
 SRC=$NATIVE/sources BUILD=$NATIVE/build P=$NATIVE/prefix
 mkdir -p "$SRC" "$BUILD" "$P/lib/pkgconfig" "$P/share/licenses"
 
@@ -72,12 +82,13 @@ licences() {
 # step <name> <builder> [args…]: fetch, build and keep the licences, once.
 step() {
   local name=$1 builder=$2 t0=$SECONDS dir; shift 2
-  if [ -f "$P/.done-$name" ]; then echo "=== $name (done)"; return; fi
+  local mark; mark=$P/.done-$name-$(version_of "$name")
+  if [ -f "$mark" ]; then echo "=== $name (done)"; return; fi
   echo "=== $name"
   dir=$(fetch "$name")
   "$builder" "$dir" "$@"
   licences "$name" "$dir"
-  touch "$P/.done-$name"
+  touch "$mark"
   echo "=== $name $((SECONDS - t0))s"
 }
 

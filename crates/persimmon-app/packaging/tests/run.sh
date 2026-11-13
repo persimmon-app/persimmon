@@ -131,6 +131,29 @@ out=$(PERSIMMON_VERIFY_MODE=developer-id "$verify" --before-notarisation "$d/Per
 if [ "$code" = 0 ] && [ "$out" = "verified (developer-id, before notarisation)" ]; then echo "ok before-notarisation"
 else echo "FAIL before-notarisation (exit $code):"; sed 's/^/    /' <<<"$out"; failed=1; fi
 
+# The native build refuses a folder whose path has a space (CFLAGS and
+# the install-name pass would split it), at once and downloading nothing.
+spaced="$work/a b"
+out=$(PATH=/usr/bin:/bin bash "$here/../build-libs.sh" "$spaced" 2>&1) && code=0 || code=$?
+if [ "$code" = 1 ] && grep -qF "lib.sh: the native folder's path can't contain spaces: $spaced" <<<"$out" && [ ! -e "$spaced/sources" ]; then
+  echo "ok native-dir-with-space"
+else
+  echo "FAIL native-dir-with-space (exit $code):"; sed 's/^/    /' <<<"$out"; failed=1
+fi
+
+# bundle.sh names a missing source before building anything: without
+# cargo on PATH, reaching the build would fail differently.
+fake=$work/fake-native
+mkdir -p "$fake/prefix/bin" "$fake/prefix/lib" "$fake/prefix/share" "$fake/sources"
+ffv=$(awk '$1 == "ffmpeg" {print $2}' <<<"$(. "$here/../versions.sh"; echo "$SOURCES")")
+touch "$fake/prefix/bin/ffmpeg" "$fake/prefix/bin/ffprobe" "$fake/prefix/lib/libvips.42.dylib" "$fake/prefix/share/ffmpeg-$ffv-configure.txt"
+out=$(PATH=/usr/bin:/bin bash "$here/../bundle.sh" "$fake" "$work/fake-out" 2>&1) && code=0 || code=$?
+if [ "$code" = 1 ] && grep -qF "bundle.sh: no downloaded source for libffi 3.8.0" <<<"$out"; then
+  echo "ok missing-source"
+else
+  echo "FAIL missing-source (exit $code):"; sed 's/^/    /' <<<"$out"; failed=1
+fi
+
 # mode.sh: which signing steps the release workflow runs.
 SECRETS="APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID"
 # A success prints the mode on stdout; a failure prints nothing there (CI

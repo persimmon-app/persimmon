@@ -31,13 +31,22 @@ ID=io.github.persimmon-app.Persimmon
 identity=${APPLE_SIGNING_IDENTITY:--}
 sign_opts=()
 [ "$identity" = - ] || sign_opts=(--options runtime --timestamp)
-version=$("$root/.github/scripts/version.sh")
 # shellcheck source=versions.sh
 . "$here/versions.sh"
 ffversion=$(awk '$1 == "ffmpeg" {print $2}' <<<"$SOURCES")
 for f in "$P/bin/ffmpeg" "$P/bin/ffprobe" "$P/lib/libvips.42.dylib" "$P/share/ffmpeg-$ffversion-configure.txt"; do
   [ -f "$f" ] || { echo "bundle.sh: missing $f (run build-libs.sh and build-ffmpeg.sh)" >&2; exit 1; }
 done
+# Every source the release must carry, found before the long build starts.
+source_files=()
+while read -r src v _; do
+  [ -n "$src" ] || continue
+  found=""
+  for f in "$native/sources/$src-$v".tar*; do [ -f "$f" ] && found=$f && break; done
+  [ -n "$found" ] || { echo "bundle.sh: no downloaded source for $src $v" >&2; exit 1; }
+  source_files+=("$found")
+done <<<"$SOURCES"
+version=$("$root/.github/scripts/version.sh")
 work=$(mktemp -d "${TMPDIR:-/tmp}/prsm-bundle.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
@@ -89,12 +98,7 @@ hdiutil create -quiet -volname Persimmon -srcfolder "$work/dmg" -fs HFS+ -format
 echo "=== the sources"
 name=Persimmon-$version-sources
 mkdir -p "$work/$name/sources"
-while read -r src v url _; do
-  [ -n "$src" ] || continue
-  f=$(ls "$native/sources/$src-$v".tar* 2>/dev/null | head -1)
-  [ -n "$f" ] || { echo "bundle.sh: no downloaded source for $src $v" >&2; exit 1; }
-  cp "$f" "$work/$name/sources/"
-done <<<"$SOURCES"
+cp "${source_files[@]}" "$work/$name/sources/"
 rsync -a "$here/" "$work/$name/packaging/"
 cp "$P/share/ffmpeg-$ffversion-configure.txt" "$work/$name/"
 cp "$P/share/ffmpeg-$ffversion-configure.txt" "$out/"

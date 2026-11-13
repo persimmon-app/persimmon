@@ -23,12 +23,13 @@ export LDFLAGS="-arch arm64 -mmacosx-version-min=14.0 -L$FP/lib"
 # built shared for libheif.
 fstep() {
   local name=$1 builder=$2 t0=$SECONDS dir; shift 2
-  if [ -f "$P/.done-ffmpeg-$name" ]; then echo "=== $name, static (done)"; return; fi
+  local mark; mark=$P/.done-ffmpeg-$name-$(version_of "$name")
+  if [ -f "$mark" ]; then echo "=== $name, static (done)"; return; fi
   echo "=== $name, static"
   dir=$(fetch "$name")
   "$builder" "$dir" "$@"
   licences "$name" "$dir"
-  touch "$P/.done-ffmpeg-$name"
+  touch "$mark"
   echo "=== $name, static $((SECONDS - t0))s"
 }
 static_cmake() { local d=$1 src=$1; shift; [ "${CMAKE_SUBDIR:-}" ] && src=$d/$CMAKE_SUBDIR
@@ -54,7 +55,7 @@ fstep libaom static_cmake -DENABLE_DOCS=0 -DENABLE_EXAMPLES=0 -DENABLE_TESTS=0 -
 
 # libaom is built to encode only, so FFmpeg's libaom decoder is left out:
 # dav1d decodes AV1.
-if [ ! -f "$P/.done-ffmpeg" ]; then
+if [ ! -f "$P/.done-ffmpeg-$(version_of ffmpeg)" ]; then
   echo "=== ffmpeg"
   t0=$SECONDS
   d=$(fetch ffmpeg)
@@ -72,7 +73,7 @@ if [ ! -f "$P/.done-ffmpeg" ]; then
   codesign --force -s - "$P/bin/ffmpeg" "$P/bin/ffprobe" 2>/dev/null
   licences ffmpeg "$d"
   "$P/bin/ffmpeg" -hide_banner -buildconf > "$P/share/ffmpeg-$(version_of ffmpeg)-configure.txt"
-  touch "$P/.done-ffmpeg"
+  touch "$P/.done-ffmpeg-$(version_of ffmpeg)"
   echo "=== ffmpeg $((SECONDS - t0))s"
 fi
 
