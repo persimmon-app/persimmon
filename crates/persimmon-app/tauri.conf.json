@@ -35,8 +35,8 @@
         "label": "settings",
         "title": "Settings",
         "url": "settings.html",
-        "width": 560,
-        "height": 420,
+        "width": 760,
+        "height": 520,
         "resizable": false,
         "visible": false
       }

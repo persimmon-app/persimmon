@@ -2,9 +2,14 @@
 <!-- The sidebar's modes (canvas "macOS — Main window"): how new files become rows. -->
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import type { QueueMode } from "../lib/types";
+  import PresetList from "./PresetList.svelte";
+  import type { PresetView, QueueMode } from "../lib/types";
 
-  let { mode, onMode }: { mode: QueueMode; onMode: (m: QueueMode) => void } = $props();
+  let { mode, onMode, preset = null, presets = [], onPreset = () => {}, view = "queue", onHistory = () => {} }: {
+    mode: QueueMode; onMode: (m: QueueMode) => void;
+    preset?: string | null; presets?: PresetView[]; onPreset?: (id: string) => void;
+    view?: "queue" | "history"; onHistory?: () => void;
+  } = $props();
   const modes: { id: QueueMode; label: string; key: string; icon: "arrow" | "compress" | "folder" | "add" }[] = [
     { id: "convert", label: "Convert", key: "⌃⌘1", icon: "arrow" },
     { id: "compress", label: "Compress", key: "⌃⌘2", icon: "compress" },
@@ -17,17 +22,22 @@
   <p class="label" id="mode-label">MODE</p>
   <div role="radiogroup" aria-labelledby="mode-label">
     {#each modes as m (m.id)}
-      <button role="radio" aria-checked={mode === m.id} class:current={mode === m.id}
+      <button role="radio" aria-checked={mode === m.id && !preset} class:current={mode === m.id && !preset && view === "queue"}
         title="{m.label} ({m.key})" onclick={() => onMode(m.id)}>
         <Icon name={m.icon} size={16} /> <span>{m.label}</span> <span class="key">{m.key}</span>
       </button>
     {/each}
   </div>
+  {#if presets.length}<PresetList {presets} active={preset} {onPreset} />{/if}
+  <p class="label">AUTOMATION</p>
+  <button aria-pressed={view === "history"} class:current={view === "history"} onclick={onHistory}>
+    <Icon name="queued" size={16} /> <span>History</span>
+  </button>
 </nav>
 
 <style>
-  .sidebar { width: var(--sidebar); padding: var(--space-4) var(--space-3); border-right: 1px solid var(--line); background: var(--surface); }
-  .label { margin: 0 var(--space-2) var(--space-2); font-size: var(--text-label); font-weight: 500; letter-spacing: 0.14em; color: var(--faint); }
+  .sidebar { width: var(--sidebar); flex-shrink: 0; overflow-y: auto; padding: 0 var(--space-3) var(--space-4); border-right: 1px solid var(--line); background: var(--surface); }
+  .label { margin: var(--space-4) var(--space-2) var(--space-2); font-size: var(--text-label); font-weight: 500; letter-spacing: 0.14em; color: var(--faint); }
   button {
     width: 100%; display: flex; align-items: center; gap: var(--space-2);
     font: inherit; font-size: var(--text-body); color: var(--muted); text-align: left;

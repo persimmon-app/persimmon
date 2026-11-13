@@ -22,7 +22,7 @@ describe("StatusBar", () => {
     expect(screen.getByText("1 running")).toBeTruthy();
     expect(screen.getByText("2 queued")).toBeTruthy();
     expect(screen.getByText("1 failed")).toBeTruthy();
-    expect(screen.getByText("Output → beside original")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Output → beside original" })).toBeTruthy();
   });
 
   it("shows a message, such as rows a format skipped", () => {

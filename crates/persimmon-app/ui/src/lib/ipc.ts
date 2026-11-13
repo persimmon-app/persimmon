@@ -35,3 +35,23 @@ export const toggleDropWindow = () => invoke<boolean>("toggle_drop_window");
 export const openSettings = () => invoke<void>("open_settings");
 export const onSettings = (f: (s: SettingsView) => void): Promise<UnlistenFn> =>
   listen<SettingsView>("settings", (e) => f(e.payload));
+
+import type { BatchView, EnginesView, HistoryFilter, JobOptions, PresetView, UndoReport } from "./types";
+
+export type PresetDraft = { id: string; name: string; builtin: boolean; mode: QueueMode; target: FormatId | null; options: JobOptions };
+export const presets = () => invoke<PresetView[]>("presets");
+export const usePreset = (id: string | null) => invoke<SettingsView>("use_preset", { id });
+export const applyPreset = (ids: RowId[], id: string) => invoke<RowView[]>("apply_preset", { ids, id });
+export const savePreset = (preset: PresetDraft) => invoke<PresetView[]>("save_preset", { preset });
+export const deletePreset = (id: string) => invoke<PresetView[]>("delete_preset", { id });
+export const history = (text: string, filter: HistoryFilter) => invoke<BatchView[]>("history", { text, filter });
+export const undoBatch = (id: string) => invoke<UndoReport>("undo_batch", { id });
+export const undoLast = () => invoke<UndoReport | null>("undo_last");
+export const clearHistory = () => invoke<boolean>("clear_history");
+export const revealPath = (path: string) => invoke<boolean>("reveal_path", { path });
+export const engines = () => invoke<EnginesView>("engines");
+export const setDropWindowAtLaunch = (on: boolean) => invoke<SettingsView>("set_drop_window_at_launch", { on });
+export const openLicences = () => invoke<boolean>("open_licences");
+export const onHistory = (f: (b: BatchView) => void): Promise<UnlistenFn> => listen<BatchView>("history", (e) => f(e.payload));
+export const onHistoryCleared = (f: () => void): Promise<UnlistenFn> => listen("history-cleared", () => f());
+export const onPresets = (f: (p: PresetView[]) => void): Promise<UnlistenFn> => listen<PresetView[]>("presets", (e) => f(e.payload));

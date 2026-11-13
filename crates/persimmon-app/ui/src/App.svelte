@@ -11,11 +11,12 @@
   import { upsert as merge, without } from "./lib/rows";
   import StatusBar from "./components/StatusBar.svelte";
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
+  import HistoryView from "./components/HistoryView.svelte";
   import * as ipc from "./lib/ipc";
   import { badge, plural } from "./lib/format";
   import { clicked, moved } from "./lib/selection";
   import { queueOwnsKey } from "./lib/keys";
-  import type { FormatId, QueueMode, RowId, RowView, SettingsView } from "./lib/types";
+  import type { BatchView, FormatId, HistoryFilter, PresetView, QueueMode, RowId, RowView, SettingsView, UndoReport } from "./lib/types";
 
   let rows: RowView[] = $state([]);
   let selected: RowId[] = $state([]);
@@ -26,6 +27,14 @@
   let settings = $state<SettingsView | null>(null);
   const mode: QueueMode = $derived(settings?.mode ?? "convert");
   let picking = false;
+  let presets: PresetView[] = $state([]);
+  let view: "queue" | "history" = $state("queue");
+  let batches: BatchView[] = $state([]);
+  let historyText = $state("");
+  let historyFilter: HistoryFilter = $state("all");
+  let report: UndoReport | null = $state(null);
+  /** Whether the newest undoable batch exists, for the status bar. */
+  let lastUndoable = $state(false);
 
   /** The rows the toolbar acts on: the selection, else every row. */
   const scope = $derived(selected.length ? selected : rows.map((r) => r.id));
@@ -50,6 +59,32 @@
 
   async function chooseMode(m: QueueMode) {
     settings = await ipc.setMode(m);
+    view = "queue";
+  }
+
+  /** A preset becomes active for new files and applies to the selected
+   * rows, or every row when none is selected (spec D4). */
+  async function choosePreset(id: string) {
+    settings = await ipc.usePreset(id);
+    view = "queue";
+    const ids = $state.snapshot(scope);
+    if (!ids.length) { message = null; return; }
+    const changed = await ipc.applyPreset(ids, id);
+    changed.forEach(upsert);
+    const misfits = changed.filter((r) => r.state === "failed").length;
+    const name = presets.find((p) => p.id === id)?.name ?? "";
+    message = misfits ? `${plural(misfits, "file")} ${misfits === 1 ? "doesn't" : "don't"} fit ${name}` : null;
+  }
+
+  async function refreshHistory() {
+    batches = await ipc.history(historyText, historyFilter);
+    lastUndoable = (await ipc.history("", "undoable")).length > 0;
+  }
+
+  async function undo(id: string | null) {
+    report = id ? await ipc.undoBatch(id) : await ipc.undoLast();
+    if (report) message = `Moved ${plural(report.trashed, "file")} to the Trash${report.skipped.length ? `; ${report.skipped.length} left alone` : ""}`;
+    await refreshHistory();
   }
 
   function reorder(id: RowId, from: number, to: number) {
@@ -99,6 +134,12 @@
       e.preventDefault();
       chooseMode((["convert", "compress", "extract", "combine"] as const)[Number(e.key) - 1]);
     }
+    else if (cmd && !e.ctrlKey && /^[1-9]$/.test(e.key)) {
+      const p = presets.find((x) => x.shortcut === Number(e.key));
+      if (p) { e.preventDefault(); choosePreset(p.id); }
+    }
+    else if (cmd && e.altKey && e.code === "KeyZ") { e.preventDefault(); undo(null); }
+    else if (view === "history" && e.key === "Escape") { view = "queue"; }
     else if (cmd && e.key === "o") { e.preventDefault(); if (!e.repeat) pick(); }
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
     else if (cmd && e.key === "a") { e.preventDefault(); selected = rows.map((r) => r.id); }
@@ -114,7 +155,12 @@
   onMount(() => {
     ipc.queueRows().then((r) => r.forEach(upsert));
     ipc.getSettings().then((s) => (settings = s));
+    ipc.presets().then((p) => (presets = p));
+    refreshHistory();
     const off = [
+      ipc.onHistory(() => refreshHistory()),
+      ipc.onHistoryCleared(() => refreshHistory()),
+      ipc.onPresets((p) => (presets = p)),
       ipc.onRow(upsert),
       ipc.onConfirmQuit(() => (confirmQuit = true)),
       ipc.onSettings((s) => (settings = s)),
@@ -129,11 +175,19 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="window">
-  <Sidebar {mode} onMode={chooseMode} />
+  <Sidebar {mode} onMode={chooseMode} preset={settings?.preset ?? null} {presets} onPreset={choosePreset}
+    {view} onHistory={() => { view = view === "history" ? "queue" : "history"; refreshHistory(); }} />
   <div class="main">
     <Toolbar count={rows.length} {totalBytes} {targets} {current} {canStart}
       onAdd={pick} onPick={pickTarget} onStart={() => ipc.start()} />
-    {#if rows.length === 0}
+    {#if view === "history"}
+      <HistoryView {batches} text={historyText} filter={historyFilter} {report}
+        onSearch={(t) => { historyText = t; refreshHistory(); }}
+        onFilter={(f) => { historyFilter = f; refreshHistory(); }}
+        onUndo={(id) => undo(id)} onReveal={(p) => ipc.revealPath(p)}
+        onClear={async () => { await ipc.clearHistory(); report = null; refreshHistory(); }}
+        onDismissReport={() => (report = null)} />
+    {:else if rows.length === 0}
       <div class="queue"><EmptyState onAdd={pick} /></div>
     {:else}
       <!-- A click on the queue's empty space clears the selection, so the
@@ -155,7 +209,8 @@
         {/each}
       </div>
     {/if}
-    <StatusBar {rows} {message} output={settings?.outputLabel ?? "beside original"} onOutput={() => ipc.openSettings()} />
+    <StatusBar {rows} {message} output={settings?.outputLabel ?? "beside original"} onOutput={() => ipc.openSettings()}
+      undoable={lastUndoable} onUndoLast={() => undo(null)} />
   </div>
 </div>
 <ConfirmQuit open={confirmQuit} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />

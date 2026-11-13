@@ -5,7 +5,7 @@ import OutputPane from "./OutputPane.svelte";
 import type { SettingsView } from "../lib/types";
 
 const beside: SettingsView = {
-  output: { mode: "beside" }, fallback: "/Users/me/Downloads/Persimmon", mode: "convert", dropWindow: false,
+  output: { mode: "beside" }, fallback: "/Users/me/Downloads/Persimmon", mode: "convert", dropWindow: false, preset: null,
   outputLabel: "beside original", fallbackLabel: "~/Downloads/Persimmon",
 };
 

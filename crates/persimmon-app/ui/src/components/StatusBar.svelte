@@ -2,8 +2,9 @@
 <script lang="ts">
   import type { RowView } from "../lib/types";
 
-  let { rows, message, output, onOutput }: {
+  let { rows, message, output, onOutput, undoable = false, onUndoLast = () => {} }: {
     rows: RowView[]; message: string | null; output: string; onOutput: () => void;
+    undoable?: boolean; onUndoLast?: () => void;
   } = $props();
   const count = (s: string) => rows.filter((r) => r.state === s).length;
   const parts = $derived(
@@ -30,7 +31,8 @@
       Offline — no network access
     </span>
   {/if}
-  <button class="output" onclick={onOutput}>Output → {output}</button>
+  {#if undoable}<button class="output" title="Undo last batch (⌥⌘Z)" onclick={onUndoLast}>Undo last batch</button>{/if}
+  <button class="output" onclick={onOutput}>Output → <span class="path">{output}</span></button>
 </div>
 
 <style>
@@ -47,5 +49,6 @@
   .offline { display: inline-flex; align-items: center; gap: var(--space-1); }
   .output { font: inherit; color: var(--muted); background: transparent; border: 0; padding: 0; cursor: default; }
   .output:hover { color: var(--text); }
+  .path { font-family: var(--font-data); }
   .output:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>

@@ -2,7 +2,8 @@
 // Development only: when the UI runs in a plain browser (`npm run dev`,
 // outside Tauri), fake the app's commands with one row in every state, so
 // the queue can be looked at. Production builds leave this file out.
-import type { RowView, SettingsView } from "./types";
+import type { BatchView, RowView, SettingsView } from "./types";
+import { NOW, batch, presets } from "../test/fixtures";
 
 const rows: RowView[] = [
   { id: 1, rev: 1, note: null, inputs: ["/Users/me/Movies/interview-raw.mov"], path: "/Users/me/Movies/interview-raw.mov", name: "interview-raw.mov", from: "mov", to: "mp4", op: "convert", size: 1_400_000_000, output: "/Users/me/Movies/interview-raw.mp4", state: "running", fraction: 0.62 },
@@ -17,12 +18,27 @@ const rows: RowView[] = [
 ];
 
 const settings: SettingsView = {
-  output: { mode: "beside" }, fallback: "/Users/me/Downloads/Persimmon", mode: "convert", dropWindow: false,
+  output: { mode: "beside" }, fallback: "/Users/me/Downloads/Persimmon", mode: "convert", dropWindow: false, preset: null,
   outputLabel: "beside original", fallbackLabel: "~/Downloads/Persimmon",
 };
 
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_settings: () => settings,
+  presets: () => presets,
+  use_preset: (a) => ({ ...settings, preset: a.id }),
+  apply_preset: () => [],
+  history: (a): BatchView[] => {
+    const all = [
+      batch({ id: "today" }),
+      batch({ id: "yesterday", finished: NOW - 86_400, started: NOW - 86_470, undoable: false, undone: true, source: "drop" }),
+      batch({ id: "older", finished: NOW - 3 * 86_400, started: NOW - 3 * 86_400 - 40, preset: null, source: "opened" }),
+    ];
+    return a.filter === "undoable" ? all.filter((b) => b.undoable) : all;
+  },
+  undo_last: () => ({ trashed: 1, skipped: [] }),
+  undo_batch: () => ({ trashed: 1, skipped: ["hero.webp was changed or moved since it was converted, so it was left alone"] }),
+  engines: () => ({ ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1.2" }, ffmpegError: null, images: true, rar: true, version: "0.1.0" }),
+  open_licences: () => false,
   set_mode: (a) => ({ ...settings, mode: a.mode }),
   queue_rows: () => rows,
   targets: () => ["avif", "jpeg", "mp3", "mp4", "png", "tiff", "webp"],

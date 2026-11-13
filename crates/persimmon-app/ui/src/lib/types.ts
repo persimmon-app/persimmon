@@ -45,6 +45,7 @@ export interface SettingsView {
   fallback: string;
   mode: QueueMode;
   dropWindow: boolean;
+  preset: string | null;
   outputLabel: string;
   fallbackLabel: string;
 }
@@ -52,4 +53,68 @@ export interface SettingsView {
 export interface SetTarget {
   changed: RowView[];
   skipped: number;
+}
+
+export interface JobOptions {
+  quality: "low" | "medium" | "high" | "max" | null;
+  preset: "compatible" | "small" | null;
+  pages: string | null;
+  maxSize: number | null;
+  stripMetadata: boolean;
+}
+
+/** A preset as the app sends it (app.rs, PresetView). */
+export interface PresetView {
+  id: string;
+  name: string;
+  builtin: boolean;
+  mode: QueueMode;
+  target: FormatId | null;
+  options: JobOptions;
+  command: string;
+  kinds: string;
+  shortcut: number | null;
+}
+
+export type ItemOutcome =
+  | { outcome: "done" }
+  | { outcome: "notSmaller" }
+  | { outcome: "failed"; error: Shown }
+  | { outcome: "cancelled" };
+
+export type Item = {
+  inputs: string[];
+  output: string | null;
+  outputSize: number | null;
+  outputMtime: number | null;
+  size: number;
+  undone: boolean;
+} & ItemOutcome;
+
+export type HistoryFilter = "all" | "undoable" | "failed";
+
+/** A batch as the app sends it (history.rs, app.rs BatchView). */
+export interface BatchView {
+  id: string;
+  started: number;
+  finished: number;
+  source: "window" | "drop" | "opened";
+  preset: string | null;
+  mode: QueueMode;
+  items: Item[];
+  undone: boolean;
+  undoable: boolean;
+}
+
+export interface UndoReport {
+  trashed: number;
+  skipped: string[];
+}
+
+export interface EnginesView {
+  ffmpeg: { path: string; version: string } | null;
+  ffmpegError: Shown | null;
+  images: boolean;
+  rar: boolean;
+  version: string;
 }
