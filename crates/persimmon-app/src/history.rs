@@ -351,7 +351,7 @@ mod tests {
         Item {
             inputs: vec![input.to_path_buf()],
             output: Some(output.to_path_buf()),
-            output_size: meta.is_file().then(|| meta.len()),
+            output_size: meta.is_file().then_some(meta.len()),
             output_mtime: mtime(output),
             size: 10,
             outcome: ItemOutcome::Done,
