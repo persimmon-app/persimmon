@@ -13,7 +13,7 @@
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
   import HistoryView from "./components/HistoryView.svelte";
   import * as ipc from "./lib/ipc";
-  import { badge, plural } from "./lib/format";
+  import { alreadyMessage, badge, plural } from "./lib/format";
   import { lastUndoable as newestUndoable, undoMessage } from "./lib/undo";
   import { clicked, moved } from "./lib/selection";
   import { queueOwnsKey } from "./lib/keys";
@@ -92,6 +92,12 @@
     if (r) message = undoMessage(r);
   }
 
+  /** Reveal in Finder, or say why it can't. */
+  async function reveal(next: Promise<string | null>) {
+    const why = await next;
+    if (why) message = why;
+  }
+
   function reorder(id: RowId, from: number, to: number) {
     ipc.reorderInput(id, from, to).then((r) => r && upsert(r));
   }
@@ -148,7 +154,7 @@
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
     else if (cmd && e.key === "a") { e.preventDefault(); selected = rows.map((r) => r.id); }
     else if (cmd && e.key === ".") { e.preventDefault(); const r = running(); if (r) ipc.cancelRow(r.id); }
-    else if (cmd && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); chosen().filter((r) => r.state === "done").forEach((r) => ipc.revealRow(r.id)); }
+    else if (cmd && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); chosen().filter((r) => r.state === "done").forEach((r) => reveal(ipc.revealRow(r.id))); }
     else if (cmd && e.key === "r") { e.preventDefault(); chosen().filter((r) => r.state === "failed" || r.state === "cancelled").forEach((r) => ipc.retryRow(r.id)); }
     else if (e.key === "Backspace" || e.key === "Delete") { if (selected.length) { e.preventDefault(); remove(selected); } }
     else if (e.key === "ArrowDown") { e.preventDefault(); move(1, e.shiftKey); }
@@ -165,6 +171,7 @@
       ipc.onHistory(() => refreshHistory()),
       ipc.onHistoryCleared(() => refreshHistory()),
       ipc.onPresets((p) => (presets = p)),
+      ipc.onQueueNote((n) => (message = alreadyMessage(n))),
       // ⌥⌘Z is the Edit menu's (Undo Last Batch), from any window.
       ipc.onUndoReport((r) => { showReport(r); refreshHistory(); }),
       ipc.onRow(upsert),
@@ -190,7 +197,7 @@
       <HistoryView {batches} text={historyText} filter={historyFilter} {report}
         onSearch={(t) => { historyText = t; refreshHistory(); }}
         onFilter={(f) => { historyFilter = f; refreshHistory(); }}
-        onUndo={(id) => undo(id)} onReveal={(p) => ipc.revealPath(p)}
+        onUndo={(id) => undo(id)} onReveal={(p) => reveal(ipc.revealPath(p))}
         onClear={async () => { await ipc.clearHistory(); report = null; refreshHistory(); }}
         onDismissReport={() => (report = null)} />
     {:else if rows.length === 0}
@@ -209,12 +216,12 @@
           {#if row.op === "merge"}
             <CombineRow {row} selected={selected.includes(row.id)} active={anchor === row.id}
               onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
-              onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)}
+              onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => reveal(ipc.revealRow(id))}
               onReorder={reorder} onRemoveInput={removeInput} />
           {:else}
             <QueueRow {row} selected={selected.includes(row.id)} active={anchor === row.id}
               onSelect={(id, e) => select(id, e.shiftKey ? "range" : e.metaKey ? "toggle" : "replace")}
-              onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => ipc.revealRow(id)} />
+              onCancel={(id) => ipc.cancelRow(id)} onRetry={(id) => ipc.retryRow(id)} onReveal={(id) => reveal(ipc.revealRow(id))} />
           {/if}
         {/each}
       </div>

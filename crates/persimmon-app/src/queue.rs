@@ -170,12 +170,32 @@ impl Queue {
         self.policy = policy;
         let mut changed = Vec::new();
         for i in 0..self.rows.len() {
-            if editable(&self.rows[i].state) {
+            // Queued rows, and rows that failed because their folder can't
+            // be written, are planned again; a file that failed for its own
+            // reasons (damaged, unsupported) stays failed.
+            let replan = match &self.rows[i].state {
+                RowState::Queued => true,
+                RowState::Failed { error } => error.code == ErrorCode::OutputNotWritable,
+                _ => false,
+            };
+            if replan {
                 let target = self.rows[i].job.target;
                 changed.push(self.refresh_at(i, target));
             }
         }
         changed
+    }
+
+    /// How many of `paths` a row already holds, so adding them again does
+    /// nothing; the window says so rather than staying silent.
+    pub fn already_queued(&self, paths: &[PathBuf]) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        paths
+            .iter()
+            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+            .filter(|k| seen.insert(k.clone()))
+            .filter(|k| self.rows.iter().any(|r| r.keys.contains(k)))
+            .count()
     }
 
     /// Add files the way `mode` says.
@@ -1338,6 +1358,43 @@ mod tests {
             panic!("{:?}", r[0].state)
         };
         assert_eq!(error.reason, "Small video is for video");
+    }
+
+    #[test]
+    fn adding_a_queued_file_again_reports_it() {
+        let d = Dir::new("already");
+        let mut q = queue();
+        let a = d.put("a.png", &PNG_1X1);
+        let b = d.put("b.png", &PNG_1X1);
+        q.add(std::slice::from_ref(&a), QueueMode::Convert);
+        assert_eq!(q.already_queued(&[a.clone(), b]), 1);
+        assert!(q.add(&[a], QueueMode::Convert).is_empty());
+    }
+
+    #[test]
+    fn changing_the_output_keeps_runtime_failures() {
+        use persimmon_core::error::ErrorCode;
+        let d = Dir::new("policy-failures");
+        let mut q = queue();
+        let corrupt = q.add(&[d.put("a.png", &PNG_1X1)], QueueMode::Convert)[0].id;
+        let locked = q.add(&[d.put("b.png", &PNG_1X1)], QueueMode::Convert)[0].id;
+        let fail = |code, reason: &str| RowState::Failed {
+            error: crate::wording::app_error(code, &d.0, reason, None),
+        };
+        q.update(corrupt, fail(ErrorCode::CorruptInput, "it's damaged"));
+        q.update(
+            locked,
+            fail(ErrorCode::OutputNotWritable, "can't write here"),
+        );
+        q.set_policy(OutputPolicy::default());
+        assert_eq!(
+            q.get(corrupt).unwrap().state,
+            fail(ErrorCode::CorruptInput, "it's damaged")
+        );
+        assert!(!matches!(
+            q.get(locked).unwrap().state,
+            RowState::Failed { .. }
+        ));
     }
 
     #[test]

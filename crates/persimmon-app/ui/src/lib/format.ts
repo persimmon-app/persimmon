@@ -19,9 +19,17 @@ export function badge(id: FormatId | null): string {
   return id ? id.toUpperCase() : "—";
 }
 
-/** The target badge: the format, or EXTRACT for archives. */
+/** The target badge: the format, EXTRACT for archives, or for Compress
+ * the format it keeps. */
 export function target(row: RowView): string {
-  return row.op === "extract" ? "EXTRACT" : badge(row.to);
+  if (row.op === "extract") return "EXTRACT";
+  if (row.op === "compress") return badge(row.to ?? row.from);
+  return badge(row.to);
+}
+
+/** The status bar's note when added files were already in the queue. */
+export function alreadyMessage(n: number): string {
+  return `${plural(n, "file")} already in the queue`;
 }
 
 export function plural(n: number, one: string, many = `${one}s`): string {

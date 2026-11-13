@@ -129,15 +129,23 @@ fn engine_version() -> String {
 #[tauri::command]
 fn add_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
     let recipe = state.recipe();
-    let rows = state.queue().add_with(&paths, &recipe);
+    let (rows, already) = {
+        let mut queue = state.queue();
+        let already = queue.already_queued(&paths);
+        (queue.add_with(&paths, &recipe), already)
+    };
     emit_rows(&app, &rows);
+    note_already(&app, already);
     rows
 }
 
 #[tauri::command]
 fn drop_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
-    let rows = add_and_start(&state.queue, &state.runner, &paths, &state.recipe());
+    let recipe = state.recipe();
+    let already = state.queue().already_queued(&paths);
+    let rows = add_and_start(&state.queue, &state.runner, &paths, &recipe);
     emit_rows(&app, &rows);
+    note_already(&app, already);
     rows
 }
 
@@ -154,8 +162,13 @@ async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Ro
         .filter_map(|f| f.into_path().ok())
         .collect();
     let recipe = state.recipe();
-    let rows = state.queue().add_with(&paths, &recipe);
+    let (rows, already) = {
+        let mut queue = state.queue();
+        let already = queue.already_queued(&paths);
+        (queue.add_with(&paths, &recipe), already)
+    };
     emit_rows(&app, &rows);
+    note_already(&app, already);
     Ok(rows)
 }
 
@@ -228,12 +241,16 @@ fn retry_row(state: State<'_, AppState>, id: RowId) -> Option<RowView> {
 }
 
 #[tauri::command]
-fn reveal_row(state: State<'_, AppState>, id: RowId) -> bool {
+/// Reveal a done row's output; a message when it was moved or deleted.
+fn reveal_row(state: State<'_, AppState>, id: RowId) -> Option<String> {
     let output = state.queue().get(id).and_then(|v| match v.state {
         crate::queue::RowState::Done { output, .. } => Some(output),
         _ => None,
-    });
-    output.is_some_and(|p| crate::reveal::reveal(&p))
+    })?;
+    reveal_message(&output).or_else(|| {
+        crate::reveal::reveal(&output);
+        None
+    })
 }
 
 #[tauri::command]
@@ -474,8 +491,14 @@ fn clear_history(app: AppHandle, state: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
-fn reveal_path(state: State<'_, AppState>, path: PathBuf) -> bool {
-    reveal_allowed(&lock(&state.history), &path) && crate::reveal::reveal(&path)
+fn reveal_path(state: State<'_, AppState>, path: PathBuf) -> Option<String> {
+    if !reveal_allowed(&lock(&state.history), &path) {
+        return None;
+    }
+    reveal_message(&path).or_else(|| {
+        crate::reveal::reveal(&path);
+        None
+    })
 }
 
 /// What the Engines pane shows.
@@ -502,9 +525,28 @@ pub fn bundled_ffmpeg(exe: &Path) -> Option<PathBuf> {
 /// user's FFmpeg is never needed), else the lookup on PATH, as development
 /// builds have no bundled copy.
 pub fn app_backends(exe: Option<&Path>) -> Backends {
-    match exe.and_then(bundled_ffmpeg) {
+    // Through a symlink, the bundle is where the link points.
+    let exe = exe.map(|e| std::fs::canonicalize(e).unwrap_or_else(|_| e.to_path_buf()));
+    match exe.as_deref().and_then(bundled_ffmpeg) {
         Some(ffmpeg) => Backends::new().with_ffmpeg(ffmpeg),
         None => Backends::new(),
+    }
+}
+
+/// What the window says when an output to reveal isn't there any more;
+/// None when it is.
+pub fn reveal_message(path: &Path) -> Option<String> {
+    (!path.exists()).then(|| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        format!("{name} was moved or deleted")
+    })
+}
+
+/// Tell the main window how many dropped or picked files were already in
+/// the queue (none: nothing is said).
+fn note_already(app: &AppHandle, n: usize) {
+    if n > 0 {
+        let _ = app.emit_to("main", "queue-note", n);
     }
 }
 
@@ -818,8 +860,13 @@ pub fn run() {
             match app.try_state::<AppState>() {
                 Some(state) => {
                     let recipe = state.recipe();
-                    let rows = state.queue().add_with(&paths, &recipe);
+                    let (rows, already) = {
+                        let mut queue = state.queue();
+                        let already = queue.already_queued(&paths);
+                        (queue.add_with(&paths, &recipe), already)
+                    };
                     emit_rows(app, &rows);
+                    note_already(app, already);
                 }
                 // Not started yet: setup queues these.
                 None => lock(&app.state::<Pending>().0).extend(paths),
@@ -1280,7 +1327,40 @@ mod tests {
         let ff = fake(&d, "ffmpeg", "7.1");
         fake(&d, "ffprobe", "7.1");
         let info = super::app_backends(Some(&exe)).ffmpeg_info().unwrap();
-        assert_eq!((info.path, info.version.as_str()), (ff, "7.1"));
+        // The binary's path is canonical (/var is /private/var on macOS).
+        assert_eq!(
+            (info.path.canonicalize().unwrap(), info.version.as_str()),
+            (ff.canonicalize().unwrap(), "7.1")
+        );
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn reveal_of_a_missing_output_says_so() {
+        let d = macos_dir("reveal");
+        let here = d.join("persimmon-app");
+        assert_eq!(super::reveal_message(&here), None);
+        assert_eq!(
+            super::reveal_message(&d.join("gone.jpg")).as_deref(),
+            Some("gone.jpg was moved or deleted")
+        );
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn bundled_ffmpeg_follows_a_symlinked_binary() {
+        let d = macos_dir("symlink");
+        let ff = fake(&d, "ffmpeg", "7.1");
+        fake(&d, "ffprobe", "7.1");
+        let elsewhere = d.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let link = elsewhere.join("persimmon-app");
+        std::os::unix::fs::symlink(d.join("persimmon-app"), &link).unwrap();
+        let info = super::app_backends(Some(&link)).ffmpeg_info().unwrap();
+        assert_eq!(
+            info.path.canonicalize().unwrap(),
+            ff.canonicalize().unwrap()
+        );
         let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
     }
 

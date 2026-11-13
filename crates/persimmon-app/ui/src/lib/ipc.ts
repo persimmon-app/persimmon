@@ -13,7 +13,8 @@ export const queueRows = () => invoke<RowView[]>("queue_rows");
 export const start = () => invoke<void>("start");
 export const cancelRow = (id: RowId) => invoke<boolean>("cancel_row", { id });
 export const retryRow = (id: RowId) => invoke<RowView | null>("retry_row", { id });
-export const revealRow = (id: RowId) => invoke<boolean>("reveal_row", { id });
+/** Null when revealed; otherwise why not ("… was moved or deleted"). */
+export const revealRow = (id: RowId) => invoke<string | null>("reveal_row", { id });
 export const quitNow = () => invoke<void>("quit_now");
 
 export const onRow = (f: (row: RowView) => void): Promise<UnlistenFn> =>
@@ -48,7 +49,7 @@ export const history = (text: string, filter: HistoryFilter) => invoke<BatchView
 export const undoBatch = (id: string) => invoke<UndoReport>("undo_batch", { id });
 export const undoLast = () => invoke<UndoReport | null>("undo_last");
 export const clearHistory = () => invoke<boolean>("clear_history");
-export const revealPath = (path: string) => invoke<boolean>("reveal_path", { path });
+export const revealPath = (path: string) => invoke<string | null>("reveal_path", { path });
 export const engines = () => invoke<EnginesView>("engines");
 export const setDropWindowAtLaunch = (on: boolean) => invoke<SettingsView>("set_drop_window_at_launch", { on });
 export const openSources = () => invoke<boolean>("open_sources");
@@ -56,4 +57,5 @@ export const openLicences = () => invoke<boolean>("open_licences");
 export const onHistory = (f: (b: BatchView) => void): Promise<UnlistenFn> => listen<BatchView>("history", (e) => f(e.payload));
 export const onHistoryCleared = (f: () => void): Promise<UnlistenFn> => listen("history-cleared", () => f());
 export const onUndoReport = (f: (r: UndoReport) => void): Promise<UnlistenFn> => listen<UndoReport>("undo-report", (e) => f(e.payload));
+export const onQueueNote = (f: (already: number) => void): Promise<UnlistenFn> => listen<number>("queue-note", (e) => f(e.payload));
 export const onPresets = (f: (p: PresetView[]) => void): Promise<UnlistenFn> => listen<PresetView[]>("presets", (e) => f(e.payload));
