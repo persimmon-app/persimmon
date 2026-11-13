@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { bundledPackages } from "./scripts/bundled";
 
 // Tauri serves the built files; in development it loads this dev server.
 export default defineConfig(({ mode }) => ({
-  plugins: [svelte()],
+  // bundledPackages lists what the licence list must cover (packaging/licences.sh).
+  plugins: [svelte(), bundledPackages()],
   clearScreen: false,
   server: { port: 5173, strictPort: true },
   // assetsInlineLimit 0: no font or image is inlined as a data: URL, which
@@ -16,5 +18,5 @@ export default defineConfig(({ mode }) => ({
   },
   // Svelte 5 components need its browser build under Vitest.
   resolve: mode === "test" ? { conditions: ["browser"] } : undefined,
-  test: { environment: "jsdom", include: ["src/**/*.test.ts"], setupFiles: ["src/test-setup.ts"] },
+  test: { environment: "jsdom", include: ["src/**/*.test.ts", "scripts/**/*.test.ts"], setupFiles: ["src/test-setup.ts"] },
 }));

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persimmon: third-party licences</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+pre { white-space: pre-wrap; background: #f4f2f0; padding: 1rem; border-radius: 4px; font-size: 0.85rem; }
+li { margin: 0.1rem 0; }
+</style>
+</head>
+<body>
+<h1>Third-party licences</h1>
+<p>Persimmon is free software under GPL-3.0-or-later. It's built from the Rust crates, libraries and interface packages below, each under the licence shown. FFmpeg and ffprobe are bundled as separate programs; their sources, with FFmpeg's configure line, are attached to each release.</p>
+<h2>Rust crates</h2>
+<h2>Licences used</h2>
+<ul>
+{{#each overview}}
+<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+{{#each licenses}}
+<h2 id="{{id}}">{{name}}</h2>
+<p>Used by:</p>
+<ul>
+{{#each used_by}}
+<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+<!-- more -->
+</body>
+</html>
