@@ -29,6 +29,8 @@ pub struct Settings {
     pub fallback: PathBuf,
     pub mode: QueueMode,
     pub drop_window: bool,
+    /// The active preset's id: new files use it instead of the plain mode.
+    pub preset: Option<String>,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             fallback: home.join("Downloads").join("Persimmon"),
             mode: QueueMode::Convert,
             drop_window: false,
+            preset: None,
         }
     }
 }
@@ -174,6 +177,7 @@ mod tests {
             fallback: "/x/fb".into(),
             mode: QueueMode::Combine,
             drop_window: true,
+            preset: Some("web-image".into()),
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
@@ -185,6 +189,7 @@ mod tests {
         );
         assert_eq!(json["mode"], "combine");
         assert_eq!(json["dropWindow"], true);
+        assert_eq!(json["preset"], "web-image");
     }
 
     #[test]

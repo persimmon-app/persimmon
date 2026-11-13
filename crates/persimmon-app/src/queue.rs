@@ -13,9 +13,26 @@ use persimmon_core::job::{Job, JobOptions, PlanMode};
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::registry::{Operation, Registry};
 
+use crate::presets::{Preset, kinds, operation};
 use crate::wording::{Shown, app_error, shown};
 
 pub type RowId = u64;
+
+/// How new files become rows: a mode, or a preset (spec D4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recipe {
+    Mode(QueueMode),
+    Preset(Preset),
+}
+
+impl Recipe {
+    fn mode(&self) -> QueueMode {
+        match self {
+            Recipe::Mode(m) => *m,
+            Recipe::Preset(p) => p.mode,
+        }
+    }
+}
 
 /// How newly added files become rows (spec D1, the sidebar's modes).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -77,6 +94,8 @@ pub struct RowView {
     pub output: Option<PathBuf>,
     /// Said under the name: where the output went when it fell back.
     pub note: Option<String>,
+    /// The name of the preset applied, if any.
+    pub preset: Option<String>,
     /// Goes up with every change, so the window keeps the newest view.
     pub rev: u64,
     #[serde(flatten)]
@@ -111,6 +130,7 @@ struct Row {
     /// The target was picked, not defaulted: a Combine row keeps it as
     /// inputs are added; a defaulted one follows them.
     picked: bool,
+    preset: Option<Preset>,
     inputs: Vec<PathBuf>,
     keys: Vec<PathBuf>,
     from: Option<FormatId>,
@@ -158,9 +178,15 @@ impl Queue {
         changed
     }
 
-    /// Add files the way `mode` says; a path already queued isn't added
-    /// again. Returns the rows added or changed.
+    /// Add files the way `mode` says.
     pub fn add(&mut self, paths: &[PathBuf], mode: QueueMode) -> Vec<RowView> {
+        self.add_with(paths, &Recipe::Mode(mode))
+    }
+
+    /// Add files the way `recipe` says; a path already queued isn't added
+    /// again. Returns the rows added or changed.
+    pub fn add_with(&mut self, paths: &[PathBuf], recipe: &Recipe) -> Vec<RowView> {
+        let mode = recipe.mode();
         let mut fresh: Vec<(PathBuf, PathBuf)> = Vec::new();
         for path in paths {
             let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
@@ -181,7 +207,7 @@ impl Queue {
             {
                 Some(i) => i,
                 None => {
-                    let row = self.blank_row(true, mode);
+                    let row = self.blank_row(true, recipe);
                     self.rows.push(row);
                     self.rows.len() - 1
                 }
@@ -195,12 +221,13 @@ impl Queue {
         }
         let mut added = Vec::new();
         for (path, key) in fresh {
-            let mut row = self.blank_row(false, mode);
+            let mut row = self.blank_row(false, recipe);
             row.inputs.push(path);
             row.keys.push(key);
+            let target = row.preset.as_ref().and_then(|p| p.target);
             self.rows.push(row);
             let i = self.rows.len() - 1;
-            added.push(self.refresh_at(i, None));
+            added.push(self.refresh_at(i, target));
         }
         added
     }
@@ -227,6 +254,21 @@ impl Queue {
             changed.push(self.refresh_at(i, Some(to)));
         }
         SetTarget { changed, skipped }
+    }
+
+    /// Apply a preset to queued and failed rows. Rows it doesn't fit fail
+    /// with an error that names it and what it's for.
+    pub fn apply_preset(&mut self, ids: &[RowId], preset: &Preset) -> Vec<RowView> {
+        let mut changed = Vec::new();
+        for i in 0..self.rows.len() {
+            if !ids.contains(&self.rows[i].id) || !editable(&self.rows[i].state) {
+                continue;
+            }
+            self.rows[i].preset = Some(preset.clone());
+            self.rows[i].picked = true;
+            changed.push(self.refresh_at(i, preset.target));
+        }
+        changed
     }
 
     /// Every format at least one of these rows can become, sorted.
@@ -344,20 +386,20 @@ impl Queue {
         self.next_rev
     }
 
-    fn blank_row(&mut self, combine: bool, mode: QueueMode) -> Row {
+    fn blank_row(&mut self, combine: bool, recipe: &Recipe) -> Row {
         let id = self.next_id;
         self.next_id += 1;
         let mut job = blank_job(&self.policy);
-        job.op = match mode {
-            QueueMode::Convert => Operation::Convert,
-            QueueMode::Compress => Operation::Compress,
-            QueueMode::Extract => Operation::Extract,
-            QueueMode::Combine => Operation::Merge,
+        job.op = operation(recipe.mode());
+        let preset = match recipe {
+            Recipe::Preset(p) => Some(p.clone()),
+            Recipe::Mode(_) => None,
         };
         Row {
             id,
             combine,
-            picked: false,
+            picked: preset.is_some(),
+            preset,
             inputs: Vec::new(),
             keys: Vec::new(),
             from: None,
@@ -411,6 +453,20 @@ impl Queue {
         };
         row.from = Some(from);
         let kind = self.reg.format(from).kind;
+        if let Some(p) = row.preset.clone() {
+            if p.mode == QueueMode::Combine || !kinds(&p, &self.reg).contains(&kind) {
+                row.state = RowState::Failed {
+                    error: mismatch(&p, &path, &self.reg),
+                };
+                return;
+            }
+            row.job.op = operation(p.mode);
+            row.job.target = p.target;
+            row.job.options = p.options.clone();
+            self.preview(row);
+            return;
+        }
+        row.job.options = JobOptions::default();
         // Convert mode sends archives to Extract (spec D1).
         if row.job.op == Operation::Convert && kind == MediaKind::Archive {
             row.job.op = Operation::Extract;
@@ -439,6 +495,20 @@ impl Queue {
             row.state = RowState::Failed { error: refused };
             return;
         }
+        if let Some(p) = row.preset.clone() {
+            if p.mode != QueueMode::Combine {
+                let first = row.inputs.first().cloned().unwrap_or_default();
+                row.state = RowState::Failed {
+                    error: mismatch(&p, &first, &self.reg),
+                };
+                return;
+            }
+            row.job.target = p.target;
+            row.job.options = p.options.clone();
+            self.preview(row);
+            return;
+        }
+        row.job.options = JobOptions::default();
         row.job.target = target.or_else(|| {
             Some(
                 if self.combine_targets(&row.inputs).contains(&FormatId::Pdf) {
@@ -532,6 +602,39 @@ impl Queue {
     }
 }
 
+/// "images", "images and PDFs", "images, video and audio".
+pub fn kinds_phrase(kinds: &[MediaKind]) -> String {
+    let words: Vec<&str> = kinds
+        .iter()
+        .map(|k| match k {
+            MediaKind::Image => "images",
+            MediaKind::Video => "video",
+            MediaKind::Audio => "audio",
+            MediaKind::Document => "PDFs",
+            MediaKind::Archive => "archives",
+        })
+        .collect();
+    match words.as_slice() {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// A preset applied to a file it doesn't take (spec D4).
+fn mismatch(preset: &Preset, file: &Path, reg: &Registry) -> Shown {
+    let what = match preset.mode {
+        QueueMode::Combine => "combining files".to_string(),
+        _ => kinds_phrase(&kinds(preset, reg)),
+    };
+    app_error(
+        ErrorCode::UnsupportedInput,
+        file,
+        &format!("{} is for {what}", preset.name),
+        Some("Pick another preset, or remove this file."),
+    )
+}
+
 /// Inputs the app refuses before the engine sees them (spec D1, D2).
 fn refusal(path: &Path, combine: bool) -> Option<Shown> {
     let from_photos = path.ancestors().any(|a| {
@@ -596,6 +699,7 @@ fn placeholder() -> Row {
         id: 0,
         combine: false,
         picked: false,
+        preset: None,
         inputs: Vec::new(),
         keys: Vec::new(),
         from: None,
@@ -633,6 +737,7 @@ fn view(row: &Row) -> RowView {
         size: row.size,
         output: row.output.clone(),
         note: row.note.clone(),
+        preset: row.preset.as_ref().map(|p| p.name.clone()),
         rev: row.rev,
         state: row.state.clone(),
     }
@@ -1147,5 +1252,74 @@ mod tests {
         assert_eq!(r[0].to, Some(FormatId::Zip));
         let after = q.remove_input(r[0].id, 1).unwrap();
         assert_eq!(after.to, Some(FormatId::Pdf));
+    }
+
+    fn builtin(id: &str) -> crate::presets::Preset {
+        crate::presets::builtins()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_preset_sets_target_and_options() {
+        let d = Dir::new("preset-apply");
+        let mut q = queue();
+        let id = q.add(&[d.put("photo.png", &PNG_1X1)], QueueMode::Convert)[0].id;
+        let r = q.apply_preset(&[id], &builtin("web-image"));
+        assert_eq!(r[0].to, Some(FormatId::Webp));
+        assert_eq!(r[0].preset.as_deref(), Some("Web image"));
+        assert_eq!(
+            r[0].output.as_deref(),
+            Some(d.0.join("photo.webp").as_path())
+        );
+        let (_, job) = q.next_queued().unwrap();
+        assert_eq!(job.options.max_size, Some(2048));
+        assert!(job.options.strip_metadata);
+    }
+
+    #[test]
+    fn a_preset_names_what_it_is_for() {
+        let d = Dir::new("preset-mismatch");
+        let mut q = queue();
+        let id = q.add(&[d.put("photo.png", &PNG_1X1)], QueueMode::Convert)[0].id;
+        let r = q.apply_preset(&[id], &builtin("email-video"));
+        let RowState::Failed { error } = &r[0].state else {
+            panic!("{:?}", r[0].state)
+        };
+        assert_eq!(error.reason, "Email video is for video");
+        assert_eq!(
+            error.fix.as_deref(),
+            Some("Pick another preset, or remove this file.")
+        );
+        let r = q.apply_preset(&[id], &builtin("web-image"));
+        assert_eq!(r[0].state, RowState::Queued);
+    }
+
+    #[test]
+    fn new_files_use_the_active_preset() {
+        let d = Dir::new("preset-new");
+        let mut q = queue();
+        let r = q.add_with(
+            &[d.put("photo.png", &PNG_1X1)],
+            &Recipe::Preset(builtin("web-image")),
+        );
+        assert_eq!(
+            (r[0].to, r[0].preset.as_deref()),
+            (Some(FormatId::Webp), Some("Web image"))
+        );
+    }
+
+    #[test]
+    fn kinds_read_as_a_list() {
+        assert_eq!(kinds_phrase(&[MediaKind::Video]), "video");
+        assert_eq!(
+            kinds_phrase(&[MediaKind::Image, MediaKind::Document]),
+            "images and PDFs"
+        );
+        assert_eq!(
+            kinds_phrase(&[MediaKind::Image, MediaKind::Video, MediaKind::Audio]),
+            "images, video and audio"
+        );
     }
 }

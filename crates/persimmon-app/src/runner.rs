@@ -530,4 +530,44 @@ mod tests {
             )
         );
     }
+
+    /// A preset's options reach the engine: Web image caps the long edge
+    /// at 2048 px.
+    #[cfg(feature = "vips")]
+    #[test]
+    fn options_reach_the_engine() {
+        let d = Dir::new("preset-options");
+        let small = d.put("small.png", &PNG_1X1);
+        let big = d.0.join("big.png");
+        let made = std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "png", "--resampleHeightWidth", "64", "4096"])
+            .arg(&small)
+            .arg("--out")
+            .arg(&big)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let (q, r, _) = setup(Backends::new());
+        let web = crate::presets::builtins()
+            .into_iter()
+            .find(|p| p.id == "web-image")
+            .unwrap();
+        let id = q
+            .lock()
+            .unwrap()
+            .add_with(&[big], &crate::queue::Recipe::Preset(web))[0]
+            .id;
+        r.start();
+        wait("the row", 30, || finished(&state(&q, id)));
+        let RowState::Done { output, .. } = state(&q, id) else {
+            panic!("{:?}", state(&q, id))
+        };
+        let out = std::process::Command::new("/usr/bin/sips")
+            .args(["-g", "pixelWidth"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("pixelWidth: 2048"), "{text}");
+    }
 }

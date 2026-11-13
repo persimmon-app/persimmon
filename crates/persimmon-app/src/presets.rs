@@ -117,7 +117,7 @@ pub fn command(p: &Preset) -> String {
     line
 }
 
-fn operation(mode: QueueMode) -> persimmon_core::registry::Operation {
+pub fn operation(mode: QueueMode) -> persimmon_core::registry::Operation {
     use persimmon_core::registry::Operation;
     match mode {
         QueueMode::Convert => Operation::Convert,
