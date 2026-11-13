@@ -20,7 +20,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 # termination: SIGTERM and SIGHUP cancel like Ctrl-C.
 ctrlc = { version = "3", features = ["termination"] }
-persimmon-core = { path = "../persimmon-core", version = "0.1.0", default-features = false }
+persimmon-core = { path = "../persimmon-core", version = "0.2.0", default-features = false }
 
 [features]
 default = ["vips", "rar"]
