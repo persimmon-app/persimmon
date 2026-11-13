@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  let { version, onLicences }: { version: string; onLicences: () => Promise<boolean> } = $props();
+  let { version, onLicences, onSources }: { version: string; onLicences: () => Promise<boolean>; onSources: () => void } = $props();
   let missing = $state(false);
 </script>
 
@@ -10,7 +10,8 @@
   <p>GPL-3.0-or-later</p>
   <button onclick={async () => { missing = !(await onLicences()); }}>Licences…</button>
   {#if missing}<p class="hint">The full licence list comes with the released app.</p>{/if}
-  <p class="hint">FFmpeg's source arrives with the packaged app.</p>
+  <button onclick={onSources}>Source code…</button>
+  <p class="hint">The sources of FFmpeg, libvips and the libraries they use, with FFmpeg's configure line, are attached to this version's release.</p>
 </section>
 
 <style>

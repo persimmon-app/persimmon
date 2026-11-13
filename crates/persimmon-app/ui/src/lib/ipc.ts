@@ -51,6 +51,7 @@ export const clearHistory = () => invoke<boolean>("clear_history");
 export const revealPath = (path: string) => invoke<boolean>("reveal_path", { path });
 export const engines = () => invoke<EnginesView>("engines");
 export const setDropWindowAtLaunch = (on: boolean) => invoke<SettingsView>("set_drop_window_at_launch", { on });
+export const openSources = () => invoke<boolean>("open_sources");
 export const openLicences = () => invoke<boolean>("open_licences");
 export const onHistory = (f: (b: BatchView) => void): Promise<UnlistenFn> => listen<BatchView>("history", (e) => f(e.payload));
 export const onHistoryCleared = (f: () => void): Promise<UnlistenFn> => listen("history-cleared", () => f());

@@ -489,9 +489,35 @@ struct EnginesView {
     version: String,
 }
 
+/// The FFmpeg the packaged app carries: `ffmpeg`, with `ffprobe` beside
+/// it, in the folder of the running binary (`Contents/MacOS`). Found the
+/// same way when the app runs from the mounted DMG or a translocated copy.
+pub fn bundled_ffmpeg(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let ffmpeg = dir.join("ffmpeg");
+    (ffmpeg.is_file() && dir.join("ffprobe").is_file()).then_some(ffmpeg)
+}
+
+/// The engine's backends: the app's own FFmpeg when it carries one (a
+/// user's FFmpeg is never needed), else the lookup on PATH, as development
+/// builds have no bundled copy.
+pub fn app_backends(exe: Option<&Path>) -> Backends {
+    match exe.and_then(bundled_ffmpeg) {
+        Some(ffmpeg) => Backends::new().with_ffmpeg(ffmpeg),
+        None => Backends::new(),
+    }
+}
+
+/// Where a version's release keeps the sources of everything bundled and
+/// FFmpeg's configure line.
+pub fn sources_url(version: &str) -> String {
+    format!("https://github.com/persimmon-app/persimmon/releases/tag/v{version}")
+}
+
 #[tauri::command]
 async fn engines() -> Result<EnginesView, String> {
-    let (ffmpeg, ffmpeg_error) = match Backends::new().ffmpeg_info() {
+    let backends = app_backends(std::env::current_exe().ok().as_deref());
+    let (ffmpeg, ffmpeg_error) = match backends.ffmpeg_info() {
         Ok(info) => (Some(info), None),
         Err(e) => (None, Some(crate::wording::shown(&e))),
     };
@@ -526,6 +552,16 @@ fn open_licences(app: AppHandle) -> bool {
                 .status()
                 .is_ok_and(|s| s.success())
         })
+}
+
+/// Open this version's release page, which carries the sources, in the
+/// browser. The browser fetches it; the app holds no network code (DD-11).
+#[tauri::command]
+fn open_sources() -> bool {
+    std::process::Command::new("/usr/bin/open")
+        .arg(sources_url(env!("CARGO_PKG_VERSION")))
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Every window hides when closed. Closing the main window must not leave
@@ -667,7 +703,8 @@ pub fn run() {
             )));
             let handle = app.handle().clone();
             // FFmpeg from PATH or Homebrew until the app bundles its own.
-            let runner = Runner::new(Arc::clone(&queue), Backends::new(), move |row| {
+            let backends = app_backends(std::env::current_exe().ok().as_deref());
+            let runner = Runner::new(Arc::clone(&queue), backends, move |row| {
                 let _ = handle.emit("row", &row);
             });
             let drop_window = settings.drop_window;
@@ -766,7 +803,8 @@ pub fn run() {
             reveal_path,
             engines,
             set_drop_window_at_launch,
-            open_licences
+            open_licences,
+            open_sources
         ])
         .build(tauri::generate_context!())
         .expect("Persimmon couldn't start");
@@ -945,6 +983,7 @@ mod tests {
                 "allow-engines",
                 "allow-get-settings",
                 "allow-open-licences",
+                "allow-open-sources",
                 "allow-presets",
                 "allow-save-preset",
                 "allow-set-drop-window-at-launch",
@@ -1077,5 +1116,61 @@ mod tests {
         let value = |n: &str| light.iter().find(|(k, _)| k == n).unwrap().1.clone();
         assert_eq!(value("error"), "#c4291c");
         assert_eq!(value("error-text"), "#c4291c");
+    }
+
+    /// A fake program that prints `ffmpeg version {version}`.
+    fn fake(dir: &std::path::Path, name: &str, version: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(
+            &p,
+            format!("#!/bin/sh\necho 'ffmpeg version {version} Copyright'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    /// A temp folder shaped like a mounted DMG's `Contents/MacOS`, with a
+    /// space in its path as `/Volumes/Persimmon 0.2.0` has.
+    fn macos_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir()
+            .join(format!("prsm-app-bundled-{name}-{}", std::process::id()))
+            .join("Persimmon 0.2.0/MacOS");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("persimmon-app"), b"").unwrap();
+        d
+    }
+
+    #[test]
+    fn bundled_ffmpeg_is_found_beside_the_binary() {
+        let d = macos_dir("found");
+        let exe = d.join("persimmon-app");
+        let ff = fake(&d, "ffmpeg", "7.1");
+        fake(&d, "ffprobe", "7.1");
+        assert_eq!(super::bundled_ffmpeg(&exe), Some(ff));
+        std::fs::remove_file(d.join("ffprobe")).unwrap();
+        assert_eq!(super::bundled_ffmpeg(&exe), None);
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn bundled_ffmpeg_wins_over_path() {
+        let d = macos_dir("wins");
+        let exe = d.join("persimmon-app");
+        let ff = fake(&d, "ffmpeg", "7.1");
+        fake(&d, "ffprobe", "7.1");
+        let info = super::app_backends(Some(&exe)).ffmpeg_info().unwrap();
+        assert_eq!((info.path, info.version.as_str()), (ff, "7.1"));
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn sources_url_names_this_version() {
+        assert_eq!(
+            super::sources_url("0.2.0"),
+            "https://github.com/persimmon-app/persimmon/releases/tag/v0.2.0"
+        );
     }
 }

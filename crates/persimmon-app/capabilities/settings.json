@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "settings",
-  "description": "The Settings window may read the settings and change where output goes, and nothing else.",
+  "description": "The Settings window may read and change the settings, presets and output folders, read which engines the app uses, and open the licence list and the sources page, and nothing else.",
   "windows": [
     "settings"
   ],
@@ -12,6 +12,7 @@
     "allow-engines",
     "allow-get-settings",
     "allow-open-licences",
+    "allow-open-sources",
     "allow-presets",
     "allow-save-preset",
     "allow-set-drop-window-at-launch",

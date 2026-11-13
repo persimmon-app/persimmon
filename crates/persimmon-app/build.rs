@@ -42,8 +42,13 @@ fn main() {
             "engines",
             "set_drop_window_at_launch",
             "open_licences",
+            "open_sources",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("tauri-build failed");
+        // The packaged app carries libvips and the rest in
+        // Contents/Frameworks, named @rpath/<name>. Development builds link
+        // Homebrew's libraries by absolute name, so this changes nothing there.
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks");
     }
 }

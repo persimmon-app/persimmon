@@ -58,7 +58,7 @@
     {:else if pane === "privacy"}
       <PrivacyPane />
     {:else if pane === "about"}
-      <AboutPane version={engines?.version ?? ""} onLicences={() => ipc.openLicences()} />
+      <AboutPane version={engines?.version ?? ""} onLicences={() => ipc.openLicences()} onSources={() => ipc.openSources()} />
     {/if}
   </main>
 </div>
