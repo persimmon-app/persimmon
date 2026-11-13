@@ -25,9 +25,13 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 | [ruzstd](https://github.com/KillingSpark/zstd-rs) | 0.9 | MIT | `persimmon-core`: Zstandard, for `.tar.zst` | Statically linked (Rust crate) |
 | [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) with [ppmd-rust](https://github.com/hasenbanck/ppmd-rust) | 0.25, bzip2, PPMd and Deflate | Apache-2.0; ppmd-rust is CC0-1.0 OR MIT-0 | `persimmon-core`: reading 7z archives | Statically linked (Rust crate) |
 | [compress-tools](https://github.com/OSSystems/compress-tools-rs) | 0.16, behind the default `rar` feature | MIT OR Apache-2.0 | `persimmon-core`: Rust bindings to libarchive, for reading RAR | Statically linked (Rust crate) |
-| [libarchive](https://www.libarchive.org/) | 3.6 or later | BSD-2-Clause | `persimmon-core`: reading RAR and RAR5, with libarchive's own reader, never unRAR | Dynamically linked; installed separately (Homebrew `libarchive`, apt `libarchive-dev`) until the app bundles it |
-| [libvips](https://www.libvips.org/) | 8.15 or later | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked; installed separately (Homebrew `vips`, apt `libvips-dev`) until the app bundles it |
-| [GLib](https://gitlab.gnome.org/GNOME/glib) | 2 | LGPL-2.1-or-later | Required by libvips | Dynamically linked |
+| [libarchive](https://www.libarchive.org/) | 3.6 or later; 3.8.11 in the macOS app | BSD-2-Clause | `persimmon-core`: reading RAR and RAR5, with libarchive's own reader, never unRAR | Dynamically linked. `prsm` uses the system's (Homebrew `libarchive`, apt `libarchive-dev`); the macOS app bundles its own, built from source, in `Contents/Frameworks` |
+| [libvips](https://www.libvips.org/) | 8.15 or later; 8.18.7 in the macOS app | LGPL-2.1-or-later | `persimmon-core`: reading, converting and writing images | Dynamically linked. `prsm` uses the system's (Homebrew `vips`, apt `libvips-dev`); the macOS app bundles a minimal build of its own, from source, in `Contents/Frameworks` |
+| [GLib](https://gitlab.gnome.org/GNOME/glib) (glib, gobject, gio, gmodule) | 2; 2.90.1 in the macOS app | LGPL-2.1-or-later | Required by libvips | Dynamically linked; bundled in the macOS app |
+| [libffi](https://sourceware.org/libffi/) | 3.8.0 | MIT | Required by GLib | Bundled in the macOS app, dynamically linked |
+| [PCRE2](https://github.com/PCRE2Project/pcre2) | 10.49, without JIT | BSD-3-Clause | Required by GLib | Bundled in the macOS app, dynamically linked |
+| [proxy-libintl](https://github.com/frida/proxy-libintl) | 0.5 | LGPL-2.0-or-later | GLib's stand-in for gettext (the app isn't translated) | Compiled into the macOS app's GLib |
+| [Expat](https://libexpat.github.io/) | 2.10.0 | MIT | Required by libvips | Bundled in the macOS app, dynamically linked |
 
 **Codec libraries that libvips loads** for the supported image formats. They're dynamically linked, and each is compatible with GPL-3.0-or-later:
 
@@ -37,12 +41,14 @@ Persimmon is GPL-3.0-or-later. Every entry must be compatible with that.
 
 Persimmon doesn't use libvips's ImageMagick, poppler or libimagequant modules, and a bundled build leaves them out.
 
-**The macOS app** (`persimmon-app`, not yet released) adds these:
+The macOS app bundles these codec libraries, built from source: libjpeg-turbo 3.2.1, libpng 1.6.59, libwebp 1.6.0, libtiff 4.7.2, cgif 0.5.4, libheif 1.23.7 (without x265), libde265 1.1.3, dav1d 1.5.4, aom 3.15.3 (encoder only), lcms2 2.20, libexif 0.6.26 and highway 1.4.0.
+
+**The macOS app** (`persimmon-app`, not yet released) adds these, and carries its own `THIRD-PARTY-LICENSES.html` with every Rust crate, bundled library and interface package in it:
 
 | Component | Version | Licence | Used for | Linked how |
 |---|---|---|---|---|
 | [Tauri](https://tauri.app/) (`tauri`, `tauri-build`, `@tauri-apps/api`, `@tauri-apps/cli`) | 2.12 | Apache-2.0 OR MIT | The app's window, its web view (the system WKWebView) and the bridge to the engine | Statically linked (Rust crates); the API package is bundled into the app's UI; the CLI is a build tool only |
-| [Svelte](https://svelte.dev/) | 5 | MIT | The app's interface | Compiled into the app's UI |
+| [Svelte](https://svelte.dev/), with [clsx](https://github.com/lukeed/clsx) | 5; clsx 2 | MIT | The app's interface | Compiled into the app's UI |
 | [Inter](https://rsms.me/inter/), from [Fontsource](https://fontsource.org/) | 5.3 (variable) | OFL-1.1 | The interface typeface | Bundled font files |
 | [JetBrains Mono](https://www.jetbrains.com/lp/mono/), from [Fontsource](https://fontsource.org/) | 5.3 (variable) | OFL-1.1 | File names, sizes, formats and commands | Bundled font files |
 
@@ -52,7 +58,11 @@ Build tools that never ship in the app: Vite (MIT), TypeScript (Apache-2.0), sve
 
 | Component | Version | Licence | Used for | How |
 |---|---|---|---|---|
-| [FFmpeg](https://ffmpeg.org/) and ffprobe | 7.0 or later | LGPL-2.1-or-later, or GPL-2.0-or-later / GPL-3.0-or-later in builds with x264 and x265, as most are | Audio and video: probing, converting, compressing | Never linked or bundled in v0.1. `prsm` runs the `ffmpeg` the user installed as a child process. Bundling a GPL build arrives with the app (DD-04) |
+| [FFmpeg](https://ffmpeg.org/) and ffprobe | 7.0 or later; 9.0.2 in the macOS app | LGPL-2.1-or-later, or GPL-2.0-or-later / GPL-3.0-or-later in builds with x264 and x265, as most are | Audio and video: probing, converting, compressing | Never linked. `prsm` runs the `ffmpeg` the user installed as a child process. The macOS app bundles its own in `Contents/MacOS`, built from source with `--enable-gpl --disable-network` (GPL-3.0-or-later as built, DD-04), and runs it the same way |
+
+**Statically linked into the macOS app's FFmpeg and ffprobe:** x264 (stable branch at `b35605a`, GPL-2.0-or-later), x265 4.2 (GPL-2.0-or-later), libvpx 1.17.0 (BSD-3-Clause), Opus 1.6.1 (BSD-3-Clause), LAME 3.100 (LGPL-2.0-or-later), dav1d 1.5.4 (BSD-2-Clause) and aom 3.15.3 (BSD-2-Clause plus the AOMedia patent licence).
+
+**Sources:** every release of the app attaches `Persimmon-<version>-sources.tar`, with the source of every bundled library and of FFmpeg, the scripts that build them, and FFmpeg's configure line, which is also attached on its own. No patches are applied.
 
 `persimmon-corpus` is a test-only crate and is never shipped. Its audio and video samples are made at test time by the test machine's FFmpeg.
 
