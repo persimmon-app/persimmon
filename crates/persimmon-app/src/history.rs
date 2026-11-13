@@ -42,6 +42,12 @@ pub struct Item {
     pub outcome: ItemOutcome,
     #[serde(default)]
     pub undone: bool,
+    /// The row's target and mode, so Retry from History makes the same
+    /// row; older lines have neither.
+    #[serde(default)]
+    pub to: Option<persimmon_core::format::FormatId>,
+    #[serde(default)]
+    pub mode: Option<QueueMode>,
 }
 
 /// The rows one Start (or one drop) ran.
@@ -400,6 +406,23 @@ fn unchanged(item: &Item, output: &Path) -> bool {
     size_ok && item.output_mtime.is_none_or(|t| stamp(output) == Some(t))
 }
 
+/// How Retry from History queues `item` again: with the batch's preset if
+/// it still exists and is for the item's mode, else in that mode.
+pub fn retry_recipe(
+    batch: &Batch,
+    item: &Item,
+    presets: &crate::presets::Presets,
+) -> crate::queue::Recipe {
+    use crate::queue::Recipe;
+    let mode = item.mode.unwrap_or(batch.mode);
+    batch
+        .preset
+        .as_deref()
+        .and_then(|name| presets.all().iter().find(|p| p.name == name))
+        .filter(|p| p.mode == mode)
+        .map_or(Recipe::Mode(mode), |p| Recipe::Preset(p.clone()))
+}
+
 /// A batch can be undone while one of its outputs is not yet undone and
 /// is still the file (or folder) the batch wrote.
 pub fn undoable(batch: &Batch) -> bool {
@@ -455,6 +478,8 @@ mod tests {
             size: 10,
             outcome: ItemOutcome::Done,
             undone: false,
+            to: None,
+            mode: None,
         }
     }
 
@@ -696,6 +721,13 @@ mod tests {
     }
 
     #[test]
+    fn an_old_history_line_loads_without_a_target() {
+        let line = r#"{"inputs":["/a.png"],"output":null,"outputSize":null,"outputMtime":null,"size":1,"outcome":"cancelled"}"#;
+        let item: Item = serde_json::from_str(line).unwrap();
+        assert_eq!((item.to, item.mode), (None, None));
+    }
+
+    #[test]
     fn undo_never_touches_inputs() {
         let d = Dir::new("inputs");
         let input = d.put("a.png", b"in");
@@ -730,6 +762,8 @@ mod tests {
                 },
             },
             undone: false,
+            to: None,
+            mode: None,
         };
         h.append(batch("bad", now(), vec![failed])).unwrap();
         let ids = |v: Vec<&Batch>| v.iter().map(|b| b.id.clone()).collect::<Vec<_>>();

@@ -5,10 +5,11 @@
   import { plural } from "../lib/format";
   import type { BatchView, HistoryFilter, UndoReport } from "../lib/types";
 
-  let { batches, text, filter, report, now = Date.now() / 1000, onSearch, onFilter, onUndo, onReveal, onClear, onDismissReport }: {
+  let { batches, text, filter, report, now = Date.now() / 1000, onSearch, onFilter, onUndo, onReveal, onRetry = () => {}, onClear, onDismissReport }: {
     batches: BatchView[]; text: string; filter: HistoryFilter; report: UndoReport | null; now?: number;
     onSearch: (t: string) => void; onFilter: (f: HistoryFilter) => void; onUndo: (id: string) => void;
-    onReveal: (path: string) => void; onClear: () => void; onDismissReport: () => void;
+    onReveal: (path: string) => void; onRetry?: (batch: string, index: number) => void;
+    onClear: () => void; onDismissReport: () => void;
   } = $props();
 
   let confirming = $state(false);
@@ -50,7 +51,7 @@
   <div class="list">
     {#each groups as g (g.label)}
       <h3>{g.label}</h3>
-      {#each g.batches as b (b.id)}<HistoryBatch batch={b} {onUndo} {onReveal} />{/each}
+      {#each g.batches as b (b.id)}<HistoryBatch batch={b} {onUndo} {onReveal} {onRetry} />{/each}
     {:else}
       <p class="empty">No batches{text || filter !== "all" ? " match" : " yet"}.</p>
     {/each}

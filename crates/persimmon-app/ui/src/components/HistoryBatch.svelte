@@ -4,7 +4,11 @@
   import { size, plural } from "../lib/format";
   import type { BatchView } from "../lib/types";
 
-  let { batch, onUndo, onReveal }: { batch: BatchView; onUndo: (id: string) => void; onReveal: (path: string) => void } = $props();
+  let { batch, onUndo, onReveal, onRetry = () => {} }: {
+    batch: BatchView; onUndo: (id: string) => void; onReveal: (path: string) => void;
+    /** Retry from History (spec D1): the batch and the item's index. */
+    onRetry?: (batch: string, index: number) => void;
+  } = $props();
   let open = $state(false);
 
   const base = (p: string | null) => (p ? (p.split("/").pop() ?? p) : "");
@@ -51,6 +55,9 @@
           {#if item.outcome === "done"}<span class="sizes">{size(item.size)} → {size(item.outputSize ?? 0)}</span>{/if}
           {#if item.outcome === "failed"}<span class="why">{item.error.reason}</span>{/if}
           {#if item.outcome === "cancelled"}<span class="state">Cancelled</span>{/if}
+          {#if item.outcome === "failed" || item.outcome === "cancelled"}
+            <button class="text" aria-label="Retry {base(item.inputs[0])}" onclick={() => onRetry(batch.id, i)}>Retry</button>
+          {/if}
           {#if item.undone}<span class="state">In the Trash</span>
           {:else if item.output && item.outcome === "done"}
             <button class="text" aria-label="Reveal {base(item.output)} in Finder" onclick={() => onReveal(item.output!)}>Reveal</button>

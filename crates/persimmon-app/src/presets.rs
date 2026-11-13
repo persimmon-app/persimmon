@@ -199,6 +199,7 @@ pub fn check(p: &Preset) -> Result<(), String> {
 }
 
 /// The built-in presets and the user's own.
+#[derive(Clone)]
 pub struct Presets {
     dir: PathBuf,
     list: Vec<Preset>,

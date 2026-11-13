@@ -43,6 +43,7 @@ fn main() {
             "set_drop_window_at_launch",
             "open_licences",
             "open_sources",
+            "retry_item",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("tauri-build failed");

@@ -49,6 +49,7 @@ export const history = (text: string, filter: HistoryFilter) => invoke<BatchView
 export const undoBatch = (id: string) => invoke<UndoReport>("undo_batch", { id });
 export const undoLast = () => invoke<UndoReport | null>("undo_last");
 export const clearHistory = () => invoke<boolean>("clear_history");
+export const retryItem = (batch: string, index: number) => invoke<RowView[]>("retry_item", { batch, index });
 export const revealPath = (path: string) => invoke<string | null>("reveal_path", { path });
 export const engines = () => invoke<EnginesView>("engines");
 export const setDropWindowAtLaunch = (on: boolean) => invoke<SettingsView>("set_drop_window_at_launch", { on });

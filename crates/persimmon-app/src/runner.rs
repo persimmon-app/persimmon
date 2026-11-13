@@ -294,6 +294,13 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
                 size: r.size,
                 outcome,
                 undone: false,
+                to: r.to,
+                mode: Some(match r.op {
+                    Operation::Compress => crate::queue::QueueMode::Compress,
+                    Operation::Extract => crate::queue::QueueMode::Extract,
+                    Operation::Merge => crate::queue::QueueMode::Combine,
+                    _ => crate::queue::QueueMode::Convert,
+                }),
             }
         })
         .collect();

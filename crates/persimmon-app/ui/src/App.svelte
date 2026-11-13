@@ -198,6 +198,7 @@
         onSearch={(t) => { historyText = t; refreshHistory(); }}
         onFilter={(f) => { historyFilter = f; refreshHistory(); }}
         onUndo={(id) => undo(id)} onReveal={(p) => reveal(ipc.revealPath(p))}
+        onRetry={async (b, i) => { const r = await ipc.retryItem(b, i); r.forEach(upsert); if (r.length) view = "queue"; }}
         onClear={async () => { await ipc.clearHistory(); report = null; refreshHistory(); }}
         onDismissReport={() => (report = null)} />
     {:else if rows.length === 0}

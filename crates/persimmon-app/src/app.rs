@@ -482,6 +482,66 @@ fn undo_last(app: AppHandle, state: State<'_, AppState>) -> Option<UndoReport> {
     Some(undo_batch(app, state, id))
 }
 
+/// Retry from History (spec D1): a failed or cancelled item goes back in
+/// the queue with its batch's preset (or mode) and its own target. Nothing
+/// for an item that isn't failed or cancelled, or isn't there.
+pub fn retry_rows(
+    queue: &mut crate::queue::Queue,
+    batch: &crate::history::Batch,
+    index: usize,
+    presets: &crate::presets::Presets,
+) -> Vec<RowView> {
+    use crate::history::ItemOutcome;
+    let Some(item) = batch.items.get(index) else {
+        return Vec::new();
+    };
+    if !matches!(
+        item.outcome,
+        ItemOutcome::Failed { .. } | ItemOutcome::Cancelled
+    ) {
+        return Vec::new();
+    }
+    let recipe = crate::history::retry_recipe(batch, item, presets);
+    let rows = queue.add_with(&item.inputs, &recipe);
+    match (rows.first(), item.to) {
+        (Some(row), Some(to)) if row.to != Some(to) => {
+            let changed = queue.set_target(&[row.id], to).changed;
+            if changed.is_empty() { rows } else { changed }
+        }
+        _ => rows,
+    }
+}
+
+#[tauri::command]
+fn retry_item(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    batch: String,
+    index: usize,
+) -> Vec<RowView> {
+    // One lock at a time: history, then presets, then the queue.
+    let Some(batch) = lock(&state.history).get(&batch).cloned() else {
+        return Vec::new();
+    };
+    let presets = lock(&state.presets).clone();
+    let (rows, already) = {
+        let mut queue = state.queue();
+        let inputs = batch
+            .items
+            .get(index)
+            .map(|i| i.inputs.clone())
+            .unwrap_or_default();
+        let already = queue.already_queued(&inputs);
+        (retry_rows(&mut queue, &batch, index, &presets), already)
+    };
+    if !rows.is_empty() {
+        state.runner.start_from(Source::Window);
+    }
+    emit_rows(&app, &rows);
+    note_already(&app, already);
+    rows
+}
+
 /// Forget every batch; the files stay.
 #[tauri::command]
 fn clear_history(app: AppHandle, state: State<'_, AppState>) -> bool {
@@ -846,7 +906,8 @@ pub fn run() {
             engines,
             set_drop_window_at_launch,
             open_licences,
-            open_sources
+            open_sources,
+            retry_item
         ])
         .build(tauri::generate_context!())
         .expect("Persimmon couldn't start");
@@ -934,6 +995,8 @@ mod tests {
                 size: 1,
                 outcome: ItemOutcome::Done,
                 undone: false,
+                to: None,
+                mode: None,
             }],
             undone: false,
         })
@@ -983,6 +1046,7 @@ mod tests {
                 "allow-remove-input",
                 "allow-remove-rows",
                 "allow-reorder-input",
+                "allow-retry-item",
                 "allow-retry-row",
                 "allow-reveal-path",
                 "allow-reveal-row",
@@ -1361,6 +1425,112 @@ mod tests {
             info.path.canonicalize().unwrap(),
             ff.canonicalize().unwrap()
         );
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    /// A history batch with one failed item, from a preset called `preset`.
+    fn failed_batch(input: &std::path::Path, preset: Option<&str>) -> crate::history::Batch {
+        use crate::history::{Batch, Item, ItemOutcome, Source};
+        Batch {
+            id: "b".into(),
+            started: 1,
+            finished: 2,
+            source: Source::Window,
+            preset: preset.map(Into::into),
+            mode: crate::queue::QueueMode::Convert,
+            items: vec![Item {
+                inputs: vec![input.to_path_buf()],
+                output: None,
+                output_size: None,
+                output_mtime: None,
+                size: 67,
+                outcome: ItemOutcome::Failed {
+                    error: crate::wording::app_error(
+                        persimmon_core::error::ErrorCode::CorruptInput,
+                        input,
+                        "it's damaged",
+                        None,
+                    ),
+                },
+                undone: false,
+                to: Some(persimmon_core::format::FormatId::Webp),
+                mode: Some(crate::queue::QueueMode::Convert),
+            }],
+            undone: false,
+        }
+    }
+
+    fn retry_queue() -> crate::queue::Queue {
+        crate::queue::Queue::new(
+            persimmon_core::registry::Registry::builtin(),
+            persimmon_core::output::OutputPolicy::default(),
+        )
+    }
+
+    #[test]
+    fn retry_item_requeues_with_the_batch_recipe() {
+        let d = macos_dir("retry-recipe");
+        let png = d.join("a.png");
+        std::fs::write(&png, persimmon_corpus::PNG_1X1).unwrap();
+        let presets = crate::presets::Presets::load(&d.join("presets"));
+        let mut q = retry_queue();
+        let rows = super::retry_rows(&mut q, &failed_batch(&png, Some("Web image")), 0, &presets);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].preset.as_deref(), Some("Web image"));
+        assert_eq!(rows[0].to, Some(persimmon_core::format::FormatId::Webp));
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn retry_item_falls_back_when_the_preset_is_gone() {
+        let d = macos_dir("retry-gone");
+        let png = d.join("a.png");
+        std::fs::write(&png, persimmon_corpus::PNG_1X1).unwrap();
+        let presets = crate::presets::Presets::load(&d.join("presets"));
+        let mut q = retry_queue();
+        let rows = super::retry_rows(
+            &mut q,
+            &failed_batch(&png, Some("Deleted since")),
+            0,
+            &presets,
+        );
+        assert_eq!(rows[0].preset, None);
+        assert_eq!(rows[0].to, Some(persimmon_core::format::FormatId::Webp));
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn retry_item_of_a_moved_file_fails_in_its_row() {
+        let d = macos_dir("retry-moved");
+        let presets = crate::presets::Presets::load(&d.join("presets"));
+        let mut q = retry_queue();
+        let rows = super::retry_rows(
+            &mut q,
+            &failed_batch(&d.join("gone.png"), None),
+            0,
+            &presets,
+        );
+        match &rows[0].state {
+            crate::queue::RowState::Failed { error } => {
+                assert_eq!(error.code, persimmon_core::error::ErrorCode::InputNotFound);
+                assert_eq!(crate::wording::cli_word(&error.reason), None);
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn only_failed_and_cancelled_items_retry() {
+        let d = macos_dir("retry-done");
+        let png = d.join("a.png");
+        std::fs::write(&png, persimmon_corpus::PNG_1X1).unwrap();
+        let presets = crate::presets::Presets::load(&d.join("presets"));
+        let mut batch = failed_batch(&png, None);
+        batch.items[0].outcome = crate::history::ItemOutcome::Done;
+        let mut q = retry_queue();
+        assert!(super::retry_rows(&mut q, &batch, 0, &presets).is_empty());
+        assert!(super::retry_rows(&mut q, &batch, 9, &presets).is_empty());
         let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
     }
 

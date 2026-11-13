@@ -20,4 +20,17 @@ describe("HistoryBatch", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Undo batch/ }));
     expect(onUndo).toHaveBeenCalledWith("a");
   });
+
+  it("offers Retry on failed and cancelled files only", async () => {
+    const onRetry = vi.fn();
+    const b = batch({ id: "a" });
+    b.items.push({ inputs: ["/x/late.mov"], output: null, outputSize: null, outputMtime: null, size: 9, undone: false, outcome: "cancelled" });
+    render(HistoryBatch, { batch: b, onReveal: vi.fn(), onUndo: vi.fn(), onRetry });
+    await fireEvent.click(screen.getByRole("button", { name: /Show the 3 files/ }));
+    expect(screen.queryByRole("button", { name: "Retry hero.png" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Retry scan.png" }));
+    expect(onRetry).toHaveBeenCalledWith("a", 1);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry late.mov" }));
+    expect(onRetry).toHaveBeenCalledWith("a", 2);
+  });
 });

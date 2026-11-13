@@ -88,6 +88,9 @@ export type Item = {
   outputSize: number | null;
   outputMtime: number | null;
   size: number;
+  /** The row's target and mode, for Retry; older history has neither. */
+  to?: FormatId | null;
+  mode?: QueueMode | null;
   undone: boolean;
 } & ItemOutcome;
 

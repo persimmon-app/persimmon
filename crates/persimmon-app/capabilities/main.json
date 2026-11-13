@@ -21,6 +21,7 @@
     "allow-remove-input",
     "allow-remove-rows",
     "allow-reorder-input",
+    "allow-retry-item",
     "allow-retry-row",
     "allow-reveal-path",
     "allow-reveal-row",
