@@ -477,3 +477,289 @@ fn every_corpus_failure_shows_file_reason_and_fix() {
     // reaching them can't pass by checking nothing.
     assert!(failed >= 10, "only {failed} rows failed");
 }
+
+/// No `.part` or `.prsm-*` file anywhere under `dir`.
+fn no_partials(dir: &Path) -> bool {
+    std::fs::read_dir(dir).unwrap().all(|e| {
+        let e = e.unwrap();
+        let n = e.file_name().to_string_lossy().into_owned();
+        let ok = !n.ends_with(".part") && !n.starts_with(".prsm-");
+        ok && (!e.file_type().unwrap().is_dir() || no_partials(&e.path()))
+    })
+}
+
+fn no_ffmpeg_child() -> bool {
+    !std::process::Command::new("/usr/bin/pgrep")
+        .args(["-P", &std::process::id().to_string(), "ffmpeg"])
+        .status()
+        .unwrap()
+        .success()
+}
+
+fn wait_until(what: &str, secs: u64, done: impl Fn() -> bool) {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while !done() {
+        assert!(Instant::now() < end, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A tar of 1,000 files of 256 KB: long enough to extract that a cancel
+/// lands in the middle.
+fn many_files_tar(dir: &Scratch) -> PathBuf {
+    let src = dir.0.join("many-src");
+    std::fs::create_dir_all(&src).unwrap();
+    for i in 0..1000 {
+        std::fs::write(src.join(format!("f{i:04}.bin")), vec![i as u8; 256 << 10]).unwrap();
+    }
+    let tar = dir.0.join("many.tar");
+    let ok = std::process::Command::new("/usr/bin/tar")
+        .arg("-cf")
+        .arg(&tar)
+        .arg("-C")
+        .arg(&src)
+        .arg(".")
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    std::fs::remove_dir_all(&src).unwrap();
+    tar
+}
+
+/// One long input per backend: FFmpeg, PDF pages, an archive, each with
+/// the mode and target its row takes.
+fn long_inputs(rig: &Rig) -> Vec<(&'static str, PathBuf, QueueMode, Option<FormatId>)> {
+    let video = rig.dir.copy(&media_sample("vid-long").unwrap(), "long.mov");
+    let pdf = write_pdf_sample(&rig.dir.0, "pdf-many");
+    let tar = many_files_tar(&rig.dir);
+    vec![
+        ("video", video, QueueMode::Convert, Some(FormatId::Webm)),
+        ("pdf", pdf, QueueMode::Convert, Some(FormatId::Png)),
+        ("archive", tar, QueueMode::Extract, None),
+    ]
+}
+
+fn planned_output(rig: &Rig, id: RowId) -> PathBuf {
+    rig.queue.lock().unwrap().get(id).unwrap().output.unwrap()
+}
+
+/// Gate item 2, per backend: a cancelled row leaves no partial output and
+/// no FFmpeg.
+#[test]
+fn cancel_leaves_nothing_behind_on_every_backend() {
+    let Some(ff) = ffmpeg() else { return };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let rig = rig(
+        "cancel",
+        OutputPolicy::default(),
+        Backends::new().with_ffmpeg(&ff),
+    );
+    // One row at a time, so the check never sees the next row's work.
+    for (what, input, mode, to) in long_inputs(&rig) {
+        let id = row(&rig, &[input], mode, to);
+        let output = planned_output(&rig, id);
+        rig.runner.start();
+        wait_until(what, 30, || {
+            matches!(state(&rig, id), RowState::Running { .. })
+        });
+        assert!(rig.runner.cancel(id), "{what}: cancel refused");
+        wait_until(what, 30, || finished(&state(&rig, id)));
+        assert_eq!(state(&rig, id), RowState::Cancelled, "{what}");
+        assert!(!output.exists(), "{what}: {} was left", output.display());
+        assert!(no_partials(&rig.dir.0), "{what}: a partial file was left");
+        assert!(no_ffmpeg_child(), "{what}: FFmpeg still runs");
+    }
+}
+
+/// Gate item 2, quitting: shutdown with rows running and queued.
+#[test]
+fn shutdown_leaves_nothing_behind() {
+    let Some(ff) = ffmpeg() else { return };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let rig = rig(
+        "shutdown",
+        OutputPolicy::default(),
+        Backends::new().with_ffmpeg(&ff),
+    );
+    let rows: Vec<(&str, RowId)> = long_inputs(&rig)
+        .into_iter()
+        .map(|(what, input, mode, to)| (what, row(&rig, &[input], mode, to)))
+        .collect();
+    let outputs: Vec<PathBuf> = rows
+        .iter()
+        .map(|(_, id)| planned_output(&rig, *id))
+        .collect();
+    rig.runner.start();
+    wait_until("the video", 30, || {
+        matches!(state(&rig, rows[0].1), RowState::Running { .. })
+    });
+    rig.runner.shutdown();
+    for ((what, id), output) in rows.iter().zip(&outputs) {
+        let s = state(&rig, *id);
+        assert!(
+            !matches!(s, RowState::Running { .. }),
+            "{what} still running"
+        );
+        assert!(!output.exists(), "{what}: {} was left", output.display());
+    }
+    assert!(no_partials(&rig.dir.0));
+    assert!(no_ffmpeg_child());
+}
+
+/// A cancel that races the row's own finish: whole output or none.
+#[test]
+fn cancel_racing_the_finish_leaves_a_whole_or_no_output() {
+    let rig = rig("race", OutputPolicy::default(), Backends::new());
+    for i in 0..20 {
+        let input = rig.dir.put(&format!("race-{i}.png"), &PNG_1X1);
+        let id = row(&rig, &[input], QueueMode::Convert, Some(FormatId::Jpeg));
+        let output = planned_output(&rig, id);
+        rig.runner.start();
+        rig.runner.cancel(id);
+        wait_until("the row", 30, || finished(&state(&rig, id)));
+        match state(&rig, id) {
+            RowState::Done { output: out, .. } => {
+                assert_eq!(sniff(&head(&out)), Some(FormatId::Jpeg), "run {i}")
+            }
+            RowState::Cancelled => assert!(!output.exists(), "run {i}: output left"),
+            other => panic!("run {i}: {other:?}"),
+        }
+        assert!(no_partials(&rig.dir.0), "run {i}");
+    }
+}
+
+/// Makes `dir` read-only until dropped, even if an assertion fails.
+struct ReadOnly(PathBuf);
+impl ReadOnly {
+    fn new(dir: &Path) -> ReadOnly {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        ReadOnly(dir.to_path_buf())
+    }
+    fn restore(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
+#[test]
+fn retry_after_the_cause_is_fixed_succeeds() {
+    let out = Scratch::new("retry-out");
+    let locked = ReadOnly::new(&out.0.join("locked"));
+    let rig = rig(
+        "retry",
+        OutputPolicy {
+            dir: Some(locked.0.clone()),
+            fallback: None,
+            ..OutputPolicy::default()
+        },
+        Backends::new(),
+    );
+    let id = row(
+        &rig,
+        &[rig.dir.put("a.png", &PNG_1X1)],
+        QueueMode::Convert,
+        Some(FormatId::Jpeg),
+    );
+    run_all(&rig, 60);
+    match state(&rig, id) {
+        RowState::Failed { error } => {
+            assert_eq!(
+                error.code,
+                persimmon_core::error::ErrorCode::OutputNotWritable
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    locked.restore();
+    assert!(rig.runner.retry(id).is_some(), "retry refused");
+    run_all(&rig, 60);
+    assert!(done_output(&rig, id).starts_with(&locked.0));
+}
+
+/// The fallback folder is for a source folder that can't be written (the
+/// Photos library, Mail, a read-only disk), with outputs beside originals.
+#[test]
+fn fallback_catches_an_unwritable_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let out = Scratch::new("fallback-out");
+    let fallback = out.0.join("fallback");
+    let rig = rig(
+        "fallback",
+        OutputPolicy {
+            fallback: Some(fallback.clone()),
+            ..OutputPolicy::default()
+        },
+        Backends::new(),
+    );
+    let source = rig.dir.0.join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    let input = source.join("a.png");
+    std::fs::write(&input, PNG_1X1).unwrap();
+    std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let locked = ReadOnly::new(&source);
+    let id = row(&rig, &[input], QueueMode::Convert, Some(FormatId::Jpeg));
+    run_all(&rig, 60);
+    assert!(done_output(&rig, id).starts_with(&fallback));
+    assert!(
+        rig.queue.lock().unwrap().get(id).unwrap().note.is_some(),
+        "no note"
+    );
+    drop(locked);
+}
+
+struct FakeTrash(PathBuf);
+impl crate::history::Trasher for FakeTrash {
+    fn trash(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.0)?;
+        std::fs::rename(path, self.0.join(path.file_name().unwrap()))
+    }
+}
+
+#[test]
+fn undo_trashes_what_a_run_wrote() {
+    use crate::history::History;
+    let rig = rig("undo", OutputPolicy::default(), Backends::new());
+    let history = Arc::new(Mutex::new(History::open(&rig.dir.0.join("history.jsonl"))));
+    let h = Arc::clone(&history);
+    rig.runner.set_on_batch(move |b| {
+        h.lock().unwrap().append(b).unwrap();
+    });
+    let inputs = [
+        rig.dir.put("a.png", &PNG_1X1),
+        rig.dir.put("b.png", &PNG_1X1),
+    ];
+    let ids: Vec<RowId> = inputs
+        .iter()
+        .map(|p| {
+            row(
+                &rig,
+                std::slice::from_ref(p),
+                QueueMode::Convert,
+                Some(FormatId::Jpeg),
+            )
+        })
+        .collect();
+    run_all(&rig, 60);
+    let outputs: Vec<PathBuf> = ids.iter().map(|id| done_output(&rig, *id)).collect();
+    wait_until("the batch", 10, || {
+        !history.lock().unwrap().batches().is_empty()
+    });
+    let mut h = history.lock().unwrap();
+    let batch = h.batches()[0].id.clone();
+    let report = h.undo(&batch, &FakeTrash(rig.dir.0.join("trash")));
+    assert_eq!(report.trashed, 2, "{report:?}");
+    assert!(outputs.iter().all(|o| !o.exists()));
+    assert!(inputs.iter().all(|i| i.exists()));
+}

@@ -239,22 +239,7 @@ impl Inner {
                 );
             }
         });
-        match results.into_iter().next() {
-            Some(Ok(Outcome::Written(output))) => {
-                let size = std::fs::metadata(&output)
-                    .ok()
-                    .filter(|m| m.is_file())
-                    .map(|m| m.len());
-                RowState::Done {
-                    output,
-                    output_size: size,
-                }
-            }
-            Some(Ok(Outcome::NotSmaller)) => RowState::NotSmaller,
-            Some(Err(e)) if e.code == ErrorCode::Cancelled => RowState::Cancelled,
-            Some(Err(e)) => RowState::Failed { error: shown(&e) },
-            None => RowState::Cancelled,
-        }
+        outcome_of(results, token.is_cancelled())
     }
 
     fn set(&self, id: RowId, state: RowState) -> Option<RowView> {
@@ -322,6 +307,38 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
         mode,
         items,
         undone: false,
+    }
+}
+
+/// How a row ended, from what the engine returned for its one task, and
+/// whether its cancel token fired.
+fn outcome_of(
+    results: Vec<Result<Outcome, persimmon_core::error::Error>>,
+    cancelled: bool,
+) -> RowState {
+    match results.into_iter().next() {
+        Some(Ok(Outcome::Written(output))) => {
+            let size = std::fs::metadata(&output)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len());
+            RowState::Done {
+                output,
+                output_size: size,
+            }
+        }
+        Some(Ok(Outcome::NotSmaller)) => RowState::NotSmaller,
+        Some(Err(e)) if e.code == ErrorCode::Cancelled => RowState::Cancelled,
+        Some(Err(e)) => RowState::Failed { error: shown(&e) },
+        // Nothing ran: a cancel before the task started, or else the
+        // engine gave no answer, which is a failure, not a cancel.
+        None if cancelled => RowState::Cancelled,
+        None => RowState::Failed {
+            error: shown(&persimmon_core::error::Error::new(
+                ErrorCode::Internal,
+                "Persimmon stopped this file without a result",
+            )),
+        },
     }
 }
 
@@ -567,6 +584,12 @@ mod tests {
             "{:?}",
             state(&q, id)
         );
+    }
+
+    #[test]
+    fn a_job_with_no_result_fails() {
+        assert!(matches!(outcome_of(vec![], false), RowState::Failed { .. }));
+        assert_eq!(outcome_of(vec![], true), RowState::Cancelled);
     }
 
     #[test]
