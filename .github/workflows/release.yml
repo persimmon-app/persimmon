@@ -1,10 +1,13 @@
 # The release archives (DD-30): macOS arm64 and x64, Windows x64 and
-# Linux x64, each tested, packaged with its licences and a checksum.
+# Linux x64, each tested, packaged with its licences and a checksum. And the
+# macOS app (D5, DD-44): a DMG with libvips, libarchive and FFmpeg built
+# from source inside, the sources of everything bundled, and FFmpeg's
+# configure line.
 #
-# A pushed v* tag builds all four and creates a *draft* GitHub Release; a
+# A pushed v* tag builds them all and creates a *draft* GitHub Release; a
 # maintainer reviews it and publishes it by hand. Run by hand
-# (workflow_dispatch), it builds and uploads the archives as artifacts only,
-# a dry run before tagging.
+# (workflow_dispatch), it builds and uploads them as artifacts only, a dry
+# run before tagging.
 name: Release
 
 on:
@@ -188,9 +191,138 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The macOS app, Apple silicon only (DD-44). It's signed with a Developer
+  # ID and notarised only when those secrets exist (mode.sh); otherwise it's
+  # ad hoc, and a partial set of secrets fails the job.
+  app:
+    needs: check
+    name: Persimmon.app (aarch64-apple-darwin)
+    runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      - name: Host is Apple silicon
+        shell: bash
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = aarch64-apple-darwin
+
+      # Build tools only: every library is built from source, never taken
+      # from Homebrew.
+      - name: Install build tools
+        run: brew install meson ninja cmake pkgconf
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/persimmon-app/ui/package-lock.json
+
+      - name: Install the interface's packages
+        working-directory: crates/persimmon-app/ui
+        run: npm ci --ignore-scripts
+
+      # The scripts skip what the cached prefix already holds; a change to a
+      # pinned source or a build script is a new key, so a fresh build.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            target/native/prefix
+            target/native/sources
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/persimmon-app/packaging/versions.sh', 'crates/persimmon-app/packaging/lib.sh', 'crates/persimmon-app/packaging/build-*.sh') }}
+
+      - name: Build libvips, libarchive and FFmpeg from source
+        run: |
+          bash crates/persimmon-app/packaging/build-libs.sh
+          bash crates/persimmon-app/packaging/build-ffmpeg.sh
+
+      # The engine's own tests, linked to the libraries the app bundles and
+      # with the FFmpeg it bundles first on PATH.
+      - name: Test the engine against what the app bundles
+        run: |
+          P=$PWD/target/native/prefix
+          PATH=$P/bin:$PATH PKG_CONFIG_LIBDIR=$P/lib/pkgconfig CARGO_TARGET_DIR=target/native/cargo \
+            RUSTFLAGS="-D warnings -C link-arg=-Wl,-rpath,$P/lib" cargo test -p persimmon-core --locked
+        env:
+          PERSIMMON_REQUIRE_FFMPEG: "1"
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+        env:
+          RUSTFLAGS: ""
+
+      - name: Signing mode
+        id: mode
+        run: |
+          mode=$(bash crates/persimmon-app/packaging/mode.sh)
+          echo "signing: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      # A keychain of this run's own, holding the Developer ID certificate.
+      - name: Import the signing certificate
+        if: steps.mode.outputs.mode != 'ad-hoc'
+        run: |
+          kc=$RUNNER_TEMP/signing.keychain-db
+          pw=$(openssl rand -hex 16)
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$kc" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+
+      # bundle.sh signs with APPLE_SIGNING_IDENTITY when it's set (an absent
+      # secret is empty), ad hoc otherwise.
+      - name: Build, sign and package the app
+        run: bash crates/persimmon-app/packaging/bundle.sh target/native dist
+
+      - name: Notarise and staple
+        if: steps.mode.outputs.mode == 'notarise'
+        run: |
+          dmg=$(ls dist/*.dmg)
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+          cd dist && shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+
+      # The app as a tester gets it, from the DMG. With a Developer ID this
+      # also checks Gatekeeper and the stapled ticket.
+      - name: Check the app inside the DMG
+        run: |
+          dmg=$(ls dist/*.dmg)
+          m=$(mktemp -d)
+          hdiutil attach -quiet -nobrowse -readonly -mountpoint "$m" "$dmg"
+          r=0
+          bash crates/persimmon-app/packaging/verify.sh "$m/Persimmon.app" "$dmg" || r=$?
+          hdiutil detach -quiet "$m"
+          exit $r
+
+      - name: Remove the signing keychain
+        if: always() && steps.mode.outputs.mode != 'ad-hoc' && steps.mode.outputs.mode != ''
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: persimmon-app
+          path: dist/*
+          if-no-files-found: error
+
   release:
     if: github.ref_type == 'tag'
-    needs: [check, build]
+    needs: [check, build, app]
     runs-on: ubuntu-26.04
     permissions:
       contents: write

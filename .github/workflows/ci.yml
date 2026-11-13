@@ -98,6 +98,13 @@ jobs:
           npm test
           npm run build
 
+      # The app's release check and signing-mode scripts, against fake
+      # bundles. The native libraries themselves are built only by the
+      # release workflow.
+      - name: Test the app's packaging scripts (macOS)
+        if: runner.os == 'macOS'
+        run: bash crates/persimmon-app/packaging/tests/run.sh
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked ${{ matrix.features }} -- -D warnings
 
