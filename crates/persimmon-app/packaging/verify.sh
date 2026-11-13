@@ -10,7 +10,7 @@
 # signature and identifier; that every Mach-O file is arm64 only for
 # macOS 14; that nothing links outside the bundle and the system; that
 # every @rpath library is in Contents/Frameworks; the bundled FFmpeg's
-# configure line, encoders and protocols; the licence list; and, for a
+# configure line, encoders (libx265 with 10-bit) and protocols; the licence list; and, for a
 # Developer ID signature only, Gatekeeper and the notarisation ticket:
 # --before-notarisation leaves those two out, for the check bundle.sh makes
 # before the release workflow notarises. PERSIMMON_VERIFY_MODE=developer-id
@@ -76,6 +76,9 @@ if [ -x "$ff" ]; then
   done
   encoders=$("$ff" -hide_banner -encoders 2>&1 | awk '{print $2}' || true)
   for e in $ENCODERS; do grep -qx -- "$e" <<<"$encoders" || problem "$ff" "ffmpeg has no $e encoder"; done
+  # HEVC keeps 10-bit sources 10-bit (DD-35), so libx265 must take them.
+  "$ff" -hide_banner -h encoder=libx265 2>&1 | grep -q 'yuv420p10le' \
+    || problem "$ff" "ffmpeg's libx265 can't encode 10-bit (no yuv420p10le)"
   protocols=$("$ff" -hide_banner -protocols 2>&1 | awk '{print $1}' || true)
   for p in $NETWORK; do grep -qx -- "$p" <<<"$protocols" && problem "$ff" "ffmpeg can open $p"; done
 fi

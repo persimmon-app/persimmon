@@ -230,7 +230,11 @@ jobs:
 
       # The scripts skip what the cached prefix already holds; a change to a
       # pinned source or a build script is a new key, so a fresh build.
-      - uses: actions/cache@v4
+      # Restored here and saved straight after the build, so a later step's
+      # failure doesn't throw away a half-hour native build.
+      - name: Restore the native build
+        id: native
+        uses: actions/cache/restore@v6
         with:
           path: |
             target/native/prefix
@@ -241,6 +245,15 @@ jobs:
         run: |
           bash crates/persimmon-app/packaging/build-libs.sh
           bash crates/persimmon-app/packaging/build-ffmpeg.sh
+
+      - name: Save the native build
+        if: steps.native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            target/native/prefix
+            target/native/sources
+          key: ${{ steps.native.outputs.cache-primary-key }}
 
       # The engine's own tests, linked to the libraries the app bundles and
       # with the FFmpeg it bundles first on PATH.

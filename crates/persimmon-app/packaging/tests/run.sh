@@ -18,10 +18,12 @@ failed=0
 BUILDCONF="--enable-gpl --disable-network --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame --enable-libdav1d --enable-libaom"
 ENCODERS="libx264 libx265 libvpx-vp9 libopus libmp3lame libaom-av1 aac"
 PROTOCOLS="file pipe"
+X265="yuv420p yuv422p yuv444p gbrp yuv420p10le yuv422p10le yuv444p10le gbrp10le gray gray10le"
 
-# A stand-in for ffmpeg or ffprobe that answers -buildconf, -encoders and
-# -protocols the way the real one lays them out.
-stand_in() { # path buildconf encoders protocols
+# A stand-in for ffmpeg or ffprobe that answers -buildconf, -encoders,
+# -protocols and -h encoder=libx265 the way the real one lays them out.
+stand_in() { # path buildconf encoders protocols [x265-pixel-formats]
+  local x265=${5:-$X265}
   {
     echo '#!/bin/sh'
     echo 'case "$2" in'
@@ -30,6 +32,8 @@ stand_in() { # path buildconf encoders protocols
     echo '  ;;'
     echo '  -encoders) echo "Encoders:"'
     for e in $3; do echo "    echo ' V....D $e              $e encoder'"; done
+    echo '  ;;'
+    echo "  -h) echo 'Encoder libx265 [libx265 H.265 / HEVC]:'; echo '    Supported pixel formats: $x265'"
     echo '  ;;'
     echo '  -protocols) echo "Supported file protocols:"; echo "Input:"'
     for p in $4; do echo "    echo '  $p'"; done
@@ -116,6 +120,10 @@ expect encoder 1 "libx265" "$d/Persimmon.app"
 d=$(case_dir protocols); make_app "$d"
 stand_in "$d/Persimmon.app/Contents/MacOS/ffmpeg" "$BUILDCONF" "$ENCODERS" "file pipe https"; sign_app "$d/Persimmon.app"
 expect protocols 1 "https" "$d/Persimmon.app"
+
+d=$(case_dir x265-8bit); make_app "$d"
+stand_in "$d/Persimmon.app/Contents/MacOS/ffmpeg" "$BUILDCONF" "$ENCODERS" "$PROTOCOLS" "yuv420p yuv422p yuv444p gbrp gray"; sign_app "$d/Persimmon.app"
+expect x265-8bit 1 "10-bit" "$d/Persimmon.app"
 
 d=$(case_dir licences); make_app "$d"; rm "$d/Persimmon.app/Contents/Resources/THIRD-PARTY-LICENSES.html"; sign_app "$d/Persimmon.app"
 expect licences 1 "THIRD-PARTY-LICENSES.html" "$d/Persimmon.app"

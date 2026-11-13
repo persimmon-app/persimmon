@@ -32,8 +32,8 @@ fstep() {
   touch "$mark"
   echo "=== $name, static $((SECONDS - t0))s"
 }
-static_cmake() { local d=$1 src=$1; shift; [ "${CMAKE_SUBDIR:-}" ] && src=$d/$CMAKE_SUBDIR
-  "${CMAKE[@]}" -DCMAKE_INSTALL_PREFIX="$FP" -DCMAKE_PREFIX_PATH="$FP" -DBUILD_SHARED_LIBS=OFF -S "$src" -B "$d/_b" "$@" \
+static_cmake() { local d=$1; shift
+  "${CMAKE[@]}" -DCMAKE_INSTALL_PREFIX="$FP" -DCMAKE_PREFIX_PATH="$FP" -DBUILD_SHARED_LIBS=OFF -S "$d" -B "$d/_b" "$@" \
     && ninja -C "$d/_b" && ninja -C "$d/_b" install; }
 static_meson() { local d=$1; shift; meson setup --wrap-mode=nodownload --prefix="$FP" --libdir=lib --buildtype=release -Ddefault_library=static "$@" "$d/_b" "$d" \
   && ninja -C "$d/_b" && ninja -C "$d/_b" install; }
@@ -41,7 +41,20 @@ static_auto() { local d=$1; shift; (cd "$d" && ./configure --prefix="$FP" "$@" &
 
 fstep x264 static_auto --enable-static --disable-cli --enable-pic --host=aarch64-apple-darwin \
   --extra-cflags="-mmacosx-version-min=14.0" --extra-ldflags="-mmacosx-version-min=14.0"
-CMAKE_SUBDIR=source fstep x265 static_cmake -DENABLE_SHARED=OFF -DENABLE_CLI=OFF
+# x265 builds one bit depth per library. HEVC keeps a 10-bit source 10-bit
+# (DD-35), so this is x265's own "multilib" recipe: a 10-bit library without
+# the C API, linked into the 8-bit one, both merged into one libx265.a.
+x265_multilib() {
+  local d=$1 common=(-DCMAKE_INSTALL_PREFIX="$FP" -DCMAKE_PREFIX_PATH="$FP" -DBUILD_SHARED_LIBS=OFF -DENABLE_SHARED=OFF -DENABLE_CLI=OFF)
+  "${CMAKE[@]}" "${common[@]}" -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF -S "$d/source" -B "$d/_b10"
+  ninja -C "$d/_b10"
+  cp "$d/_b10/libx265.a" "$d/_b10/libx265_main10.a"
+  "${CMAKE[@]}" "${common[@]}" -DLINKED_10BIT=ON -DEXTRA_LIB=x265_main10.a -DEXTRA_LINK_FLAGS="-L$d/_b10" \
+    -S "$d/source" -B "$d/_b"
+  ninja -C "$d/_b" && ninja -C "$d/_b" install
+  libtool -static -o "$FP/lib/libx265.a" "$d/_b/libx265.a" "$d/_b10/libx265_main10.a"
+}
+fstep x265 x265_multilib
 # libvpx names its targets by Darwin version, and each sets that version's
 # minimum macOS: Darwin 23 is macOS 14 (DD-27).
 vpx() { local d=$1; shift
