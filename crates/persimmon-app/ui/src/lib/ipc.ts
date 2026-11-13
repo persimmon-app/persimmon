@@ -54,4 +54,5 @@ export const setDropWindowAtLaunch = (on: boolean) => invoke<SettingsView>("set_
 export const openLicences = () => invoke<boolean>("open_licences");
 export const onHistory = (f: (b: BatchView) => void): Promise<UnlistenFn> => listen<BatchView>("history", (e) => f(e.payload));
 export const onHistoryCleared = (f: () => void): Promise<UnlistenFn> => listen("history-cleared", () => f());
+export const onUndoReport = (f: (r: UndoReport) => void): Promise<UnlistenFn> => listen<UndoReport>("undo-report", (e) => f(e.payload));
 export const onPresets = (f: (p: PresetView[]) => void): Promise<UnlistenFn> => listen<PresetView[]>("presets", (e) => f(e.payload));

@@ -14,6 +14,7 @@
   import HistoryView from "./components/HistoryView.svelte";
   import * as ipc from "./lib/ipc";
   import { badge, plural } from "./lib/format";
+  import { lastUndoable as newestUndoable, undoMessage } from "./lib/undo";
   import { clicked, moved } from "./lib/selection";
   import { queueOwnsKey } from "./lib/keys";
   import type { BatchView, FormatId, HistoryFilter, PresetView, QueueMode, RowId, RowView, SettingsView, UndoReport } from "./lib/types";
@@ -33,7 +34,7 @@
   let historyText = $state("");
   let historyFilter: HistoryFilter = $state("all");
   let report: UndoReport | null = $state(null);
-  /** Whether the newest undoable batch exists, for the status bar. */
+  /** Whether the newest batch can still be undone, for the status bar. */
   let lastUndoable = $state(false);
 
   /** The rows the toolbar acts on: the selection, else every row. */
@@ -78,13 +79,17 @@
 
   async function refreshHistory() {
     batches = await ipc.history(historyText, historyFilter);
-    lastUndoable = (await ipc.history("", "undoable")).length > 0;
+    lastUndoable = newestUndoable(await ipc.history("", "all"));
   }
 
   async function undo(id: string | null) {
-    report = id ? await ipc.undoBatch(id) : await ipc.undoLast();
-    if (report) message = `Moved ${plural(report.trashed, "file")} to the Trash${report.skipped.length ? `; ${report.skipped.length} left alone` : ""}`;
+    showReport(id ? await ipc.undoBatch(id) : await ipc.undoLast());
     await refreshHistory();
+  }
+
+  function showReport(r: UndoReport | null) {
+    report = r;
+    if (r) message = undoMessage(r);
   }
 
   function reorder(id: RowId, from: number, to: number) {
@@ -138,7 +143,6 @@
       const p = presets.find((x) => x.shortcut === Number(e.key));
       if (p) { e.preventDefault(); choosePreset(p.id); }
     }
-    else if (cmd && e.altKey && e.code === "KeyZ") { e.preventDefault(); undo(null); }
     else if (view === "history" && e.key === "Escape") { view = "queue"; }
     else if (cmd && e.key === "o") { e.preventDefault(); if (!e.repeat) pick(); }
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
@@ -161,6 +165,8 @@
       ipc.onHistory(() => refreshHistory()),
       ipc.onHistoryCleared(() => refreshHistory()),
       ipc.onPresets((p) => (presets = p)),
+      // ⌥⌘Z is the Edit menu's (Undo Last Batch), from any window.
+      ipc.onUndoReport((r) => { showReport(r); refreshHistory(); }),
       ipc.onRow(upsert),
       ipc.onConfirmQuit(() => (confirmQuit = true)),
       ipc.onSettings((s) => (settings = s)),

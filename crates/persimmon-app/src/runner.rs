@@ -303,7 +303,7 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
             };
             Item {
                 inputs: r.inputs.clone(),
-                output_mtime: output.as_deref().and_then(history::mtime),
+                output_mtime: output.as_deref().and_then(history::stamp),
                 output,
                 output_size,
                 size: r.size,

@@ -106,11 +106,66 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// A file or folder's modification time in nanoseconds.
-pub fn mtime(path: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+/// What tells an output apart from a later edit of it: a file's
+/// modification time in nanoseconds, or for a folder a digest of every
+/// file and folder inside it (names, sizes and file times). Finder's
+/// `.DS_Store` files are left out, and so are folder times, which change
+/// whenever Finder writes one.
+pub fn stamp(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return nanos(&meta);
+    }
+    let mut digest = Fnv::default();
+    tree(path, Path::new(""), &mut digest).ok()?;
+    Some(digest.0)
+}
+
+fn nanos(meta: &std::fs::Metadata) -> Option<u64> {
+    let since = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
     u64::try_from(since.as_nanos()).ok()
+}
+
+/// FNV-1a, 64-bit: stable across Rust releases, unlike `DefaultHasher`,
+/// since the digest is kept in the history file.
+struct Fnv(u64);
+impl Default for Fnv {
+    fn default() -> Fnv {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+}
+impl Fnv {
+    fn eat(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+fn tree(dir: &Path, rel: &Path, digest: &mut Fnv) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        if entry.file_name() == ".DS_Store" {
+            continue;
+        }
+        let rel = rel.join(entry.file_name());
+        let meta = entry.path().symlink_metadata()?;
+        digest.eat(rel.as_os_str().as_encoded_bytes());
+        digest.eat(&[0]);
+        if meta.is_dir() {
+            digest.eat(b"/");
+            tree(&entry.path(), &rel, digest)?;
+        } else {
+            digest.eat(&meta.len().to_le_bytes());
+            digest.eat(&nanos(&meta).unwrap_or(0).to_le_bytes());
+        }
+    }
+    Ok(())
 }
 
 pub struct History {
@@ -198,6 +253,12 @@ impl History {
         let mut v: Vec<&Batch> = self.batches.iter().collect();
         v.sort_by(|a, b| b.finished.cmp(&a.finished).then(b.id.cmp(&a.id)));
         v
+    }
+
+    /// The newest batch, while it can still be undone; never an older one,
+    /// so a repeated Undo Last Batch stops after one batch.
+    pub fn newest_undoable(&self) -> Option<&Batch> {
+        self.batches().into_iter().next().filter(|b| undoable(b))
     }
 
     pub fn get(&self, id: &str) -> Option<&Batch> {
@@ -300,14 +361,16 @@ fn unchanged(item: &Item, output: &Path) -> bool {
         Some(size) => meta.is_file() && meta.len() == size,
         None => meta.is_dir(),
     };
-    size_ok && item.output_mtime.is_none_or(|t| mtime(output) == Some(t))
+    size_ok && item.output_mtime.is_none_or(|t| stamp(output) == Some(t))
 }
 
-/// A batch can be undone while one of its outputs is still where it was
-/// written and not yet undone.
+/// A batch can be undone while one of its outputs is not yet undone and
+/// is still the file (or folder) the batch wrote.
 pub fn undoable(batch: &Batch) -> bool {
     batch.items.iter().any(|i| {
-        !i.undone && i.outcome == ItemOutcome::Done && i.output.as_deref().is_some_and(Path::exists)
+        !i.undone
+            && i.outcome == ItemOutcome::Done
+            && i.output.as_deref().is_some_and(|o| unchanged(i, o))
     })
 }
 
@@ -352,7 +415,7 @@ mod tests {
             inputs: vec![input.to_path_buf()],
             output: Some(output.to_path_buf()),
             output_size: meta.is_file().then_some(meta.len()),
-            output_mtime: mtime(output),
+            output_mtime: stamp(output),
             size: 10,
             outcome: ItemOutcome::Done,
             undone: false,
@@ -489,6 +552,81 @@ mod tests {
         let report = h.undo("a", &FakeTrash(d.0.join("trash")));
         assert_eq!(report.trashed, 1);
         assert!(!folder.exists() && d.0.join("trash/a/x.txt").exists());
+    }
+
+    #[test]
+    fn a_ds_store_in_a_folder_output_does_not_block_undo() {
+        let d = Dir::new("dsstore");
+        let input = d.put("a.zip", b"zip");
+        let folder = d.0.join("a");
+        std::fs::create_dir_all(folder.join("sub")).unwrap();
+        std::fs::write(folder.join("sub/x.txt"), b"x").unwrap();
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(batch("a", now(), vec![done(&input, &folder)]))
+            .unwrap();
+        // Finder writes these when the folder is opened and looked at.
+        std::fs::write(folder.join(".DS_Store"), b"finder").unwrap();
+        std::fs::write(folder.join("sub/.DS_Store"), b"finder").unwrap();
+        let report = h.undo("a", &FakeTrash(d.0.join("trash")));
+        assert_eq!(report.trashed, 1, "{:?}", report.skipped);
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_file_added_to_a_folder_output_blocks_undo() {
+        let d = Dir::new("added");
+        let input = d.put("a.zip", b"zip");
+        let folder = d.0.join("a");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("x.txt"), b"x").unwrap();
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(batch("a", now(), vec![done(&input, &folder)]))
+            .unwrap();
+        std::fs::write(folder.join("mine.txt"), b"the user's").unwrap();
+        let report = h.undo("a", &FakeTrash(d.0.join("trash")));
+        assert_eq!(report.trashed, 0);
+        assert_eq!(
+            report.skipped,
+            vec!["a was changed or moved since it was converted, so it was left alone".to_string()]
+        );
+        assert!(folder.join("mine.txt").exists());
+    }
+
+    #[test]
+    fn a_batch_with_only_changed_outputs_left_is_not_undoable() {
+        let d = Dir::new("stale");
+        let input = d.put("a.png", b"in");
+        let edited = d.put("edited.jpg", b"out");
+        let kept = d.put("kept.jpg", b"out");
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(batch(
+            "a",
+            now(),
+            vec![done(&input, &edited), done(&input, &kept)],
+        ))
+        .unwrap();
+        std::fs::write(&edited, b"edited since, longer").unwrap();
+        assert!(undoable(h.batches()[0]));
+        h.undo("a", &FakeTrash(d.0.join("trash")));
+        assert!(!undoable(h.batches()[0]));
+        assert!(h.search("", Filter::Undoable).is_empty());
+    }
+
+    #[test]
+    fn only_the_newest_batch_is_undone_last() {
+        let d = Dir::new("last");
+        let input = d.put("a.png", b"in");
+        let older = d.put("older.jpg", b"out");
+        let newer = d.put("newer.jpg", b"out");
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(batch("old", now() - 60, vec![done(&input, &older)]))
+            .unwrap();
+        h.append(batch("new", now(), vec![done(&input, &newer)]))
+            .unwrap();
+        assert_eq!(h.newest_undoable().map(|b| b.id.as_str()), Some("new"));
+        h.undo("new", &FakeTrash(d.0.join("trash")));
+        assert!(h.newest_undoable().is_none());
+        assert!(older.exists());
     }
 
     #[test]

@@ -458,14 +458,10 @@ fn undo_batch(app: AppHandle, state: State<'_, AppState>, id: String) -> UndoRep
     report
 }
 
-/// Undo the newest batch that can still be undone.
+/// Undo the newest batch, if it can still be undone.
 #[tauri::command]
 fn undo_last(app: AppHandle, state: State<'_, AppState>) -> Option<UndoReport> {
-    let id = lock(&state.history)
-        .batches()
-        .into_iter()
-        .find(|b| undoable(b))
-        .map(|b| b.id.clone())?;
+    let id = lock(&state.history).newest_undoable()?.id.clone();
     Some(undo_batch(app, state, id))
 }
 
@@ -712,8 +708,12 @@ pub fn run() {
                 toggle_drop_window(app.clone(), state);
             }
             "undo-last" => {
+                // The main window says what was trashed and what was left
+                // alone, whichever window had the menu (spec D3).
                 let state = app.state::<AppState>();
-                let _ = undo_last(app.clone(), state);
+                if let Some(report) = undo_last(app.clone(), state) {
+                    let _ = app.emit_to("main", "undo-report", report);
+                }
             }
             _ => {}
         })

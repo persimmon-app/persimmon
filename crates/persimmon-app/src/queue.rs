@@ -232,8 +232,9 @@ impl Queue {
         added
     }
 
-    /// Point rows at `to`. Rows that can't become it keep their target and
-    /// count as skipped; running, finished and cancelled rows are left alone.
+    /// Point rows at `to`, dropping any preset on them. Rows that can't
+    /// become it keep their target and count as skipped; running, finished
+    /// and cancelled rows are left alone.
     pub fn set_target(&mut self, ids: &[RowId], to: FormatId) -> SetTarget {
         let mut changed = Vec::new();
         let mut skipped = 0;
@@ -250,7 +251,9 @@ impl Queue {
             {
                 self.last.insert(self.reg.format(f).kind, to);
             }
+            // A picked output replaces the row's preset, options and all.
             self.rows[i].picked = true;
+            self.rows[i].preset = None;
             changed.push(self.refresh_at(i, Some(to)));
         }
         SetTarget { changed, skipped }
@@ -1294,6 +1297,27 @@ mod tests {
         );
         let r = q.apply_preset(&[id], &builtin("web-image"));
         assert_eq!(r[0].state, RowState::Queued);
+    }
+
+    #[test]
+    fn picking_an_output_drops_the_rows_preset() {
+        let d = Dir::new("preset-picked");
+        let mut q = queue();
+        let misfit = q.add(&[d.put("photo.png", &PNG_1X1)], QueueMode::Convert)[0].id;
+        let fitted = q.add(&[d.put("other.png", &PNG_1X1)], QueueMode::Convert)[0].id;
+        q.apply_preset(&[misfit], &builtin("email-video"));
+        q.apply_preset(&[fitted], &builtin("web-image"));
+        let r = q.set_target(&[misfit, fitted], FormatId::Jpeg).changed;
+        assert_eq!(r.len(), 2);
+        for row in &r {
+            assert_eq!(
+                (&row.state, row.to, row.preset.as_deref()),
+                (&RowState::Queued, Some(FormatId::Jpeg), None)
+            );
+        }
+        let (_, job) = q.next_queued().unwrap();
+        assert_eq!(job.options.max_size, None);
+        assert!(!job.options.strip_metadata);
     }
 
     #[test]
