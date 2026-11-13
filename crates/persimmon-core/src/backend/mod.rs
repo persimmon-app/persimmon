@@ -47,6 +47,16 @@ pub trait Run {
     ) -> Result<Done, Error>;
 }
 
+/// Which FFmpeg the engine uses, for a client to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct FfmpegInfo {
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::path"))]
+    pub path: PathBuf,
+    /// As `ffmpeg -version` prints it, e.g. `7.1.1`.
+    pub version: String,
+}
+
 /// Every backend this build has, dispatched by [`PlannedTask::backend`].
 ///
 /// FFmpeg is looked up on the first audio or video task: the task's own
@@ -70,6 +80,17 @@ impl Backends {
     pub fn with_ffmpeg(mut self, path: impl Into<PathBuf>) -> Backends {
         self.ffmpeg_path = Some(path.into());
         self
+    }
+
+    /// The FFmpeg that tasks without their own `--ffmpeg` use, looked up
+    /// the same way (and kept the same way) as for a task.
+    pub fn ffmpeg_info(&self) -> Result<FfmpegInfo, Error> {
+        let backend = self.ffmpeg_for(None)?;
+        let ff = backend.ffmpeg();
+        Ok(FfmpegInfo {
+            path: ff.ffmpeg.clone(),
+            version: ff.version.clone(),
+        })
     }
 
     /// The FFmpeg backend for a task whose `--ffmpeg` is `explicit`.
@@ -191,6 +212,17 @@ mod tests {
         let e = backends.ffmpeg_for(None).unwrap_err();
         assert_eq!(e.code, ErrorCode::BackendMissing);
         assert_eq!(e.fix.unwrap().kind, FixKind::InstallFfmpeg);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_info_reports_the_found_ffmpeg() {
+        let dir = Scratch::new("info");
+        let ff = dir.script("ffmpeg", VERSION_7);
+        dir.script("ffprobe", VERSION_7);
+        let info = Backends::new().with_ffmpeg(&ff).ffmpeg_info().unwrap();
+        assert_eq!(info.version, "7.1");
+        assert_eq!(info.path, ff);
     }
 
     #[cfg(unix)]

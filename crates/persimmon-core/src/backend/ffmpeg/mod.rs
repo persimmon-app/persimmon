@@ -31,6 +31,11 @@ impl FfmpegBackend {
     pub fn new(ff: Ffmpeg) -> FfmpegBackend {
         FfmpegBackend { ff }
     }
+
+    /// The FFmpeg this backend runs.
+    pub fn ffmpeg(&self) -> &Ffmpeg {
+        &self.ff
+    }
 }
 
 impl Run for FfmpegBackend {
