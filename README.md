@@ -4,7 +4,7 @@
 
 An open-source file conversion toolkit for Linux, Windows and macOS. Everything runs locally; there is no network code in the build.
 
-> Version 0.1, the command line. Today `prsm` converts and compresses images, audio and video; makes, merges, splits and renders PDFs; and extracts and creates archives.
+> Version 0.2: the macOS app and the command line. Both convert and compress images, audio and video; make, merge, split and render PDFs; and extract and create archives.
 >
 > **macOS comes first.** The engine and CLI are platform-neutral and build on all three from the first commit, but the GUI and shell integration are built out on macOS through to v1.0 before Windows and Linux begin.
 
@@ -17,6 +17,18 @@ An open-source file conversion toolkit for Linux, Windows and macOS. Everything 
 This boundary is a decision, not an oversight.
 
 ## Installing
+
+### The macOS app
+
+Each [GitHub Release](https://github.com/persimmon-app/persimmon/releases) from 0.2.0 has `Persimmon-<version>-arm64.dmg`, with a `.sha256` checksum beside it. It needs macOS 14 or later on Apple silicon, and nothing else: FFmpeg, libvips and libarchive are inside the app. Open the DMG and drag Persimmon to Applications.
+
+The app isn't signed yet. macOS blocks apps from developers it doesn't know. Open Persimmon once (it will refuse), then go to System Settings → Privacy & Security, scroll to Security, and choose **Open Anyway**. Or clear the quarantine flag in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Persimmon.app
+```
+
+Updates: download the new DMG from the Releases page. Persimmon never checks for updates itself (it has no network code). Its settings, presets and history live in `~/Library/Application Support/Persimmon`. Each release also carries `Persimmon-<version>-sources.tar`, the source of everything the app bundles, and FFmpeg's configure line.
 
 ### Release archives
 
@@ -83,7 +95,24 @@ Without it, everything else still works, and audio and video conversions fail wi
 
 PDFs need nothing installed: reading, rendering and writing them is built in. Turning images other than JPEG into a PDF uses libvips, like other image conversions.
 
-The workspace has two crates. `persimmon-core` is the engine, platform-neutral by rule. `persimmon-cli` builds the `prsm` binary. CI builds and tests both on macOS, Windows and Linux on every push. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
+The workspace has four crates. `persimmon-core` is the engine, platform-neutral by rule. `persimmon-cli` builds the `prsm` binary. `persimmon-app` is the macOS app; elsewhere it builds as an empty stub. `persimmon-corpus` generates the test files and is never published. CI builds and tests the workspace on macOS, Windows and Linux on every push. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
+
+### The macOS app
+
+The app is a [Tauri](https://tauri.app/) shell over the engine, with its interface in [`crates/persimmon-app/ui`](crates/persimmon-app/ui) (Svelte and TypeScript). It needs Node 22 as well as the libraries above. A development build links the libraries Homebrew installed and uses the FFmpeg on your `PATH`:
+
+```sh
+npm ci --prefix crates/persimmon-app/ui
+cd crates/persimmon-app && ui/node_modules/.bin/tauri build --debug --bundles app
+```
+
+The DMG a release ships is built by the scripts in [`crates/persimmon-app/packaging`](crates/persimmon-app/packaging), the same way on a Mac as in the release workflow. They download pinned, checksummed sources and build libvips, libarchive and a static FFmpeg from them for macOS 14, so they need Homebrew's `meson`, `ninja`, `cmake` and `pkgconf`:
+
+```sh
+bash crates/persimmon-app/packaging/build-libs.sh
+bash crates/persimmon-app/packaging/build-ffmpeg.sh
+bash crates/persimmon-app/packaging/bundle.sh target/native dist
+```
 
 ## Using it
 
@@ -147,7 +176,7 @@ Errors go to stderr as `prsm: {file}: {reason}`, followed by `  fix: {fix}` on t
 
 | File | What it is |
 |---|---|
-| [`crates/`](crates) | The Rust workspace: `persimmon-core` and `persimmon-cli` (`prsm`). |
+| [`crates/`](crates) | The Rust workspace: `persimmon-core`, `persimmon-cli` (`prsm`), `persimmon-app` (the macOS app, with its interface in `ui/` and its packaging scripts in `packaging/`) and `persimmon-corpus` (test files). |
 | [`THIRD-PARTY.md`](THIRD-PARTY.md) | Licence inventory of everything bundled or linked. |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release. |
 

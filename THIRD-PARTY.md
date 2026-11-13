@@ -43,7 +43,7 @@ Persimmon doesn't use libvips's ImageMagick, poppler or libimagequant modules, a
 
 The macOS app bundles these codec libraries, built from source: libjpeg-turbo 3.2.1, libpng 1.6.59, libwebp 1.6.0, libtiff 4.7.2, cgif 0.5.4, libheif 1.23.7 (without x265), libde265 1.1.3, dav1d 1.5.4, aom 3.15.3 (encoder only), lcms2 2.20, libexif 0.6.26 and highway 1.4.0.
 
-**The macOS app** (`persimmon-app`, not yet released) adds these, and carries its own `THIRD-PARTY-LICENSES.html` with every Rust crate, bundled library and interface package in it:
+**The macOS app** (`persimmon-app`) adds these, and carries its own `THIRD-PARTY-LICENSES.html` with every Rust crate, bundled library and interface package in it:
 
 | Component | Version | Licence | Used for | Linked how |
 |---|---|---|---|---|
