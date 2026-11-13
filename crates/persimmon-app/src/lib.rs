@@ -7,6 +7,8 @@
 #[cfg(target_os = "macos")]
 mod app;
 #[cfg(target_os = "macos")]
+pub mod history;
+#[cfg(target_os = "macos")]
 pub mod presets;
 #[cfg(target_os = "macos")]
 pub mod queue;

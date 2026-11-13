@@ -19,6 +19,10 @@ use serde_json::json;
 fn error_codes_serialise_as_their_names() {
     for c in ErrorCode::ALL {
         assert_eq!(serde_json::to_value(c).unwrap(), json!(c.as_str()));
+        assert_eq!(
+            serde_json::from_value::<ErrorCode>(json!(c.as_str())).unwrap(),
+            c
+        );
     }
 }
 

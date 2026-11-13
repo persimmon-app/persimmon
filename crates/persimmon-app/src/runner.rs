@@ -15,6 +15,7 @@ use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
 use persimmon_core::job::{Job, PlanMode};
 use persimmon_core::registry::Registry;
 
+use crate::history::{self, Batch, Item, ItemOutcome, Source};
 use crate::queue::{Queue, RowId, RowState, RowView};
 use crate::wording::shown;
 
@@ -40,7 +41,13 @@ struct Inner {
     sink: Sink,
     state: Mutex<State>,
     wake: Condvar,
+    /// Told about each batch once the queue is empty (history).
+    on_batch: Mutex<Option<BatchSink>>,
+    /// Where the next batch comes from.
+    source: Mutex<Source>,
 }
+
+type BatchSink = Box<dyn Fn(Batch) + Send + Sync>;
 
 pub struct Runner {
     inner: Arc<Inner>,
@@ -64,6 +71,8 @@ impl Runner {
                 stop: false,
             }),
             wake: Condvar::new(),
+            on_batch: Mutex::new(None),
+            source: Mutex::new(Source::Window),
         });
         let worker = {
             let inner = Arc::clone(&inner);
@@ -73,6 +82,17 @@ impl Runner {
             inner,
             worker: Mutex::new(Some(worker)),
         }
+    }
+
+    /// Be told about each finished batch.
+    pub fn set_on_batch(&self, f: impl Fn(Batch) + Send + Sync + 'static) {
+        *lock(&self.inner.on_batch) = Some(Box::new(f));
+    }
+
+    /// Start, recording where the batch came from.
+    pub fn start_from(&self, source: Source) {
+        *lock(&self.inner.source) = source;
+        self.start();
     }
 
     /// Run every queued row, one at a time.
@@ -156,13 +176,18 @@ impl Inner {
                 }
                 state.go = false;
             }
+            let started = history::now();
+            let source = *lock(&self.source);
+            let mut done: Vec<RowView> = Vec::new();
+            let mut stopping = false;
             loop {
                 let token = CancelToken::new();
                 let next = {
                     let mut queue = lock(&self.queue);
                     let mut state = lock(&self.state);
                     if state.stop {
-                        return;
+                        stopping = true;
+                        break;
                     }
                     let next = queue.next_queued();
                     if let Some((id, _)) = &next {
@@ -175,8 +200,20 @@ impl Inner {
                     (self.sink)(v);
                 }
                 let end = self.run(id, &job, &token);
-                self.set(id, end);
+                if let Some(v) = self.set(id, end) {
+                    done.push(v);
+                }
                 lock(&self.state).running = None;
+            }
+            // Recorded even when quitting cut the batch short.
+            if !done.is_empty() {
+                let batch = record(started, source, &done);
+                if let Some(f) = lock(&self.on_batch).as_ref() {
+                    f(batch);
+                }
+            }
+            if stopping {
+                return;
             }
         }
     }
@@ -219,11 +256,71 @@ impl Inner {
         }
     }
 
-    fn set(&self, id: RowId, state: RowState) {
+    fn set(&self, id: RowId, state: RowState) -> Option<RowView> {
         let v = lock(&self.queue).update(id, state);
-        if let Some(v) = v {
-            (self.sink)(v);
+        if let Some(v) = &v {
+            (self.sink)(v.clone());
         }
+        v
+    }
+}
+
+static BATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A batch from the rows one drain of the queue ran.
+fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
+    use persimmon_core::registry::Operation;
+    let mode = match rows[0].op {
+        Operation::Compress => crate::queue::QueueMode::Compress,
+        Operation::Extract => crate::queue::QueueMode::Extract,
+        Operation::Merge => crate::queue::QueueMode::Combine,
+        _ => crate::queue::QueueMode::Convert,
+    };
+    let first = rows[0].preset.clone();
+    let preset = rows
+        .iter()
+        .all(|r| r.preset == first)
+        .then_some(first)
+        .flatten();
+    let items = rows
+        .iter()
+        .map(|r| {
+            let (outcome, output_size) = match &r.state {
+                RowState::Done { output_size, .. } => (ItemOutcome::Done, *output_size),
+                RowState::NotSmaller => (ItemOutcome::NotSmaller, None),
+                RowState::Failed { error } => (
+                    ItemOutcome::Failed {
+                        error: error.clone(),
+                    },
+                    None,
+                ),
+                _ => (ItemOutcome::Cancelled, None),
+            };
+            let output = match outcome {
+                ItemOutcome::Done => r.output.clone(),
+                _ => None,
+            };
+            Item {
+                inputs: r.inputs.clone(),
+                output_mtime: output.as_deref().and_then(history::mtime),
+                output,
+                output_size,
+                size: r.size,
+                outcome,
+                undone: false,
+            }
+        })
+        .collect();
+    let n = BATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Batch {
+        id: format!("{started}-{n}"),
+        started,
+        finished: history::now(),
+        source,
+        preset,
+        mode,
+        items,
+        undone: false,
     }
 }
 
@@ -569,5 +666,32 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("pixelWidth: 2048"), "{text}");
+    }
+
+    /// One Start's rows make one batch, recorded once the queue is empty.
+    #[cfg(feature = "vips")]
+    #[test]
+    fn a_batch_is_recorded_when_the_queue_empties() {
+        use crate::history::{Batch, ItemOutcome, Source};
+        let d = Dir::new("batch");
+        let (q, r, _) = setup(Backends::new());
+        let seen: Arc<Mutex<Vec<Batch>>> = Arc::default();
+        let s2 = Arc::clone(&seen);
+        r.set_on_batch(move |b| s2.lock().unwrap().push(b));
+        q.lock().unwrap().add(
+            &[d.put("a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)],
+            QueueMode::Convert,
+        );
+        r.start_from(Source::Drop);
+        wait("the batch", 30, || !seen.lock().unwrap().is_empty());
+        let batches = seen.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        let b = &batches[0];
+        assert_eq!((b.source, b.mode), (Source::Drop, QueueMode::Convert));
+        assert_eq!(b.items.len(), 2);
+        assert!(b.items.iter().all(|i| i.outcome == ItemOutcome::Done
+            && i.output_mtime.is_some()
+            && i.output_size.is_some()));
+        assert!(b.finished >= b.started);
     }
 }

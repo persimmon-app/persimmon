@@ -12,7 +12,7 @@ use std::path::PathBuf;
 /// What kind of failure an [`Error`] is. The exit codes never change once
 /// released: scripts depend on them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "SCREAMING_SNAKE_CASE"))]
 pub enum ErrorCode {
     Internal,

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use persimmon_core::error::{Error, ErrorCode, Fix, FixKind};
 
 /// An error as a row shows it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Shown {
     pub code: ErrorCode,
