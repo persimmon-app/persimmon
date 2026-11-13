@@ -21,6 +21,9 @@ pub mod wording;
 
 /// Tests that start FFmpeg hold this, so a test that checks no FFmpeg child
 /// is left can't see another test's.
+// The shipped app has both backends; the e2e suite is about it.
+#[cfg(all(test, target_os = "macos", feature = "vips", feature = "rar"))]
+mod e2e;
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) static FFMPEG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(target_os = "macos")]
