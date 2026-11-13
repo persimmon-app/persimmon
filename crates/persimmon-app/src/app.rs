@@ -1089,6 +1089,124 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The colour tokens of one theme, `name → #rrggbb`.
+    fn theme(light: bool) -> Vec<(String, String)> {
+        let css = include_str!("../ui/src/tokens.css");
+        let (dark, light_block) = css
+            .split_once("@media (prefers-color-scheme: light)")
+            .unwrap();
+        (if light { light_block } else { dark })
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("--"))
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.to_string(), v.trim().trim_end_matches(';').to_string()))
+            .filter(|(_, v)| v.starts_with('#'))
+            .collect()
+    }
+
+    /// WCAG 2.x contrast of two `#rrggbb` colours.
+    fn contrast(a: &str, b: &str) -> f64 {
+        let lum = |hex: &str| {
+            let c = |i: usize| {
+                let v = f64::from(u8::from_str_radix(&hex[i..i + 2], 16).unwrap()) / 255.0;
+                if v <= 0.040_45 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * c(1) + 0.7152 * c(3) + 0.0722 * c(5)
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Every text token is AA (4.5:1) on every background, in both themes.
+    #[test]
+    fn text_tokens_meet_aa_in_both_themes() {
+        let mut low = Vec::new();
+        for light in [false, true] {
+            let t = theme(light);
+            let v = |n: &str| {
+                t.iter()
+                    .find(|(k, _)| k == n)
+                    .unwrap_or_else(|| panic!("no --{n}"))
+                    .1
+                    .clone()
+            };
+            let mut pairs: Vec<(&str, &str)> = Vec::new();
+            for fg in ["text", "muted", "faint", "accent-text", "error-text"] {
+                for bg in ["ground", "surface", "raised"] {
+                    pairs.push((fg, bg));
+                }
+            }
+            pairs.push(("on-accent", "accent"));
+            for (fg, bg) in pairs {
+                let r = contrast(&v(fg), &v(bg));
+                if r < 4.5 {
+                    low.push(format!(
+                        "{} --{fg} on --{bg}: {r:.2}",
+                        if light { "light" } else { "dark" }
+                    ));
+                }
+            }
+        }
+        assert!(low.is_empty(), "under 4.5:1:\n{}", low.join("\n"));
+    }
+
+    /// No component writes a colour of its own: every colour is a token,
+    /// so both themes stay at parity.
+    #[test]
+    fn no_colour_outside_the_tokens() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("svelte" | "css")
+                ) && !p.ends_with("tokens.css")
+                {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/src"),
+            &mut files,
+        );
+        assert!(files.len() > 10);
+        let mut found = Vec::new();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let b = line.as_bytes();
+                let hex = (0..b.len()).any(|i| {
+                    if b[i] != b'#' || (i > 0 && b[i - 1] == b'&') {
+                        return false;
+                    }
+                    let run = b[i + 1..]
+                        .iter()
+                        .take_while(|c| c.is_ascii_hexdigit())
+                        .count();
+                    let next = b.get(i + 1 + run).copied().unwrap_or(b' ');
+                    matches!(run, 3 | 4 | 6 | 8)
+                        && !(next.is_ascii_alphanumeric() || next == b'-' || next == b'_')
+                });
+                if hex || ["rgb(", "rgba(", "hsl("].iter().any(|c| line.contains(c)) {
+                    found.push(format!("{}:{}: {}", f.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "colours outside tokens.css:\n{}",
+            found.join("\n")
+        );
+    }
+
     /// Every colour token has a light value too (DD-19: both themes at
     /// parity), and the light error colour is the owner's AA value.
     #[test]

@@ -52,7 +52,17 @@
   --space-6: 40px;
 }
 
+/* The dimming behind a modal dialog. ::backdrop inherits nothing from
+   :root before WebKit 17.4 (macOS 14.0–14.3), so its token is set on it. */
+::backdrop {
+  --backdrop: rgba(0, 0, 0, 0.4);
+}
+
 @media (prefers-color-scheme: light) {
+  ::backdrop {
+    --backdrop: rgba(0, 0, 0, 0.4);
+  }
+
   :root {
     --ground: #f3f2f0;
     --surface: #ffffff;
