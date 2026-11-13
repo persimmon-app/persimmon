@@ -52,8 +52,11 @@ describe("the queue grid", () => {
 
   it("arrow keys move the active row; progress doesn't", async () => {
     const g = await grid();
+    await fireEvent.mouseDown(screen.getAllByRole("row")[0]);
     await fireEvent.click(screen.getAllByRole("row")[0]);
-    g.focus();
+    // A click keeps focus on the grid, so VoiceOver follows the arrows.
+    expect(document.activeElement).toBe(g);
+    expect(screen.getAllByRole("row")[0].hasAttribute("tabindex")).toBe(false);
     await fireEvent.keyDown(g, { key: "ArrowDown" });
     expect(g.getAttribute("aria-activedescendant")).toBe("row-2");
     h.handlers.row({ ...(h.rows[1] as object), rev: 2, fraction: 0.6 });

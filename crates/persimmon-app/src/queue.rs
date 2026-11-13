@@ -26,7 +26,7 @@ pub enum Recipe {
 }
 
 impl Recipe {
-    fn mode(&self) -> QueueMode {
+    pub fn mode(&self) -> QueueMode {
         match self {
             Recipe::Mode(m) => *m,
             Recipe::Preset(p) => p.mode,
@@ -196,6 +196,24 @@ impl Queue {
             .filter(|k| seen.insert(k.clone()))
             .filter(|k| self.rows.iter().any(|r| r.keys.contains(k)))
             .count()
+    }
+
+    /// A new Combine row of exactly `paths`, never joining the one still
+    /// queued: Retry from History puts a combine back as it was.
+    pub fn add_combine_row(&mut self, paths: &[PathBuf], recipe: &Recipe) -> Vec<RowView> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let mut row = self.blank_row(true, recipe);
+        for p in paths {
+            row.inputs.push(p.clone());
+            row.keys
+                .push(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
+        }
+        let target = row.preset.as_ref().and_then(|p| p.target);
+        self.rows.push(row);
+        let i = self.rows.len() - 1;
+        vec![self.refresh_at(i, target)]
     }
 
     /// Add files the way `mode` says.

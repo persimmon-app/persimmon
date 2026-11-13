@@ -562,8 +562,9 @@ fn cancel_leaves_nothing_behind_on_every_backend() {
         let id = row(&rig, &[input], mode, to);
         let output = planned_output(&rig, id);
         rig.runner.start();
+        // Past planning and into the file: the first progress report.
         wait_until(what, 30, || {
-            matches!(state(&rig, id), RowState::Running { .. })
+            matches!(state(&rig, id), RowState::Running { fraction: Some(_) })
         });
         assert!(rig.runner.cancel(id), "{what}: cancel refused");
         wait_until(what, 30, || finished(&state(&rig, id)));
@@ -596,7 +597,10 @@ fn shutdown_leaves_nothing_behind() {
         .collect();
     rig.runner.start();
     wait_until("the video", 30, || {
-        matches!(state(&rig, rows[0].1), RowState::Running { .. })
+        matches!(
+            state(&rig, rows[0].1),
+            RowState::Running { fraction: Some(_) }
+        )
     });
     rig.runner.shutdown();
     for ((what, id), output) in rows.iter().zip(&outputs) {
@@ -615,21 +619,44 @@ fn shutdown_leaves_nothing_behind() {
 #[test]
 fn cancel_racing_the_finish_leaves_a_whole_or_no_output() {
     let rig = rig("race", OutputPolicy::default(), Backends::new());
+    // What history records: every Done output it names must exist.
+    let recorded: Arc<Mutex<Vec<crate::history::Batch>>> = Arc::default();
+    let r = Arc::clone(&recorded);
+    rig.runner.set_on_batch(move |b| r.lock().unwrap().push(b));
+    let image = IMAGE_SAMPLES.iter().find(|s| s.0 == "img-jpeg").unwrap().2;
     for i in 0..20 {
-        let input = rig.dir.put(&format!("race-{i}.png"), &PNG_1X1);
-        let id = row(&rig, &[input], QueueMode::Convert, Some(FormatId::Jpeg));
+        let input = rig.dir.put(&format!("race-{i}.jpg"), image);
+        let id = row(&rig, &[input], QueueMode::Convert, Some(FormatId::Png));
         let output = planned_output(&rig, id);
         rig.runner.start();
+        wait_until("the row to start", 30, || {
+            !matches!(state(&rig, id), RowState::Queued)
+        });
+        // Cancel at a different moment each run, from the start of the
+        // row to (usually) after its end.
+        std::thread::sleep(Duration::from_millis((i * 7 % 40) as u64));
         rig.runner.cancel(id);
         wait_until("the row", 30, || finished(&state(&rig, id)));
         match state(&rig, id) {
             RowState::Done { output: out, .. } => {
-                assert_eq!(sniff(&head(&out)), Some(FormatId::Jpeg), "run {i}")
+                assert_eq!(sniff(&head(&out)), Some(FormatId::Png), "run {i}")
             }
             RowState::Cancelled => assert!(!output.exists(), "run {i}: output left"),
             other => panic!("run {i}: {other:?}"),
         }
         assert!(no_partials(&rig.dir.0), "run {i}");
+    }
+    wait_until("the batches", 10, || recorded.lock().unwrap().len() == 20);
+    for b in recorded.lock().unwrap().iter() {
+        for item in &b.items {
+            if let Some(out) = &item.output {
+                assert!(
+                    out.exists(),
+                    "history records {} but it isn't there",
+                    out.display()
+                );
+            }
+        }
     }
 }
 

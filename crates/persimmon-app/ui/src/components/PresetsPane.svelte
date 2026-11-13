@@ -27,7 +27,10 @@
   const line = $derived(draft ? commandLine(draft) : "");
 
   function edit(p: PresetView) {
-    draft = { id: p.id, name: p.name, builtin: p.builtin, mode: p.mode, target: p.target, options: { ...p.options } };
+    // A Combine or Extract preset saved before options were refused for
+    // them would never save again, with the controls hidden: drop them.
+    const options = p.mode === "combine" || p.mode === "extract" ? blank().options : { ...p.options };
+    draft = { id: p.id, name: p.name, builtin: p.builtin, mode: p.mode, target: p.target, options };
     error = null;
   }
   function setMode(m: QueueMode) {

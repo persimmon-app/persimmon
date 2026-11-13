@@ -64,4 +64,16 @@ describe("CombineRow", () => {
     await fireEvent.keyDown(handle, { key: "Enter" });
     expect(handle.getAttribute("aria-pressed")).toBe("false");
   });
+
+  it("Delete on a file removes that file, not the whole row", async () => {
+    const onRemoveInput = vi.fn();
+    const parent = vi.fn();
+    render(CombineRow, { row, selected: true, active: true, onCancel() {}, onRetry() {}, onReveal() {}, onSelect() {}, onReorder() {}, onRemoveInput });
+    window.addEventListener("keydown", parent);
+    await fireEvent.click(screen.getByRole("button", { name: /Show the/ }));
+    await fireEvent.keyDown(screen.getAllByRole("button", { name: /^Move / })[1], { key: "Backspace" });
+    window.removeEventListener("keydown", parent);
+    expect(onRemoveInput).toHaveBeenCalledWith(7, 1);
+    expect(parent).not.toHaveBeenCalled();
+  });
 });

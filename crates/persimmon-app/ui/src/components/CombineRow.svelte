@@ -25,6 +25,13 @@
    * queue, whose own ↑/↓ move the selection. */
   let moving: number | null = $state(null);
   function key(e: KeyboardEvent, i: number) {
+    // Delete removes this file from the combine, never the whole row (the
+    // queue's own Delete would).
+    if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault(); e.stopPropagation();
+      if (editable) onRemoveInput(row.id, i);
+      return;
+    }
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault(); e.stopPropagation();
       if (editable) moving = moving === i ? null : i;

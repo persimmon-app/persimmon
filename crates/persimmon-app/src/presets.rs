@@ -219,8 +219,9 @@ fn valid_id(id: &str) -> bool {
 
 fn slug(name: &str) -> String {
     let mut out = String::new();
+    // ASCII only, as valid_id() requires: "Vídeo" becomes "v-deo".
     for c in name.trim().to_lowercase().chars() {
-        if c.is_alphanumeric() {
+        if c.is_ascii_alphanumeric() {
             out.push(c);
         } else if !out.ends_with('-') {
             out.push('-');
@@ -520,6 +521,19 @@ mod tests {
             assert!(check(&p).is_err(), "{mode:?} stripping metadata");
             assert!(!command(&p).contains("--strip-metadata"), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn a_preset_with_an_accented_name_can_be_edited() {
+        let d = Dir::new("accent");
+        let mut presets = Presets::load(&d.0);
+        let mut saved = presets.save(mine("Vídeo")).unwrap();
+        assert!(valid_id(&saved.id), "{}", saved.id);
+        saved.options.max_size = Some(800);
+        presets.save(saved.clone()).unwrap();
+        let mut again = Presets::load(&d.0).get(&saved.id).unwrap().clone();
+        again.options.max_size = Some(400);
+        Presets::load(&d.0).save(again).unwrap();
     }
 
     #[test]

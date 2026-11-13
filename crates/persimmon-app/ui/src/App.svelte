@@ -127,8 +127,12 @@
     selected = selected.filter((id) => !gone.includes(id));
   }
 
+  let grid: HTMLDivElement | undefined = $state();
   function select(id: RowId, mode: "replace" | "range" | "toggle") {
     ({ selected, anchor } = clicked(rows.map((r) => r.id), { selected, anchor }, id, mode));
+    // Back to the grid, even from a row's button: VoiceOver follows the
+    // grid's active row only while the grid has focus.
+    grid?.focus();
   }
 
   function move(by: number, extend: boolean) {
@@ -209,7 +213,7 @@
       <!-- A grid, not a listbox: rows hold buttons, which an option can't.
            It keeps focus and points at the active row, so VoiceOver reads
            each row the arrow keys reach. -->
-      <div class="queue" role="grid" aria-label="Queue" aria-multiselectable="true" tabindex="0"
+      <div class="queue" role="grid" aria-label="Queue" aria-multiselectable="true" tabindex="0" bind:this={grid}
         aria-activedescendant={anchor !== null && rows.some((r) => r.id === anchor) ? `row-${anchor}` : undefined}
         onclick={(e) => { if (e.target === e.currentTarget) { selected = []; anchor = null; } }}
         onkeydown={() => {}}>

@@ -28,6 +28,17 @@ describe("PresetsPane", () => {
     await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Web image copy"));
   });
 
+  it("an old Combine preset with options can be saved again", async () => {
+    const old = { ...presets[0], id: "bundle", name: "Bundle", builtin: false, mode: "combine" as const, target: "zip" as const,
+      options: { ...presets[0].options, quality: "high" as const, stripMetadata: true }, shortcut: null };
+    const onSave = vi.fn().mockResolvedValue(null);
+    render(PresetsPane, { presets: [...presets, old], onSave, onDelete: vi.fn() });
+    await fireEvent.click(screen.getByRole("button", { name: "Bundle" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const saved = onSave.mock.calls[0][0];
+    expect([saved.options.quality, saved.options.stripMetadata, saved.options.maxSize]).toEqual([null, false, null]);
+  });
+
   it("shows why a preset can't be saved", async () => {
     const onSave = vi.fn().mockResolvedValue("A size limit is for images and video");
     render(PresetsPane, { presets, onSave, onDelete: vi.fn() });

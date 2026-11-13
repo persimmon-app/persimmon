@@ -40,7 +40,10 @@
   );
 </script>
 
-<div id="row-{row.id}" role="row" tabindex="-1" aria-selected={selected} aria-label={label} onclick={(e) => onSelect(row.id, e)} onkeydown={() => {}}>
+<!-- No tabindex: focus stays on the grid, whose aria-activedescendant
+     names this row, so VoiceOver keeps following the arrows after a click. -->
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<div id="row-{row.id}" role="row" aria-selected={selected} aria-label={label} onclick={(e) => onSelect(row.id, e)} onkeydown={() => {}}>
 <div role="gridcell" class="cell" class:lead={!!lead}>
 {#if lead}{@render lead()}{/if}
 <div

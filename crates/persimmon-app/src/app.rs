@@ -502,7 +502,11 @@ pub fn retry_rows(
         return Vec::new();
     }
     let recipe = crate::history::retry_recipe(batch, item, presets);
-    let rows = queue.add_with(&item.inputs, &recipe);
+    let rows = if recipe.mode() == QueueMode::Combine {
+        queue.add_combine_row(&item.inputs, &recipe)
+    } else {
+        queue.add_with(&item.inputs, &recipe)
+    };
     match (rows.first(), item.to) {
         (Some(row), Some(to)) if row.to != Some(to) => {
             let changed = queue.set_target(&[row.id], to).changed;
@@ -1517,6 +1521,32 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn retrying_a_combine_makes_its_own_row() {
+        let d = macos_dir("retry-combine");
+        let put = |n: &str| {
+            let p = d.join(n);
+            std::fs::write(&p, persimmon_corpus::PNG_1X1).unwrap();
+            p
+        };
+        let (a, b, c, e) = (put("a.png"), put("b.png"), put("c.png"), put("e.png"));
+        let presets = crate::presets::Presets::load(&d.join("presets"));
+        let mut q = retry_queue();
+        // C and E staged in an open Combine row.
+        let open = q.add(&[c, e], crate::queue::QueueMode::Combine)[0].id;
+        let mut batch = failed_batch(&a, None);
+        batch.mode = crate::queue::QueueMode::Combine;
+        batch.items[0].inputs = vec![a.clone(), b.clone()];
+        batch.items[0].mode = Some(crate::queue::QueueMode::Combine);
+        batch.items[0].to = Some(persimmon_core::format::FormatId::Pdf);
+        let rows = super::retry_rows(&mut q, &batch, 0, &presets);
+        assert_eq!(rows.len(), 1);
+        assert_ne!(rows[0].id, open, "joined the staged Combine row");
+        assert_eq!(rows[0].inputs, vec![a, b]);
+        assert_eq!(q.get(open).unwrap().inputs.len(), 2);
         let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
     }
 
