@@ -42,7 +42,12 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/prsm-bundle.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 echo "=== the app"
-(cd "$root/crates/persimmon-app" && PKG_CONFIG_LIBDIR=$P/lib/pkgconfig ui/node_modules/.bin/tauri build --bundles app)
+# Without the Apple variables: Tauri would import, sign and notarise on its
+# own (and an empty APPLE_CERTIFICATE, as CI passes an absent secret, makes
+# it fail). This script signs, and the release workflow notarises.
+(cd "$root/crates/persimmon-app" && env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD -u APPLE_SIGNING_IDENTITY \
+  -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH \
+  PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" ui/node_modules/.bin/tauri build --bundles app)
 ditto "$root/target/release/bundle/macos/Persimmon.app" "$work/Persimmon.app"
 app=$work/Persimmon.app
 mkdir -p "$app/Contents/Frameworks"
