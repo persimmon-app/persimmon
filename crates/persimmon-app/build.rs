@@ -29,6 +29,19 @@ fn main() {
             "toggle_drop_window",
             "drop_paths",
             "open_settings",
+            "presets",
+            "use_preset",
+            "apply_preset",
+            "save_preset",
+            "delete_preset",
+            "history",
+            "undo_batch",
+            "undo_last",
+            "clear_history",
+            "reveal_path",
+            "engines",
+            "set_drop_window_at_launch",
+            "open_licences",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("tauri-build failed");

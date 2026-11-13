@@ -15,7 +15,9 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::queue::{Queue, QueueMode, RowId, RowView, SetTarget};
+use crate::history::{Batch, Filter, History, Source, SystemTrash, UndoReport, undoable};
+use crate::presets::{Preset, Presets, command, kinds, presets_dir};
+use crate::queue::{Queue, QueueMode, Recipe, RowId, RowView, SetTarget, kinds_phrase};
 use crate::runner::Runner;
 use crate::settings::{
     OutputMode, Settings, SettingsView, load, output_policy, save, settings_path, view,
@@ -27,6 +29,8 @@ pub struct AppState {
     runner: Runner,
     settings: Mutex<Settings>,
     settings_file: PathBuf,
+    presets: Mutex<Presets>,
+    history: Mutex<History>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -38,8 +42,17 @@ impl AppState {
         lock(&self.queue)
     }
 
-    fn mode(&self) -> QueueMode {
-        lock(&self.settings).mode
+    /// How new files become rows: the active preset, else the mode. Locks
+    /// are taken settings, then presets, and released before the queue's.
+    fn recipe(&self) -> Recipe {
+        let (mode, preset) = {
+            let s = lock(&self.settings);
+            (s.mode, s.preset.clone())
+        };
+        preset
+            .and_then(|id| lock(&self.presets).get(&id).cloned())
+            .map(Recipe::Preset)
+            .unwrap_or(Recipe::Mode(mode))
     }
 }
 
@@ -92,11 +105,20 @@ pub fn add_and_start(
     queue: &Mutex<Queue>,
     runner: &Runner,
     paths: &[PathBuf],
-    mode: QueueMode,
+    recipe: &Recipe,
 ) -> Vec<RowView> {
-    let rows = lock(queue).add(paths, mode);
-    runner.start();
+    let rows = lock(queue).add_with(paths, recipe);
+    runner.start_from(Source::Drop);
     rows
+}
+
+/// Reveal opens only an output history recorded, never a path the window
+/// makes up.
+pub fn reveal_allowed(history: &History, path: &Path) -> bool {
+    history
+        .batches()
+        .iter()
+        .any(|b| b.items.iter().any(|i| i.output.as_deref() == Some(path)))
 }
 
 #[tauri::command]
@@ -106,15 +128,15 @@ fn engine_version() -> String {
 
 #[tauri::command]
 fn add_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
-    let mode = state.mode();
-    let rows = state.queue().add(&paths, mode);
+    let recipe = state.recipe();
+    let rows = state.queue().add_with(&paths, &recipe);
     emit_rows(&app, &rows);
     rows
 }
 
 #[tauri::command]
 fn drop_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
-    let rows = add_and_start(&state.queue, &state.runner, &paths, state.mode());
+    let rows = add_and_start(&state.queue, &state.runner, &paths, &state.recipe());
     emit_rows(&app, &rows);
     rows
 }
@@ -131,8 +153,8 @@ async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Ro
         .into_iter()
         .filter_map(|f| f.into_path().ok())
         .collect();
-    let mode = state.mode();
-    let rows = state.queue().add(&paths, mode);
+    let recipe = state.recipe();
+    let rows = state.queue().add_with(&paths, &recipe);
     emit_rows(&app, &rows);
     Ok(rows)
 }
@@ -221,7 +243,11 @@ fn get_settings(state: State<'_, AppState>) -> SettingsView {
 
 #[tauri::command]
 fn set_mode(app: AppHandle, state: State<'_, AppState>, mode: QueueMode) -> SettingsView {
-    change_settings(&app, &state, |s| s.mode = mode)
+    // Picking a mode leaves the active preset.
+    change_settings(&app, &state, |s| {
+        s.mode = mode;
+        s.preset = None;
+    })
 }
 
 #[tauri::command]
@@ -298,6 +324,212 @@ async fn quit_now(app: AppHandle) -> Result<(), String> {
         handle.exit(0);
     });
     Ok(())
+}
+
+/// A preset as the windows show it: with its command line, the kinds it
+/// takes, and its ⌘ number.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresetView {
+    #[serde(flatten)]
+    preset: Preset,
+    command: String,
+    kinds: String,
+    shortcut: Option<u8>,
+}
+
+fn preset_views(presets: &Presets) -> Vec<PresetView> {
+    let reg = Registry::builtin();
+    presets
+        .all()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| PresetView {
+            preset: p.clone(),
+            command: command(p),
+            kinds: kinds_phrase(&kinds(p, &reg)),
+            shortcut: (i < 9).then(|| u8::try_from(i + 1).unwrap_or(0)),
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn presets(state: State<'_, AppState>) -> Vec<PresetView> {
+    preset_views(&lock(&state.presets))
+}
+
+/// Make a preset (or none) active for new files.
+#[tauri::command]
+fn use_preset(app: AppHandle, state: State<'_, AppState>, id: Option<String>) -> SettingsView {
+    let mode = id
+        .as_deref()
+        .and_then(|id| lock(&state.presets).get(id).map(|p| p.mode));
+    change_settings(&app, &state, |s| {
+        if let Some(mode) = mode {
+            s.mode = mode;
+        }
+        s.preset = id.filter(|_| mode.is_some());
+    })
+}
+
+#[tauri::command]
+fn apply_preset(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<RowId>,
+    id: String,
+) -> Vec<RowView> {
+    let Some(preset) = lock(&state.presets).get(&id).cloned() else {
+        return Vec::new();
+    };
+    let rows = state.queue().apply_preset(&ids, &preset);
+    emit_rows(&app, &rows);
+    rows
+}
+
+#[tauri::command]
+fn save_preset(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    preset: Preset,
+) -> Result<Vec<PresetView>, String> {
+    let views = {
+        let mut presets = lock(&state.presets);
+        presets.save(preset)?;
+        preset_views(&presets)
+    };
+    let _ = app.emit("presets", &views);
+    Ok(views)
+}
+
+#[tauri::command]
+fn delete_preset(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<PresetView>, String> {
+    let views = {
+        let mut presets = lock(&state.presets);
+        presets.delete(&id)?;
+        preset_views(&presets)
+    };
+    if lock(&state.settings).preset.as_deref() == Some(id.as_str()) {
+        change_settings(&app, &state, |s| s.preset = None);
+    }
+    let _ = app.emit("presets", &views);
+    Ok(views)
+}
+
+/// A batch as the windows show it: with whether it can still be undone.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchView {
+    #[serde(flatten)]
+    batch: Batch,
+    undoable: bool,
+}
+
+fn batch_view(b: &Batch) -> BatchView {
+    BatchView {
+        batch: b.clone(),
+        undoable: undoable(b),
+    }
+}
+
+#[tauri::command]
+fn history(state: State<'_, AppState>, text: String, filter: Filter) -> Vec<BatchView> {
+    lock(&state.history)
+        .search(&text, filter)
+        .into_iter()
+        .map(batch_view)
+        .collect()
+}
+
+#[tauri::command]
+fn undo_batch(app: AppHandle, state: State<'_, AppState>, id: String) -> UndoReport {
+    let (report, batch) = {
+        let mut h = lock(&state.history);
+        let report = h.undo(&id, &SystemTrash);
+        (report, h.get(&id).cloned())
+    };
+    if let Some(b) = batch {
+        let _ = app.emit("history", batch_view(&b));
+    }
+    report
+}
+
+/// Undo the newest batch that can still be undone.
+#[tauri::command]
+fn undo_last(app: AppHandle, state: State<'_, AppState>) -> Option<UndoReport> {
+    let id = lock(&state.history)
+        .batches()
+        .into_iter()
+        .find(|b| undoable(b))
+        .map(|b| b.id.clone())?;
+    Some(undo_batch(app, state, id))
+}
+
+/// Forget every batch; the files stay.
+#[tauri::command]
+fn clear_history(app: AppHandle, state: State<'_, AppState>) -> bool {
+    let ok = lock(&state.history).clear().is_ok();
+    let _ = app.emit("history-cleared", ());
+    ok
+}
+
+#[tauri::command]
+fn reveal_path(state: State<'_, AppState>, path: PathBuf) -> bool {
+    reveal_allowed(&lock(&state.history), &path) && crate::reveal::reveal(&path)
+}
+
+/// What the Engines pane shows.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnginesView {
+    ffmpeg: Option<persimmon_core::backend::FfmpegInfo>,
+    ffmpeg_error: Option<crate::wording::Shown>,
+    images: bool,
+    rar: bool,
+    version: String,
+}
+
+#[tauri::command]
+async fn engines() -> Result<EnginesView, String> {
+    let (ffmpeg, ffmpeg_error) = match Backends::new().ffmpeg_info() {
+        Ok(info) => (Some(info), None),
+        Err(e) => (None, Some(crate::wording::shown(&e))),
+    };
+    Ok(EnginesView {
+        ffmpeg,
+        ffmpeg_error,
+        images: cfg!(feature = "vips"),
+        rar: cfg!(feature = "rar"),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+#[tauri::command]
+fn set_drop_window_at_launch(app: AppHandle, state: State<'_, AppState>, on: bool) -> SettingsView {
+    let view = change_settings(&app, &state, |s| s.drop_window = on);
+    set_drop_window(&app, on);
+    view
+}
+
+/// Open the bundled licence list, a local file. False until the packaged
+/// app carries it.
+#[tauri::command]
+fn open_licences(app: AppHandle) -> bool {
+    app.path()
+        .resource_dir()
+        .map(|d| d.join("THIRD-PARTY-LICENSES.html"))
+        .ok()
+        .filter(|p| p.is_file())
+        .is_some_and(|p| {
+            std::process::Command::new("/usr/bin/open")
+                .arg(&p)
+                .status()
+                .is_ok_and(|s| s.success())
+        })
 }
 
 /// Every window hides when closed. Closing the main window must not leave
@@ -389,6 +621,14 @@ fn menu(app: &AppHandle, drop_window: bool) -> tauri::Result<Menu<tauri::Wry>> {
             &PredefinedMenuItem::copy(app, None)?,
             &PredefinedMenuItem::paste(app, None)?,
             &PredefinedMenuItem::select_all(app, None)?,
+            &sep()?,
+            &MenuItem::with_id(
+                app,
+                "undo-last",
+                "Undo Last Batch",
+                true,
+                Some("Alt+CmdOrCtrl+Z"),
+            )?,
         ],
     )?;
     let window = Submenu::with_items(
@@ -435,17 +675,28 @@ pub fn run() {
                 let _ = handle.emit("row", &row);
             });
             let drop_window = settings.drop_window;
+            let data = file.parent().map(Path::to_path_buf).unwrap_or_default();
+            let history = History::open(&data.join("history.jsonl"));
+            let presets = Presets::load(&presets_dir(data.parent().unwrap_or(&data)));
+            let handle = app.handle().clone();
+            runner.set_on_batch(move |batch| {
+                let state = handle.state::<AppState>();
+                let _ = lock(&state.history).append(batch.clone());
+                let _ = handle.emit("history", batch_view(&batch));
+            });
             app.manage(AppState {
                 queue,
                 runner,
                 settings: Mutex::new(settings),
                 settings_file: file,
+                presets: Mutex::new(presets),
+                history: Mutex::new(history),
             });
             let pending = std::mem::take(&mut *lock(&app.state::<Pending>().0));
             if !pending.is_empty() {
                 let state = app.state::<AppState>();
-                let mode = state.mode();
-                state.queue().add(&pending, mode);
+                let recipe = state.recipe();
+                state.queue().add_with(&pending, &recipe);
             }
             app.set_menu(menu(app.handle(), drop_window)?)?;
             if drop_window {
@@ -459,6 +710,10 @@ pub fn run() {
             "drop-window" => {
                 let state = app.state::<AppState>();
                 toggle_drop_window(app.clone(), state);
+            }
+            "undo-last" => {
+                let state = app.state::<AppState>();
+                let _ = undo_last(app.clone(), state);
             }
             _ => {}
         })
@@ -498,7 +753,20 @@ pub fn run() {
             choose_fallback_folder,
             toggle_drop_window,
             open_settings,
-            quit_now
+            quit_now,
+            presets,
+            use_preset,
+            apply_preset,
+            save_preset,
+            delete_preset,
+            history,
+            undo_batch,
+            undo_last,
+            clear_history,
+            reveal_path,
+            engines,
+            set_drop_window_at_launch,
+            open_licences
         ])
         .build(tauri::generate_context!())
         .expect("Persimmon couldn't start");
@@ -511,8 +779,8 @@ pub fn run() {
             let paths = paths_from_urls(&urls);
             match app.try_state::<AppState>() {
                 Some(state) => {
-                    let mode = state.mode();
-                    let rows = state.queue().add(&paths, mode);
+                    let recipe = state.recipe();
+                    let rows = state.queue().add_with(&paths, &recipe);
                     emit_rows(app, &rows);
                 }
                 // Not started yet: setup queues these.
@@ -557,6 +825,43 @@ mod tests {
         }
     }
 
+    /// Reveal opens only outputs history recorded, never a path the
+    /// window makes up.
+    #[test]
+    fn reveal_path_only_reveals_history_paths() {
+        use crate::history::{Batch, History, Item, ItemOutcome, Source};
+        let dir = std::env::temp_dir().join(format!("prsm-app-reveal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = History::open(&dir.join("history.jsonl"));
+        h.append(Batch {
+            id: "a".into(),
+            started: 1,
+            finished: crate::history::now(),
+            source: Source::Window,
+            preset: None,
+            mode: crate::queue::QueueMode::Convert,
+            items: vec![Item {
+                inputs: vec!["/x/a.png".into()],
+                output: Some("/x/a.jpg".into()),
+                output_size: Some(1),
+                output_mtime: None,
+                size: 1,
+                outcome: ItemOutcome::Done,
+                undone: false,
+            }],
+            undone: false,
+        })
+        .unwrap();
+        assert!(super::reveal_allowed(&h, std::path::Path::new("/x/a.jpg")));
+        assert!(!super::reveal_allowed(&h, std::path::Path::new("/x/a.png")));
+        assert!(!super::reveal_allowed(
+            &h,
+            std::path::Path::new("/etc/passwd")
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn quit_asks_only_while_a_row_runs() {
         assert_eq!(quit_action(true), QuitAction::Confirm);
@@ -579,23 +884,31 @@ mod tests {
             cap["permissions"],
             serde_json::json!([
                 "allow-add-paths",
+                "allow-apply-preset",
                 "allow-cancel-row",
+                "allow-clear-history",
                 "allow-engine-version",
                 "allow-get-settings",
+                "allow-history",
                 "allow-open-settings",
                 "allow-pick-files",
+                "allow-presets",
                 "allow-queue-rows",
                 "allow-quit-now",
                 "allow-remove-input",
                 "allow-remove-rows",
                 "allow-reorder-input",
                 "allow-retry-row",
+                "allow-reveal-path",
                 "allow-reveal-row",
                 "allow-set-mode",
                 "allow-set-target",
                 "allow-start",
                 "allow-targets",
                 "allow-toggle-drop-window",
+                "allow-undo-batch",
+                "allow-undo-last",
+                "allow-use-preset",
                 "core:event:allow-listen",
                 "core:event:allow-unlisten"
             ])
@@ -628,7 +941,13 @@ mod tests {
             serde_json::json!([
                 "allow-choose-fallback-folder",
                 "allow-choose-output-folder",
+                "allow-delete-preset",
+                "allow-engines",
                 "allow-get-settings",
+                "allow-open-licences",
+                "allow-presets",
+                "allow-save-preset",
+                "allow-set-drop-window-at-launch",
                 "allow-set-output-beside",
                 "core:event:allow-listen",
                 "core:event:allow-unlisten"
@@ -712,7 +1031,12 @@ mod tests {
             persimmon_core::backend::Backends::new(),
             |_| {},
         );
-        let rows = super::add_and_start(&queue, &runner, &[png], crate::queue::QueueMode::Convert);
+        let rows = super::add_and_start(
+            &queue,
+            &runner,
+            &[png],
+            &crate::queue::Recipe::Mode(crate::queue::QueueMode::Convert),
+        );
         let id = rows[0].id;
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !matches!(

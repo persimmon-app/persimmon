@@ -89,16 +89,17 @@ impl Runner {
         *lock(&self.inner.on_batch) = Some(Box::new(f));
     }
 
-    /// Start, recording where the batch came from.
+    /// Run every queued row, one at a time, recording where the batch came
+    /// from.
     pub fn start_from(&self, source: Source) {
         *lock(&self.inner.source) = source;
-        self.start();
-    }
-
-    /// Run every queued row, one at a time.
-    pub fn start(&self) {
         lock(&self.inner.state).go = true;
         self.inner.wake.notify_all();
+    }
+
+    /// Start from the main window.
+    pub fn start(&self) {
+        self.start_from(Source::Window);
     }
 
     /// Cancel row `id`: the running one stops mid-file where the backend

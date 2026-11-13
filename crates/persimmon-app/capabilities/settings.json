@@ -8,7 +8,13 @@
   "permissions": [
     "allow-choose-fallback-folder",
     "allow-choose-output-folder",
+    "allow-delete-preset",
+    "allow-engines",
     "allow-get-settings",
+    "allow-open-licences",
+    "allow-presets",
+    "allow-save-preset",
+    "allow-set-drop-window-at-launch",
     "allow-set-output-beside",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
