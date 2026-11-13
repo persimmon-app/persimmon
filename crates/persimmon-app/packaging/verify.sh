@@ -3,7 +3,7 @@
 # The release check for the packaged app (Phase 2 spec, "Testing → The
 # packaged app"):
 #
-#   verify.sh <Persimmon.app> [Persimmon.dmg]
+#   verify.sh [--before-notarisation] <Persimmon.app> [Persimmon.dmg]
 #
 # Prints "verified (ad-hoc)" or "verified (developer-id)", or one
 # "verify: <file>: <problem>" line per problem and exits 1. It checks the
@@ -11,14 +11,19 @@
 # macOS 14; that nothing links outside the bundle and the system; that
 # every @rpath library is in Contents/Frameworks; the bundled FFmpeg's
 # configure line, encoders and protocols; the licence list; and, for a
-# Developer ID signature only, Gatekeeper and the notarisation ticket.
+# Developer ID signature only, Gatekeeper and the notarisation ticket:
+# --before-notarisation leaves those two out, for the check bundle.sh makes
+# before the release workflow notarises. PERSIMMON_VERIFY_MODE=developer-id
+# forces the Developer ID checks (the tests' fake bundles can't carry one).
 set -euo pipefail
 ID=io.github.persimmon-app.Persimmon
 FLAGS="--enable-gpl --disable-network --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame --enable-libdav1d --enable-libaom"
 ENCODERS="libx264 libx265 libvpx-vp9 libopus libmp3lame libaom-av1"
 NETWORK="tcp http https udp rtmp"
 
-if [ $# -lt 1 ] || [ ! -d "$1" ]; then echo "usage: verify.sh <Persimmon.app> [Persimmon.dmg]" >&2; exit 2; fi
+before=0
+if [ "${1:-}" = --before-notarisation ]; then before=1; shift; fi
+if [ $# -lt 1 ] || [ ! -d "$1" ]; then echo "usage: verify.sh [--before-notarisation] <Persimmon.app> [Persimmon.dmg]" >&2; exit 2; fi
 app=$(cd "$1" && pwd) dmg=${2:-}
 problems=0
 problem() { echo "verify: ${1#"$app"/}: $2"; problems=$((problems + 1)); }
@@ -30,7 +35,11 @@ fi
 info=$(codesign -dv --verbose=2 "$app" 2>&1 || true)
 id=$(sed -n 's/^Identifier=//p' <<<"$info")
 [ "$id" = "$ID" ] || problem "$app" "signed as ${id:-nothing}, not $ID"
-if grep -q '^Authority=Developer ID Application' <<<"$info"; then mode=developer-id; else mode=ad-hoc; fi
+if grep -q '^Authority=Developer ID Application' <<<"$info" || [ "${PERSIMMON_VERIFY_MODE:-}" = developer-id ]; then
+  mode=developer-id
+else
+  mode=ad-hoc
+fi
 
 # Every Mach-O file: arm64 only, macOS 14, linking only the bundle and the system.
 while IFS= read -r -d '' f; do
@@ -75,11 +84,11 @@ fi
   || problem "$app/Contents/Resources/THIRD-PARTY-LICENSES.html" "is missing"
 
 # Gatekeeper and the ticket, only for a Developer ID signature.
-if [ "$mode" = developer-id ]; then
+if [ "$mode" = developer-id ] && [ "$before" = 0 ]; then
   spctl -a -vv "$app" > /dev/null 2>&1 || problem "$app" "Gatekeeper refuses it (spctl -a -vv)"
   ticket=${dmg:-$app}
   xcrun stapler validate "$ticket" > /dev/null 2>&1 || problem "$ticket" "has no notarisation ticket (stapler validate)"
 fi
 
 if [ "$problems" -gt 0 ]; then exit 1; fi
-echo "verified ($mode)"
+if [ "$mode" = developer-id ] && [ "$before" = 1 ]; then echo "verified (developer-id, before notarisation)"; else echo "verified ($mode)"; fi

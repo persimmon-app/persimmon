@@ -120,21 +120,38 @@ expect protocols 1 "https" "$d/Persimmon.app"
 d=$(case_dir licences); make_app "$d"; rm "$d/Persimmon.app/Contents/Resources/THIRD-PARTY-LICENSES.html"; sign_app "$d/Persimmon.app"
 expect licences 1 "THIRD-PARTY-LICENSES.html" "$d/Persimmon.app"
 
+# A Developer ID app before notarisation: Gatekeeper and the ticket can't
+# pass yet, so bundle.sh checks it with --before-notarisation. A fake
+# bundle can't carry a Developer ID, so the mode is forced.
+d=$(case_dir developer-id); make_app "$d"; sign_app "$d/Persimmon.app"
+out=$(PERSIMMON_VERIFY_MODE=developer-id "$verify" "$d/Persimmon.app" 2>&1) && code=0 || code=$?
+if [ "$code" = 1 ] && grep -qF "Gatekeeper refuses it" <<<"$out"; then echo "ok developer-id"
+else echo "FAIL developer-id (exit $code):"; sed 's/^/    /' <<<"$out"; failed=1; fi
+out=$(PERSIMMON_VERIFY_MODE=developer-id "$verify" --before-notarisation "$d/Persimmon.app" 2>&1) && code=0 || code=$?
+if [ "$code" = 0 ] && [ "$out" = "verified (developer-id, before notarisation)" ]; then echo "ok before-notarisation"
+else echo "FAIL before-notarisation (exit $code):"; sed 's/^/    /' <<<"$out"; failed=1; fi
+
 # mode.sh: which signing steps the release workflow runs.
 SECRETS="APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID"
+# A success prints the mode on stdout; a failure prints nothing there (CI
+# captures stdout) and names what's missing on stderr, where the log shows it.
 mode_case() { # name want-exit want-text VAR...
-  local name=$1 want=$2 text=$3 out code=0 v; shift 3
+  local name=$1 want=$2 text=$3 out err code=0 v; shift 3
   local args=()
   for v in $SECRETS; do args+=(-u "$v"); done
   for v in "$@"; do args+=("$v=x"); done
-  out=$(env "${args[@]}" bash "$mode" 2>&1) || code=$?
-  if [ "$code" = "$want" ] && [ "$out" = "$text" ]; then echo "ok mode-$name"
-  else echo "FAIL mode-$name (exit $code, output \"$out\"; wanted $want and \"$text\")"; failed=1; fi
+  out=$(env "${args[@]}" bash "$mode" 2>"$work/mode.err") || code=$?
+  err=$(cat "$work/mode.err")
+  if [ "$want" = 0 ]; then got=$out; else got=$err; [ -z "$out" ] || got="stdout: $out"; fi
+  if [ "$code" = "$want" ] && [ "$got" = "$text" ]; then echo "ok mode-$name"
+  else echo "FAIL mode-$name (exit $code, got \"$got\"; wanted $want and \"$text\")"; failed=1; fi
 }
+NOTARY="APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID"
 mode_case none 0 "ad-hoc"
-mode_case signing 0 "developer-id" APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
 mode_case all 0 "notarise" $SECRETS
-mode_case partial 1 "mode: missing APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY" APPLE_CERTIFICATE
-mode_case notarise-only 1 "mode: missing APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY" APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+# Signing without notarising would ship a DMG Gatekeeper still blocks.
+mode_case signing-only 1 "mode: missing $NOTARY" APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
+mode_case partial 1 "mode: missing APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY $NOTARY" APPLE_CERTIFICATE
+mode_case notarise-only 1 "mode: missing APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY" $NOTARY
 
 exit $failed

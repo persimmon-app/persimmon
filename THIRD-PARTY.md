@@ -58,7 +58,7 @@ Build tools that never ship in the app: Vite (MIT), TypeScript (Apache-2.0), sve
 
 | Component | Version | Licence | Used for | How |
 |---|---|---|---|---|
-| [FFmpeg](https://ffmpeg.org/) and ffprobe | 7.0 or later; 9.0.2 in the macOS app | LGPL-2.1-or-later, or GPL-2.0-or-later / GPL-3.0-or-later in builds with x264 and x265, as most are | Audio and video: probing, converting, compressing | Never linked. `prsm` runs the `ffmpeg` the user installed as a child process. The macOS app bundles its own in `Contents/MacOS`, built from source with `--enable-gpl --disable-network` (GPL-3.0-or-later as built, DD-04), and runs it the same way |
+| [FFmpeg](https://ffmpeg.org/) and ffprobe | 7.0 or later; 9.0.2 in the macOS app | LGPL-2.1-or-later, or GPL-2.0-or-later / GPL-3.0-or-later in builds with x264 and x265, as most are | Audio and video: probing, converting, compressing | Never linked. `prsm` runs the `ffmpeg` the user installed as a child process. The macOS app bundles its own in `Contents/MacOS`, built from source with `--enable-gpl --disable-network` (GPL-2.0-or-later as built, which GPL-3.0-or-later Persimmon may bundle, DD-04), and runs it the same way |
 
 **Statically linked into the macOS app's FFmpeg and ffprobe:** x264 (stable branch at `b35605a`, GPL-2.0-or-later), x265 4.2 (GPL-2.0-or-later), libvpx 1.17.0 (BSD-3-Clause), Opus 1.6.1 (BSD-3-Clause), LAME 3.100 (LGPL-2.0-or-later), dav1d 1.5.4 (BSD-2-Clause) and aom 3.15.3 (BSD-2-Clause plus the AOMedia patent licence).
 

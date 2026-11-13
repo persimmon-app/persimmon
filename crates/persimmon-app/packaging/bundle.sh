@@ -74,7 +74,8 @@ for f in "$app"/Contents/Frameworks/*.dylib "$app/Contents/MacOS/ffmpeg" "$app/C
   codesign --force ${sign_opts[@]+"${sign_opts[@]}"} -s "$identity" "$f"
 done
 codesign --force ${sign_opts[@]+"${sign_opts[@]}"} -s "$identity" --identifier "$ID" "$app"
-"$here/verify.sh" "$app"
+# Gatekeeper and the ticket are checked once the workflow has notarised.
+"$here/verify.sh" --before-notarisation "$app"
 
 echo "=== the DMG"
 dmg=$out/Persimmon-$version-arm64.dmg

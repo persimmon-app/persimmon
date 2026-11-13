@@ -192,19 +192,13 @@ jobs:
           if-no-files-found: error
 
   # The macOS app, Apple silicon only (DD-44). It's signed with a Developer
-  # ID and notarised only when those secrets exist (mode.sh); otherwise it's
-  # ad hoc, and a partial set of secrets fails the job.
+  # ID and notarised only when all six Apple secrets exist (mode.sh);
+  # otherwise it's ad hoc, and a partial set fails the job. Each secret
+  # reaches only the steps that need it, never the third-party builds.
   app:
     needs: check
     name: Persimmon.app (aarch64-apple-darwin)
     runs-on: macos-latest
-    env:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v6
 
@@ -265,6 +259,13 @@ jobs:
 
       - name: Signing mode
         id: mode
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           mode=$(bash crates/persimmon-app/packaging/mode.sh)
           echo "signing: $mode"
@@ -272,7 +273,10 @@ jobs:
 
       # A keychain of this run's own, holding the Developer ID certificate.
       - name: Import the signing certificate
-        if: steps.mode.outputs.mode != 'ad-hoc'
+        if: steps.mode.outputs.mode == 'notarise'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           kc=$RUNNER_TEMP/signing.keychain-db
           pw=$(openssl rand -hex 16)
@@ -288,10 +292,16 @@ jobs:
       # bundle.sh signs with APPLE_SIGNING_IDENTITY when it's set (an absent
       # secret is empty), ad hoc otherwise.
       - name: Build, sign and package the app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: bash crates/persimmon-app/packaging/bundle.sh target/native dist
 
       - name: Notarise and staple
         if: steps.mode.outputs.mode == 'notarise'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           dmg=$(ls dist/*.dmg)
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -311,7 +321,7 @@ jobs:
           exit $r
 
       - name: Remove the signing keychain
-        if: always() && steps.mode.outputs.mode != 'ad-hoc' && steps.mode.outputs.mode != ''
+        if: always() && steps.mode.outputs.mode == 'notarise'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
       - uses: actions/upload-artifact@v6
