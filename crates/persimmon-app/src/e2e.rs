@@ -369,3 +369,111 @@ fn combine_and_compress_run_through_the_queue() {
         );
     }
 }
+
+/// Every corpus file, as week 2's wording sweep gathers them.
+fn corpus_files(dir: &Path) -> Vec<PathBuf> {
+    use persimmon_corpus::archives::ARCHIVE_SAMPLES;
+    use persimmon_corpus::media::MEDIA_SAMPLES;
+    use persimmon_corpus::pdf::PDF_SAMPLES;
+    use persimmon_corpus::{Options, generate};
+    let mut files: Vec<PathBuf> = generate(&dir.join("generated"), &Options { large: false })
+        .unwrap()
+        .into_iter()
+        .map(|c| c.path)
+        .filter(|p| p.is_file())
+        .filter(|p| !["many.pdf", "big-page.pdf"].iter().any(|n| p.ends_with(n)))
+        .collect();
+    let samples = dir.join("samples");
+    std::fs::create_dir_all(&samples).unwrap();
+    for (_, name, bytes, _) in IMAGE_SAMPLES {
+        let p = samples.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        files.push(p);
+    }
+    for (_, name, bytes) in RAR_SAMPLES {
+        let p = samples.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        files.push(p);
+    }
+    for (id, _, _) in PDF_SAMPLES {
+        if !["pdf-many", "pdf-big-page"].contains(&id) {
+            files.push(write_pdf_sample(&samples, id));
+        }
+    }
+    for (id, _) in ARCHIVE_SAMPLES {
+        files.push(write_archive_sample(&samples, id));
+    }
+    for (id, _) in MEDIA_SAMPLES {
+        if id != "vid-long"
+            && let Some(src) = media_sample(id)
+        {
+            let to = samples.join(src.file_name().unwrap());
+            std::fs::copy(&src, &to).unwrap();
+            files.push(to);
+        }
+    }
+    files
+}
+
+/// Gate item 3: every error a corpus input provokes shows in its row with
+/// the file, the reason and a fix in the app's words, from planning or
+/// from running.
+#[test]
+fn every_corpus_failure_shows_file_reason_and_fix() {
+    use persimmon_core::detect::detect;
+    use persimmon_core::format::MediaKind;
+    let Some(ff) = ffmpeg() else { return };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let out = Scratch::new("failures-out");
+    let rig = rig(
+        "failures",
+        OutputPolicy {
+            dir: Some(out.0.clone()),
+            ..OutputPolicy::default()
+        },
+        Backends::new().with_ffmpeg(&ff),
+    );
+    let reg = Registry::builtin();
+    for f in corpus_files(&rig.dir.0) {
+        let detected = detect(&f, reg.formats()).ok().map(|d| d.format);
+        let mut q = rig.queue.lock().unwrap();
+        match detected {
+            Some(k) if reg.format(k).kind == MediaKind::Archive => {
+                q.add(std::slice::from_ref(&f), QueueMode::Extract);
+            }
+            Some(FormatId::Pdf) | None => {
+                if let Some(r) = q.add(std::slice::from_ref(&f), QueueMode::Convert).first() {
+                    q.set_target(&[r.id], FormatId::Png);
+                }
+            }
+            Some(_) => {
+                q.add(std::slice::from_ref(&f), QueueMode::Convert);
+            }
+        }
+    }
+    run_all(&rig, 600);
+    let mut failed = 0;
+    for r in rig.queue.lock().unwrap().rows() {
+        let RowState::Failed { error } = &r.state else {
+            continue;
+        };
+        failed += 1;
+        let at = r.path.display();
+        assert!(error.file.is_some(), "{at}: no file in {error:?}");
+        assert!(!error.reason.is_empty(), "{at}: no reason");
+        let fix = error
+            .fix
+            .as_deref()
+            .unwrap_or_else(|| panic!("{at}: no fix for {error:?}"));
+        for text in [error.reason.as_str(), fix] {
+            if let Some(word) = crate::wording::cli_word(text) {
+                panic!("{at}: {text:?} has the CLI word {word:?}");
+            }
+        }
+    }
+    // The corpus is full of bad files on purpose; a sweep that stops
+    // reaching them can't pass by checking nothing.
+    assert!(failed >= 10, "only {failed} rows failed");
+}

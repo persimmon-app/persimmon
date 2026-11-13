@@ -26,6 +26,28 @@ fn lossy<S: serde::Serializer>(p: &Option<PathBuf>, s: S) -> Result<S::Ok, S::Er
     }
 }
 
+/// CLI words that must never reach a row: flags, the CLI's own name and
+/// package managers (the app bundles its engines).
+pub const BANNED: [&str; 5] = ["--", "prsm", "brew", "apt", "-dev"];
+
+/// The first CLI word in `text`, if any: `--` anywhere; `prsm`, `brew` and
+/// `apt` as whole words (so "adapt" is fine); `-dev` ending a word, as in a
+/// package name (so "/dev/null" is fine).
+pub fn cli_word(text: &str) -> Option<&'static str> {
+    if text.contains(BANNED[0]) {
+        return Some(BANNED[0]);
+    }
+    for word in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+        if let Some(w) = BANNED[1..4].iter().find(|w| word == **w) {
+            return Some(w);
+        }
+        if word.len() > 4 && word.ends_with(BANNED[4]) {
+            return Some(BANNED[4]);
+        }
+    }
+    None
+}
+
 /// An error the app itself finds, before the engine sees the file (a
 /// Photos preview, a folder outside Combine).
 pub fn app_error(
@@ -42,13 +64,17 @@ pub fn app_error(
     }
 }
 
+/// What a row offers when the engine has no fix (an empty or damaged
+/// file): every failed row has one (Phase 2 gate).
+pub const FALLBACK_FIX: &str = "Remove this file from the queue.";
+
 /// The app's wording for `e`.
 pub fn shown(e: &Error) -> Shown {
     Shown {
         code: e.code,
         file: e.file.clone(),
         reason: reason(&e.reason),
-        fix: e.fix.as_ref().map(fix),
+        fix: Some(e.fix.as_ref().map_or_else(|| FALLBACK_FIX.into(), fix)),
     }
 }
 
@@ -119,6 +145,33 @@ fn fix(f: &Fix) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_words_are_whole_words() {
+        for text in [
+            "use --out",
+            "run prsm compress",
+            "brew install ffmpeg",
+            "sudo apt install x",
+            "install libvips-dev",
+        ] {
+            assert!(cli_word(text).is_some(), "{text}");
+        }
+        for text in [
+            "adapt the chapter",
+            "Persimmon can't read it",
+            "a brewery",
+            "/dev/null is fine",
+        ] {
+            assert_eq!(cli_word(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_error_with_no_fix_gets_the_fallback() {
+        let s = shown(&Error::new(ErrorCode::CorruptInput, "it's damaged"));
+        assert_eq!(s.fix.as_deref(), Some("Remove this file from the queue."));
+    }
 
     fn fix(kind: FixKind, cli: &str) -> Option<String> {
         shown(&Error::new(ErrorCode::Usage, "x").with_fix_as(kind, cli)).fix
@@ -198,7 +251,10 @@ mod tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(shown(&Error::new(ErrorCode::Usage, "x")).fix, None);
+        assert_eq!(
+            shown(&Error::new(ErrorCode::Usage, "x")).fix.as_deref(),
+            Some(FALLBACK_FIX)
+        );
     }
 
     #[test]
@@ -270,12 +326,12 @@ mod tests {
         let e = Error::new(ErrorCode::InputNotFound, "no such file").with_file("/a.png");
         assert_eq!(
             serde_json::to_value(shown(&e)).unwrap(),
-            serde_json::json!({"code": "INPUT_NOT_FOUND", "file": "/a.png", "reason": "no such file", "fix": null})
+            serde_json::json!({"code": "INPUT_NOT_FOUND", "file": "/a.png", "reason": "no such file", "fix": FALLBACK_FIX})
         );
     }
 
     mod corpus {
-        use super::super::shown;
+        use super::super::{cli_word, shown};
         use persimmon_core::backend::Backends;
         use persimmon_core::detect::detect;
         use persimmon_core::error::Error;
@@ -375,13 +431,12 @@ mod tests {
                     seen += 1;
                     let s = shown(&e);
                     for text in [Some(&s.reason), s.fix.as_ref()].into_iter().flatten() {
-                        for cli in ["--", "prsm "] {
-                            assert!(
-                                !text.contains(cli),
-                                "{}: {text:?} has {cli:?} (engine: {e})",
-                                f.display()
-                            );
-                        }
+                        assert_eq!(
+                            cli_word(text),
+                            None,
+                            "{}: {text:?} has a CLI word (engine: {e})",
+                            f.display()
+                        );
                     }
                 }
             }
