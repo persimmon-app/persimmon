@@ -1321,6 +1321,26 @@ mod tests {
     }
 
     #[test]
+    fn a_compress_preset_with_a_video_preset_is_for_video() {
+        let d = Dir::new("preset-video-compress");
+        let mut q = queue();
+        let id = q.add(&[d.put("photo.png", &PNG_1X1)], QueueMode::Compress)[0].id;
+        let mut small = builtin("web-image");
+        small.name = "Small video".into();
+        small.mode = QueueMode::Compress;
+        small.target = None;
+        small.options = persimmon_core::job::JobOptions {
+            preset: Some(persimmon_core::job::Preset::Small),
+            ..Default::default()
+        };
+        let r = q.apply_preset(&[id], &small);
+        let RowState::Failed { error } = &r[0].state else {
+            panic!("{:?}", r[0].state)
+        };
+        assert_eq!(error.reason, "Small video is for video");
+    }
+
+    #[test]
     fn new_files_use_the_active_preset() {
         let d = Dir::new("preset-new");
         let mut q = queue();

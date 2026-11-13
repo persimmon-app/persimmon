@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Settings → Presets (spec D4): the list and the editor, with the prsm line. -->
 <script lang="ts">
+  import { tick } from "svelte";
   import { commandLine } from "../lib/command";
   import type { FormatId, JobOptions, PresetView, QueueMode } from "../lib/types";
 
@@ -33,9 +34,20 @@
     if (!draft) return;
     draft.mode = m;
     draft.target = targetsFor[m][0] ?? null;
+    // Combine and Extract take none of the options (presets.rs check()).
+    if (m === "combine" || m === "extract") draft.options = blank().options;
   }
+  /** After a save, the editor shows what was saved: a built-in saves as a
+   * new copy, so the copy (the one preset that wasn't there before) is
+   * selected rather than the built-in staying open. */
   async function save() {
-    if (draft) error = await onSave($state.snapshot(draft));
+    if (!draft) return;
+    const before = new Set(presets.map((p) => p.id));
+    error = await onSave($state.snapshot(draft));
+    if (error) return;
+    await tick();
+    const fresh = presets.find((p) => !before.has(p.id));
+    if (fresh) edit(fresh);
   }
   async function remove() {
     if (draft && !draft.builtin && draft.id) { error = await onDelete(draft.id); if (!error) draft = null; }
@@ -66,6 +78,7 @@
             <select bind:value={draft.target}>{#each targetsFor[draft.mode] as t (t)}<option value={t}>{t.toUpperCase()}</option>{/each}</select>
           </label>
         {/if}
+        {#if draft.mode === "convert" || draft.mode === "compress"}
         <label>Quality
           <select bind:value={draft.options.quality}>
             <option value={null}>Default</option><option value="low">Low</option><option value="medium">Medium</option>
@@ -82,6 +95,7 @@
             oninput={(e) => { if (draft) { const v = e.currentTarget.valueAsNumber; draft.options.maxSize = Number.isFinite(v) && v > 0 ? v : null; } }} />
         </label>
         <label class="check"><input type="checkbox" bind:checked={draft.options.stripMetadata} /> Strip metadata</label>
+        {/if}
         <div class="command">
           <code>{line}</code>
           <button type="button" class="text" onclick={() => { navigator.clipboard?.writeText(line); copied = true; setTimeout(() => (copied = false), 1500); }}>{copied ? "Copied" : "Copy"}</button>

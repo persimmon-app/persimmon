@@ -94,6 +94,10 @@ pub fn command(p: &Preset) -> String {
     if let Some(t) = p.target {
         line.push_str(&format!(" --to {}", t.as_str()));
     }
+    // `prsm merge` and `prsm extract` take none of the options (DD-18).
+    if !takes_options(p.mode) {
+        return line;
+    }
     if let Some(v) = p.options.preset {
         line.push_str(match v {
             Video::Compatible => " --preset compatible",
@@ -129,6 +133,10 @@ pub fn operation(mode: QueueMode) -> persimmon_core::registry::Operation {
 
 /// The kinds of file a preset can take, in a fixed order.
 pub fn kinds(p: &Preset, reg: &Registry) -> Vec<MediaKind> {
+    // A video preset (compatible, small) makes a Compress preset video-only.
+    if p.mode == QueueMode::Compress && p.options.preset.is_some() {
+        return vec![MediaKind::Video];
+    }
     let op = operation(p.mode);
     [
         MediaKind::Image,
@@ -147,10 +155,22 @@ pub fn kinds(p: &Preset, reg: &Registry) -> Vec<MediaKind> {
     .collect()
 }
 
+/// Whether a mode's command takes quality, size, preset or metadata
+/// options: Combine and Extract don't.
+fn takes_options(mode: QueueMode) -> bool {
+    matches!(mode, QueueMode::Convert | QueueMode::Compress)
+}
+
 /// Refuse options the engine would refuse for this target (DD-35).
 pub fn check(p: &Preset) -> Result<(), String> {
     use persimmon_core::registry::Registry;
     let reg = Registry::builtin();
+    let o = &p.options;
+    if !takes_options(p.mode)
+        && (o.quality.is_some() || o.preset.is_some() || o.max_size.is_some() || o.strip_metadata)
+    {
+        return Err("Combining and extracting take no quality, size or metadata options".into());
+    }
     let target_kind = p.target.map(|t| reg.format(t).kind);
     if p.options.preset.is_some()
         && p.mode != QueueMode::Compress
@@ -182,6 +202,18 @@ pub fn check(p: &Preset) -> Result<(), String> {
 pub struct Presets {
     dir: PathBuf,
     list: Vec<Preset>,
+    /// The file each of the user's presets was loaded from or saved to,
+    /// which may not be `{id}.json`.
+    files: std::collections::HashMap<String, PathBuf>,
+}
+
+/// A preset id is a file name of its own: `[a-z0-9-]+`, so it can't leave
+/// the presets folder.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn slug(name: &str) -> String {
@@ -202,6 +234,7 @@ impl Presets {
     /// doesn't read as a preset is kept aside as `.bad`.
     pub fn load(dir: &Path) -> Presets {
         let mut mine = Vec::new();
+        let mut files = std::collections::HashMap::new();
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -214,6 +247,10 @@ impl Presets {
                 match parsed {
                     Some(mut p) => {
                         p.builtin = false;
+                        if !valid_id(&p.id) {
+                            p.id = slug(&path.file_stem().unwrap_or_default().to_string_lossy());
+                        }
+                        files.insert(p.id.clone(), path.clone());
                         mine.push(p);
                     }
                     None => {
@@ -225,6 +262,7 @@ impl Presets {
         let mut presets = Presets {
             dir: dir.to_path_buf(),
             list: builtins(),
+            files,
         };
         presets.list.extend(mine);
         presets.sort();
@@ -291,11 +329,13 @@ impl Presets {
             }
         } else if p.id.is_empty() {
             p.id = self.free_id(&slug(&p.name));
+        } else if !valid_id(&p.id) {
+            return Err("This preset can't be saved under that id".into());
         }
         let clash = self
             .list
             .iter()
-            .any(|o| !o.builtin && o.id != p.id && o.name.eq_ignore_ascii_case(&p.name));
+            .any(|o| o.id != p.id && o.name.eq_ignore_ascii_case(&p.name));
         if clash {
             return Err(format!("There's already a preset called {}", p.name));
         }
@@ -306,6 +346,13 @@ impl Presets {
         std::fs::write(&temp, text)
             .and_then(|_| std::fs::rename(&temp, &path))
             .map_err(|e| e.to_string())?;
+        // Loaded from a file of another name: that one goes, or the old
+        // version would come back next launch.
+        if let Some(old) = self.files.insert(p.id.clone(), path.clone())
+            && old != path
+        {
+            let _ = std::fs::remove_file(old);
+        }
         self.list.retain(|o| o.id != p.id);
         self.list.push(p.clone());
         self.sort();
@@ -317,7 +364,11 @@ impl Presets {
             None => Ok(()),
             Some(p) if p.builtin => Err("Built-in presets can't be deleted".into()),
             Some(_) => {
-                let _ = std::fs::remove_file(self.dir.join(format!("{id}.json")));
+                let file = self
+                    .files
+                    .remove(id)
+                    .unwrap_or_else(|| self.dir.join(format!("{id}.json")));
+                let _ = std::fs::remove_file(file);
                 self.list.retain(|p| p.id != id);
                 Ok(())
             }
@@ -417,6 +468,57 @@ mod tests {
             ..mine("x")
         };
         assert_eq!(command(&compress), "prsm compress <files>");
+    }
+
+    #[test]
+    fn save_refuses_an_id_that_isnt_a_slug() {
+        let d = Dir::new("slug");
+        let mut presets = Presets::load(&d.0.join("presets"));
+        for id in ["../x", "a/b", "Up"] {
+            let mut p = mine(&format!("P {id}"));
+            p.id = id.into();
+            assert!(presets.save(p).is_err(), "{id}");
+        }
+        assert!(!d.0.join("x.json").exists());
+        assert!(!d.0.join("presets/a").exists());
+    }
+
+    #[test]
+    fn delete_removes_the_file_the_preset_came_from() {
+        let d = Dir::new("file");
+        let mut p = mine("Other");
+        p.id = "other".into();
+        std::fs::write(d.0.join("custom.json"), serde_json::to_string(&p).unwrap()).unwrap();
+        let mut presets = Presets::load(&d.0);
+        presets.delete("other").unwrap();
+        assert!(!d.0.join("custom.json").exists());
+        assert!(Presets::load(&d.0).get("other").is_none());
+    }
+
+    #[test]
+    fn a_new_preset_cant_take_a_builtins_name() {
+        let d = Dir::new("taken");
+        let mut presets = Presets::load(&d.0);
+        assert_eq!(
+            presets.save(mine("Web image")).unwrap_err(),
+            "There's already a preset called Web image"
+        );
+    }
+
+    #[test]
+    fn combine_and_extract_presets_carry_no_options() {
+        for mode in [QueueMode::Combine, QueueMode::Extract] {
+            let mut p = mine("Bundle");
+            p.mode = mode;
+            p.target = (mode == QueueMode::Combine).then_some(FormatId::Zip);
+            p.options.quality = Some(Quality::High);
+            assert!(check(&p).is_err(), "{mode:?} with a quality");
+            assert!(!command(&p).contains("--quality"), "{mode:?}");
+            p.options.quality = None;
+            p.options.strip_metadata = true;
+            assert!(check(&p).is_err(), "{mode:?} stripping metadata");
+            assert!(!command(&p).contains("--strip-metadata"), "{mode:?}");
+        }
     }
 
     #[test]

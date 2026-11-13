@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
 import PresetsPane from "./PresetsPane.svelte";
 import { presets } from "../test/fixtures";
@@ -16,6 +16,16 @@ describe("PresetsPane", () => {
     expect(screen.getByText("prsm convert <files> --to webp --quality medium --max-size 1024 --strip-metadata")).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Save as copy" }));
     expect(onSave.mock.calls[0][0].options.maxSize).toBe(1024);
+  });
+
+  it("Save as copy selects the copy", async () => {
+    const copy = { ...presets[0], id: "web-image-copy", name: "Web image copy", builtin: false, shortcut: null };
+    let rerender: (p: object) => Promise<void> = async () => {};
+    const onSave = vi.fn(async () => { await rerender({ presets: [...presets, copy] }); return null; });
+    ({ rerender } = render(PresetsPane, { presets, onSave, onDelete: vi.fn() }));
+    await fireEvent.click(screen.getByRole("button", { name: "Web image" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Save as copy" }));
+    await waitFor(() => expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Web image copy"));
   });
 
   it("shows why a preset can't be saved", async () => {

@@ -171,6 +171,16 @@ fn tree(dir: &Path, rel: &Path, digest: &mut Fnv) -> std::io::Result<()> {
 pub struct History {
     path: PathBuf,
     batches: Vec<Batch>,
+    /// False when the file exists but couldn't be read: then nothing is
+    /// written, so the history it holds isn't overwritten.
+    readable: bool,
+}
+
+/// What undo says when the history file couldn't be read.
+pub const UNREADABLE: &str = "Persimmon couldn't read its history file, so nothing was undone";
+
+fn unreadable() -> std::io::Error {
+    std::io::Error::other("the history file couldn't be read")
 }
 
 impl History {
@@ -178,9 +188,19 @@ impl History {
     /// that doesn't read as a batch (a write cut short) is kept in
     /// `history.jsonl.bad`. The file is rewritten when anything was dropped.
     pub fn open(path: &Path) -> History {
-        let text = std::fs::read(path)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_default();
+        let text = match std::fs::read(path) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            // There, but unreadable (permissions, a disk error): start empty
+            // and never write, so its batches survive.
+            Err(_) => {
+                return History {
+                    path: path.to_path_buf(),
+                    batches: Vec::new(),
+                    readable: false,
+                };
+            }
+        };
         let cutoff = now().saturating_sub(KEEP_SECONDS);
         let mut batches = Vec::new();
         let mut bad = Vec::new();
@@ -210,6 +230,7 @@ impl History {
         let history = History {
             path: path.to_path_buf(),
             batches,
+            readable: true,
         };
         if dropped {
             let _ = history.rewrite();
@@ -219,6 +240,9 @@ impl History {
 
     /// Write every batch through a temporary file renamed into place.
     fn rewrite(&self) -> std::io::Result<()> {
+        if !self.readable {
+            return Err(unreadable());
+        }
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -232,8 +256,16 @@ impl History {
         std::fs::rename(&temp, &self.path)
     }
 
+    /// Whether the history file could be read, so it may be written.
+    pub fn writable(&self) -> bool {
+        self.readable
+    }
+
     pub fn append(&mut self, batch: Batch) -> std::io::Result<()> {
         use std::io::Write;
+        if !self.readable {
+            return Err(unreadable());
+        }
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -312,6 +344,10 @@ impl History {
             trashed: 0,
             skipped: Vec::new(),
         };
+        if !self.readable {
+            report.skipped.push(UNREADABLE.into());
+            return report;
+        }
         let Some(batch) = self.batches.iter_mut().find(|b| b.id == id) else {
             return report;
         };
@@ -627,6 +663,36 @@ mod tests {
         h.undo("new", &FakeTrash(d.0.join("trash")));
         assert!(h.newest_undoable().is_none());
         assert!(older.exists());
+    }
+
+    #[test]
+    fn an_unreadable_history_isnt_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("unreadable");
+        let input = d.put("a.png", b"in");
+        let output = d.put("a.jpg", b"out");
+        let path = d.0.join("history.jsonl");
+        let mut h = History::open(&path);
+        h.append(batch("a", now(), vec![done(&input, &output)]))
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o644));
+            }
+        }
+        let restore = Restore(path.clone());
+        let mut h = History::open(&path);
+        assert!(!h.writable());
+        assert!(h.append(batch("b", now(), vec![])).is_err());
+        assert!(h.clear().is_err());
+        let report = h.undo("a", &FakeTrash(d.0.join("trash")));
+        assert_eq!(report.trashed, 0);
+        assert!(output.exists());
+        drop(restore);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]

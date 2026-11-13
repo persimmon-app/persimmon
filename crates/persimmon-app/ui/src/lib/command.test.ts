@@ -13,4 +13,10 @@ describe("commandLine", () => {
     expect(commandLine({ mode: "combine", target: "tar.gz", options: none })).toBe("prsm merge <files> --to tar.gz");
     expect(commandLine({ mode: "compress", target: null, options: none })).toBe("prsm compress <files>");
   });
+
+  it("gives merge and extract no options, as presets.rs does", () => {
+    const all = { ...none, quality: "high", maxSize: 800, stripMetadata: true } as const;
+    expect(commandLine({ mode: "combine", target: "zip", options: all })).toBe("prsm merge <files> --to zip");
+    expect(commandLine({ mode: "extract", target: null, options: all })).toBe("prsm extract <files>");
+  });
 });

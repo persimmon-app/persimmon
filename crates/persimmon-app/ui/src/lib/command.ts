@@ -9,6 +9,8 @@ const verbs: Record<QueueMode, string> = { convert: "convert", compress: "compre
 export function commandLine(p: { mode: QueueMode; target: FormatId | null; options: JobOptions }): string {
   let line = `prsm ${verbs[p.mode]} <files>`;
   if (p.target) line += ` --to ${p.target}`;
+  // `prsm merge` and `prsm extract` take none of the options (DD-18).
+  if (p.mode === "combine" || p.mode === "extract") return line;
   if (p.options.preset) line += ` --preset ${p.options.preset}`;
   if (p.options.quality) line += ` --quality ${p.options.quality}`;
   if (p.options.maxSize) line += ` --max-size ${p.options.maxSize}`;
