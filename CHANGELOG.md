@@ -8,7 +8,7 @@ The first release of the macOS app, and `prsm` 0.2.0. This is an alpha: its purp
 
 ### Added: Persimmon.app for macOS
 
-- A DMG, `Persimmon-0.2.0-arm64.dmg`, with FFmpeg, libvips and libarchive inside the app. Nothing else needs installing.
+- A DMG for Apple silicon Macs with macOS 14 or later, `Persimmon-0.2.0-arm64.dmg`, with FFmpeg, libvips and libarchive inside the app. Nothing else needs installing.
 - **Modes:** Convert, Compress, Extract (archives), and Combine (images and PDFs into one PDF, or files into a ZIP or tar.gz, in an order you set).
 - **Ways in:** drop files on the window, on the Dock icon, or on the floating drop window (⌥⌘D, on every Space); or use Open With. Persimmon is the default only for types no other app on your Mac opens.
 - **The queue:** each file shows its source and target format, progress, and a reason and a fix in the app's own words when it fails. Each row offers Cancel, Retry or Reveal in Finder as its state allows.
@@ -20,21 +20,24 @@ The first release of the macOS app, and `prsm` 0.2.0. This is an alpha: its purp
 
 ### Added: in the engine (`persimmon-core`)
 
-All additive:
-
 - An optional `serde` feature for the types the app sends to its window.
 - Fixes carry a kind (`FixKind`), so a front end can word them its own way.
 - `Backends::with_ffmpeg` to use a given FFmpeg, and `Backends::ffmpeg_info` to report which one.
 - `PlanMode::Preview`, planning that creates no folders and writes nothing.
 - An optional fallback folder for sources whose own folder can't be written.
 
+### Changed: in the engine (`persimmon-core`), breaking for code that uses it
+
+- `Error::fix` is now an `Option<Fix>` (a kind and the text) instead of an `Option<String>`. `Error::fix_text()` gives the text, and `Error::with_fix` still takes a string.
+- `OutputPolicy` has a new public field, `OutputPolicy::fallback`, so code that builds it field by field needs to add it (or use `..Default::default()`).
+
 ### Fixed
 
 - A dry run now reports an `--out` that is an existing file.
 
-### Changed
+### Changed: in `prsm`
 
-- Nothing in `prsm`'s commands, flags, output or exit codes.
+- Nothing in `prsm`'s commands, flags, output or exit codes, apart from the fix above.
 
 ### Known limitations
 

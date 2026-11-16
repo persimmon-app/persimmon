@@ -22,7 +22,7 @@ This boundary is a decision, not an oversight.
 
 Each [GitHub Release](https://github.com/persimmon-app/persimmon/releases) from 0.2.0 has `Persimmon-<version>-arm64.dmg`, with a `.sha256` checksum beside it. It needs macOS 14 or later on Apple silicon, and nothing else: FFmpeg, libvips and libarchive are inside the app. Open the DMG and drag Persimmon to Applications.
 
-The app isn't signed yet. macOS blocks apps from developers it doesn't know. Open Persimmon once (it will refuse), then go to System Settings → Privacy & Security, scroll to Security, and choose **Open Anyway**. Or clear the quarantine flag in Terminal:
+The app isn't signed yet. macOS blocks apps from developers it doesn't know. Open Persimmon once: macOS refuses. Close that message, but not with **Move to Trash** (on macOS 15 or later, choose **Done**). Then, within the hour, go to System Settings → Privacy & Security, scroll to Security, and choose **Open Anyway**. macOS asks you to confirm once more, and may ask for your password (or Touch ID), then Persimmon opens. Or clear the quarantine flag in Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Persimmon.app
