@@ -136,6 +136,7 @@ fn add_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) ->
     };
     emit_rows(&app, &rows);
     note_already(&app, already);
+    note_skipped(&app, &state);
     rows
 }
 
@@ -146,6 +147,7 @@ fn drop_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -
     let rows = add_and_start(&state.queue, &state.runner, &paths, &recipe);
     emit_rows(&app, &rows);
     note_already(&app, already);
+    note_skipped(&app, &state);
     rows
 }
 
@@ -169,6 +171,7 @@ async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Ro
     };
     emit_rows(&app, &rows);
     note_already(&app, already);
+    note_skipped(&app, &state);
     Ok(rows)
 }
 
@@ -543,6 +546,7 @@ fn retry_item(
     }
     emit_rows(&app, &rows);
     note_already(&app, already);
+    note_skipped(&app, &state);
     rows
 }
 
@@ -611,6 +615,13 @@ pub fn reveal_message(path: &Path) -> Option<String> {
 fn note_already(app: &AppHandle, n: usize) {
     if n > 0 {
         let _ = app.emit_to("main", "queue-note", n);
+    }
+}
+
+/// The status bar's note when files inside a dropped folder were left out.
+fn note_skipped(app: &AppHandle, state: &AppState) {
+    if let Some(note) = state.queue().take_skipped() {
+        let _ = app.emit_to("main", "queue-skipped", note);
     }
 }
 
@@ -932,6 +943,7 @@ pub fn run() {
                     };
                     emit_rows(app, &rows);
                     note_already(app, already);
+                    note_skipped(app, &state);
                 }
                 // Not started yet: setup queues these.
                 None => lock(&app.state::<Pending>().0).extend(paths),

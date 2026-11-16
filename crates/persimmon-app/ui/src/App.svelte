@@ -13,7 +13,7 @@
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
   import HistoryView from "./components/HistoryView.svelte";
   import * as ipc from "./lib/ipc";
-  import { alreadyMessage, badge, plural } from "./lib/format";
+  import { alreadyMessage, badge, plural, skippedMessage } from "./lib/format";
   import { lastUndoable as newestUndoable, undoMessage } from "./lib/undo";
   import { clicked, moved } from "./lib/selection";
   import { queueOwnsKey } from "./lib/keys";
@@ -176,6 +176,7 @@
       ipc.onHistoryCleared(() => refreshHistory()),
       ipc.onPresets((p) => (presets = p)),
       ipc.onQueueNote((n) => (message = alreadyMessage(n))),
+      ipc.onQueueSkipped((note) => (message = skippedMessage(note))),
       // ⌥⌘Z is the Edit menu's (Undo Last Batch), from any window.
       ipc.onUndoReport((r) => { showReport(r); refreshHistory(); }),
       ipc.onRow(upsert),

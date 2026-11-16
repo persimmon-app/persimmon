@@ -38,6 +38,7 @@ export const onSettings = (f: (s: SettingsView) => void): Promise<UnlistenFn> =>
   listen<SettingsView>("settings", (e) => f(e.payload));
 
 import type { BatchView, EnginesView, HistoryFilter, JobOptions, PresetView, UndoReport } from "./types";
+import type { SkipNote } from "./format";
 
 export type PresetDraft = { id: string; name: string; builtin: boolean; mode: QueueMode; target: FormatId | null; options: JobOptions };
 export const presets = () => invoke<PresetView[]>("presets");
@@ -59,4 +60,5 @@ export const onHistory = (f: (b: BatchView) => void): Promise<UnlistenFn> => lis
 export const onHistoryCleared = (f: () => void): Promise<UnlistenFn> => listen("history-cleared", () => f());
 export const onUndoReport = (f: (r: UndoReport) => void): Promise<UnlistenFn> => listen<UndoReport>("undo-report", (e) => f(e.payload));
 export const onQueueNote = (f: (already: number) => void): Promise<UnlistenFn> => listen<number>("queue-note", (e) => f(e.payload));
+export const onQueueSkipped = (f: (note: SkipNote) => void): Promise<UnlistenFn> => listen<SkipNote>("queue-skipped", (e) => f(e.payload));
 export const onPresets = (f: (p: PresetView[]) => void): Promise<UnlistenFn> => listen<PresetView[]>("presets", (e) => f(e.payload));

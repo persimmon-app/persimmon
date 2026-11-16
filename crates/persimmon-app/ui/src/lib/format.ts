@@ -32,6 +32,22 @@ export function alreadyMessage(n: number): string {
   return `${plural(n, "file")} already in the queue`;
 }
 
+/** Why files inside a dropped folder were left out. */
+export type SkipWhy = { kind: "convert" } | { kind: "become"; name: string } | { kind: "compress" };
+
+/** What a dropped folder left out: the count, and why. */
+export interface SkipNote {
+  count: number;
+  why: SkipWhy;
+}
+
+/** The status bar's note when a dropped folder held files it left out. */
+export function skippedMessage(note: SkipNote): string {
+  const why =
+    note.why.kind === "become" ? `become ${note.why.name}` : note.why.kind === "compress" ? "be compressed" : "be converted";
+  return `${plural(note.count, "file")} skipped: can't ${why}`;
+}
+
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }

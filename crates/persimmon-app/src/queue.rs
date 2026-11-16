@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use persimmon_core::error::ErrorCode;
 use persimmon_core::format::{FormatId, MediaKind};
+use persimmon_core::inputs::expand_folder;
 use persimmon_core::job::{Job, JobOptions, PlanMode};
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::registry::{Operation, Registry};
@@ -17,6 +18,25 @@ use crate::presets::{Preset, kinds, operation};
 use crate::wording::{Shown, app_error, shown};
 
 pub type RowId = u64;
+
+/// Why files inside a dropped folder were left out.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SkipWhy {
+    /// Convert mode: nothing can be made from them.
+    Convert,
+    /// A preset's target: they can't become it.
+    Become { name: String },
+    /// Compress mode: they can't be compressed.
+    Compress,
+}
+
+/// The status bar's note after files inside a folder were left out.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SkipNote {
+    pub count: usize,
+    pub why: SkipWhy,
+}
 
 /// How new files become rows: a mode, or a preset (spec D4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +171,8 @@ pub struct Queue {
     next_id: RowId,
     next_rev: u64,
     last: HashMap<MediaKind, FormatId>,
+    /// What the last add left out of the folders it was given.
+    skipped: Option<SkipNote>,
 }
 
 impl Queue {
@@ -162,6 +184,7 @@ impl Queue {
             next_id: 1,
             next_rev: 1,
             last: HashMap::new(),
+            skipped: None,
         }
     }
 
@@ -225,8 +248,9 @@ impl Queue {
     /// again. Returns the rows added or changed.
     pub fn add_with(&mut self, paths: &[PathBuf], recipe: &Recipe) -> Vec<RowView> {
         let mode = recipe.mode();
+        let paths = self.expand(paths, recipe);
         let mut fresh: Vec<(PathBuf, PathBuf)> = Vec::new();
-        for path in paths {
+        for path in &paths {
             let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
             let known = self.rows.iter().any(|r| r.keys.contains(&key))
                 || fresh.iter().any(|(_, k)| *k == key);
@@ -268,6 +292,47 @@ impl Queue {
             added.push(self.refresh_at(i, target));
         }
         added
+    }
+
+    /// What the last add left out of the folders it was given, once.
+    pub fn take_skipped(&mut self) -> Option<SkipNote> {
+        self.skipped.take()
+    }
+
+    /// Paths with each folder, in Convert or Compress, replaced by the
+    /// files inside it, subfolders included (a drop means "this folder's
+    /// contents"). A folder that yields nothing, and each subfolder that
+    /// can't be read, stays as a path whose row fails and says why.
+    fn expand(&mut self, paths: &[PathBuf], recipe: &Recipe) -> Vec<PathBuf> {
+        self.skipped = None;
+        let (op, target) = folder_scope(recipe);
+        let mut out = Vec::new();
+        let mut count = 0;
+        for path in paths {
+            if !path.is_dir() || !matches!(op, Operation::Convert | Operation::Compress) {
+                out.push(path.clone());
+                continue;
+            }
+            match expand_folder(&self.reg, op, target, path, true) {
+                Ok(ff) => {
+                    out.extend(ff.files);
+                    out.extend(ff.errors.into_iter().filter_map(|e| e.file));
+                    count += ff.skipped.len();
+                }
+                Err(_) => out.push(path.clone()),
+            }
+        }
+        if count > 0 {
+            let why = match (op, target) {
+                (Operation::Compress, _) => SkipWhy::Compress,
+                (_, Some(to)) => SkipWhy::Become {
+                    name: self.reg.format(to).name.to_string(),
+                },
+                (_, None) => SkipWhy::Convert,
+            };
+            self.skipped = Some(SkipNote { count, why });
+        }
+        out
     }
 
     /// Point rows at `to`, dropping any preset on them. Rows that can't
@@ -481,8 +546,27 @@ impl Queue {
         row.from = None;
         row.job.inputs = vec![path.clone()];
         row.job.output = self.policy.clone();
-        if let Some(refused) = refusal(&path, false) {
+        if let Some(refused) = refusal(&path) {
             row.state = RowState::Failed { error: refused };
+            return;
+        }
+        let (op, target_of_folder) = match &row.preset {
+            Some(p) => (operation(p.mode), p.target),
+            None => (row.job.op, None),
+        };
+        if path.is_dir() && matches!(op, Operation::Convert | Operation::Compress) {
+            // Only a folder that yielded nothing, or couldn't be read, is
+            // a row of its own.
+            let error = match expand_folder(&self.reg, op, target_of_folder, &path, true) {
+                Err(e) => shown(&e),
+                Ok(_) => app_error(
+                    ErrorCode::UnsupportedInput,
+                    &path,
+                    "This folder has files to convert now",
+                    Some("Drop it again to add them."),
+                ),
+            };
+            row.state = RowState::Failed { error };
             return;
         }
         let from = match persimmon_core::detect::detect(&path, self.reg.formats()) {
@@ -532,7 +616,7 @@ impl Queue {
         row.job.op = Operation::Merge;
         row.job.inputs = row.inputs.clone();
         row.job.output = self.policy.clone();
-        if let Some(refused) = row.inputs.iter().find_map(|p| refusal(p, true)) {
+        if let Some(refused) = row.inputs.iter().find_map(|p| refusal(p)) {
             row.state = RowState::Failed { error: refused };
             return;
         }
@@ -676,8 +760,17 @@ fn mismatch(preset: &Preset, file: &Path, reg: &Registry) -> Shown {
     )
 }
 
-/// Inputs the app refuses before the engine sees them (spec D1, D2).
-fn refusal(path: &Path, combine: bool) -> Option<Shown> {
+/// What a folder dropped with `recipe` is expanded for: Convert or
+/// Compress, and a preset's target if it has one.
+fn folder_scope(recipe: &Recipe) -> (Operation, Option<FormatId>) {
+    match recipe {
+        Recipe::Mode(m) => (operation(*m), None),
+        Recipe::Preset(p) => (operation(p.mode), p.target),
+    }
+}
+
+/// Inputs the app refuses before the engine sees them (spec D2).
+fn refusal(path: &Path) -> Option<Shown> {
     let from_photos = path.ancestors().any(|a| {
         a.file_name()
             .is_some_and(|n| n.to_string_lossy().ends_with(".photoslibrary"))
@@ -690,14 +783,6 @@ fn refusal(path: &Path, combine: bool) -> Option<Shown> {
             Some(
                 "In Photos, choose File → Export → Export Unmodified Original, then drop the exported file.",
             ),
-        ));
-    }
-    if !combine && path.is_dir() {
-        return Some(app_error(
-            ErrorCode::UnsupportedInput,
-            path,
-            "Folders can only be combined into an archive in this version",
-            Some("Open the folder and drop the files inside"),
         ));
     }
     None
@@ -1180,28 +1265,75 @@ mod tests {
     }
 
     #[test]
-    fn folders_only_in_combine() {
+    fn a_folder_in_convert_adds_its_files() {
         let d = Dir::new("folders");
+        let photos = d.0.join("photos");
+        std::fs::create_dir_all(photos.join("sub")).unwrap();
+        std::fs::write(photos.join("x.png"), PNG_1X1).unwrap();
+        std::fs::write(photos.join("sub/y.png"), PNG_1X1).unwrap();
+        std::fs::write(photos.join("notes.txt"), b"plain text").unwrap();
+        let mut q = queue();
+        let rows = q.add(std::slice::from_ref(&photos), QueueMode::Convert);
+        assert_eq!(
+            rows.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+            vec![photos.join("x.png"), photos.join("sub/y.png")]
+        );
+        assert!(rows.iter().all(|r| r.state == RowState::Queued), "{rows:?}");
+        assert_eq!(
+            q.take_skipped(),
+            Some(SkipNote {
+                count: 1,
+                why: SkipWhy::Convert
+            })
+        );
+        assert_eq!(q.take_skipped(), None);
+    }
+
+    #[test]
+    fn a_preset_names_its_target_in_the_skip_note() {
+        let d = Dir::new("folder-preset");
+        let photos = d.0.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        std::fs::write(photos.join("x.png"), PNG_1X1).unwrap();
+        std::fs::write(photos.join("x.webp"), b"RIFF\x1a\0\0\0WEBPVP8 \x0e\0\0\0").unwrap();
+        let mut q = queue();
+        q.add_with(&[photos], &Recipe::Preset(builtin("web-image")));
+        assert_eq!(
+            q.take_skipped(),
+            Some(SkipNote {
+                count: 1,
+                why: SkipWhy::Become {
+                    name: "WebP".into()
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn an_empty_folder_becomes_a_failed_row() {
+        let d = Dir::new("folder-empty");
+        let empty = d.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let r = queue().add(std::slice::from_ref(&empty), QueueMode::Convert);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].path, empty);
+        let RowState::Failed { error } = &r[0].state else {
+            panic!("{:?}", r[0].state)
+        };
+        assert_eq!(error.reason, "the folder is empty");
+    }
+
+    #[test]
+    fn combine_still_takes_a_folder_whole() {
+        let d = Dir::new("folder-combine");
         let folder = d.0.join("photos");
         std::fs::create_dir(&folder).unwrap();
         std::fs::write(folder.join("x.png"), PNG_1X1).unwrap();
         let mut q = queue();
-        let r = q.add(std::slice::from_ref(&folder), QueueMode::Convert);
-        let RowState::Failed { error } = &r[0].state else {
-            panic!("{:?}", r[0].state)
-        };
-        assert_eq!(
-            error.reason,
-            "Folders can only be combined into an archive in this version"
-        );
-        assert_eq!(
-            error.fix.as_deref(),
-            Some("Open the folder and drop the files inside")
-        );
-        let mut q = queue();
         let r = q.add(&[folder], QueueMode::Combine);
         assert_eq!(r[0].state, RowState::Queued);
         assert_eq!(q.targets(&[r[0].id]), vec![FormatId::Zip, FormatId::TarGz]);
+        assert_eq!(q.take_skipped(), None);
     }
 
     #[test]

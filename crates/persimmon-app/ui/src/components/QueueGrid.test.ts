@@ -28,7 +28,7 @@ vi.mock("../lib/ipc", () => {
     queueRows: () => Promise.resolve(h.rows), getSettings: () => Promise.resolve(null), presets: empty,
     history: empty, targets: empty, onHistory: listen("history"), onHistoryCleared: listen("cleared"),
     onPresets: listen("presets"), onUndoReport: listen("undo"), onRow: listen("row"),
-    onConfirmQuit: listen("quit"), onSettings: listen("settings"), onQueueNote: listen("note"),
+    onConfirmQuit: listen("quit"), onSettings: listen("settings"), onQueueNote: listen("note"), onQueueSkipped: listen("skipped"),
   };
 });
 vi.mock("@tauri-apps/api/webview", () => ({
