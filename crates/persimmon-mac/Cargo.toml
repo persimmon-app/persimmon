@@ -1,0 +1,20 @@
+[package]
+name = "persimmon-mac"
+description = "Persimmon's native macOS layer: the one crate where unsafe code may be allowed."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication"] }
+
+# The workspace forbids unsafe code; this crate denies it instead, so a block
+# that needs it can carry #[allow(unsafe_code)] and a // SAFETY: comment.
+[lints.rust]
+unsafe_code = "deny"
