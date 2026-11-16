@@ -2,7 +2,7 @@
 
 Every release of Persimmon and what changed in it. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-11-16
 
 The first release of the macOS app, and `prsm` 0.2.0. This is an alpha: its purpose is to find bugs, so please report what you run into.
 
