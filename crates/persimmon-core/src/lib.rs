@@ -12,6 +12,7 @@ pub mod detect;
 pub mod error;
 pub mod exec;
 pub mod format;
+pub mod inputs;
 pub mod job;
 pub mod output;
 pub mod platform;

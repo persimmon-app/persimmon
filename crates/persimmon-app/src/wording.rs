@@ -130,6 +130,7 @@ fn fix(f: &Fix) -> String {
             "To resize or remove metadata in the same format, use Compress.".into()
         }
         FixKind::SeeFormats => "Pick one of the formats this file can become.".into(),
+        FixKind::IncludeSubfolders => "Drop the folders inside it instead.".into(),
         FixKind::InstallFfmpeg => {
             "Persimmon's FFmpeg is missing or damaged. Reinstall Persimmon.".into()
         }
@@ -230,6 +231,10 @@ mod tests {
             (
                 FixKind::SeeFormats,
                 "Pick one of the formats this file can become.",
+            ),
+            (
+                FixKind::IncludeSubfolders,
+                "Drop the folders inside it instead.",
             ),
             (
                 FixKind::InstallFfmpeg,

@@ -116,6 +116,8 @@ pub enum FixKind {
     UseCompress,
     /// Look up what the format can become.
     SeeFormats,
+    /// A folder holds only folders: include them (`--recursive`).
+    IncludeSubfolders,
     /// FFmpeg is missing, too old, or not where it was said to be.
     InstallFfmpeg,
     /// The image backend (libvips) is missing or too old.

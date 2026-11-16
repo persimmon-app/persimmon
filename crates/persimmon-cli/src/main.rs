@@ -250,6 +250,7 @@ impl TuneArgs {
             max_size: self.max_size,
             strip_metadata: self.strip_metadata,
             pages: None,
+            recursive: false,
         })
     }
 }

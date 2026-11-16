@@ -78,7 +78,7 @@ pub fn detect(path: &Path, formats: &[Format]) -> Result<Detected, Error> {
     }
 }
 
-fn unreadable(path: &Path, e: &std::io::Error) -> Error {
+pub(crate) fn unreadable(path: &Path, e: &std::io::Error) -> Error {
     Error::new(
         ErrorCode::UnsupportedInput,
         format!("can't read this file ({e})"),

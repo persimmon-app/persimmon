@@ -13,6 +13,7 @@ use crate::backend::pdf::pdf_info;
 use crate::detect::detect;
 use crate::error::{Error, ErrorCode, FixKind};
 use crate::format::{FormatId, format_for_name};
+use crate::inputs::expand_folder;
 use crate::output::{OutputPolicy, free_name, reserve};
 use crate::registry::{Backend, Operation, Registry};
 
@@ -160,6 +161,9 @@ pub struct JobOptions {
     /// `--strip-metadata`: drop EXIF, XMP, tags and colour profiles
     /// (images convert to sRGB first).
     pub strip_metadata: bool,
+    /// `--recursive`: a folder input to convert or compress also stands for
+    /// the files in its subfolders.
+    pub recursive: bool,
     /// `--ffmpeg`: the FFmpeg to use instead of the one on `PATH`. Never
     /// serialised: a client must not choose which program runs.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -209,6 +213,9 @@ enum Slot {
 pub struct Plan {
     pub tasks: Vec<PlannedTask>,
     pub errors: Vec<Error>,
+    /// Files inside folder inputs that can't become the target (or can't be
+    /// compressed): left alone, counted, never an error.
+    pub skipped: Vec<PathBuf>,
     order: Vec<Slot>,
 }
 
@@ -217,6 +224,7 @@ impl Plan {
         Plan {
             tasks: Vec::new(),
             errors: Vec::new(),
+            skipped: Vec::new(),
             order: Vec::new(),
         }
     }
@@ -264,12 +272,28 @@ impl Job {
     /// mode the only writes are the `--out` folder and the writability
     /// probe; in `Preview` mode there are none.
     pub fn plan_with(&self, reg: &Registry, mode: PlanMode) -> Plan {
-        let inputs = dedupe(&self.inputs);
+        let mut plan = Plan::new();
+        let entries = match self.op {
+            Operation::Convert | Operation::Compress => self.expand(reg, &mut plan),
+            _ => self.inputs.iter().cloned().map(Ok).collect(),
+        };
+        // Each file once, in order; folder errors keep their place.
+        let mut seen = HashSet::new();
+        let entries: Vec<Result<PathBuf, Error>> = entries
+            .into_iter()
+            .filter(|e| match e {
+                Ok(p) => seen.insert(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())),
+                Err(_) => true,
+            })
+            .collect();
+        let inputs: Vec<PathBuf> = entries
+            .iter()
+            .filter_map(|e| e.as_ref().ok().cloned())
+            .collect();
         let mut taken = HashSet::new();
         for input in &inputs {
             reserve(&mut taken, input);
         }
-        let mut plan = Plan::new();
         match self.op {
             Operation::Convert | Operation::Compress | Operation::Extract => {
                 if self.op == Operation::Convert && self.target.is_none() {
@@ -279,8 +303,8 @@ impl Job {
                     );
                     return plan;
                 }
-                for input in &inputs {
-                    match self.plan_one(reg, input, &mut taken, mode) {
+                for entry in entries {
+                    match entry.and_then(|input| self.plan_one(reg, &input, &mut taken, mode)) {
                         Ok(task) => plan.task(task),
                         Err(e) => plan.error(e),
                     }
@@ -296,6 +320,33 @@ impl Job {
             },
         }
         plan
+    }
+
+    /// The inputs with each folder replaced by the files it stands for
+    /// (convert and compress), in order. A folder that can't be read or
+    /// yields nothing, and each unreadable subfolder, is an error in its
+    /// place; skipped files go to `plan.skipped`.
+    fn expand(&self, reg: &Registry, plan: &mut Plan) -> Vec<Result<PathBuf, Error>> {
+        let target = match self.op {
+            Operation::Convert => self.target,
+            _ => None,
+        };
+        let mut entries = Vec::new();
+        for input in &self.inputs {
+            if !input.is_dir() {
+                entries.push(Ok(input.clone()));
+                continue;
+            }
+            match expand_folder(reg, self.op, target, input, self.options.recursive) {
+                Ok(ff) => {
+                    entries.extend(ff.files.into_iter().map(Ok));
+                    entries.extend(ff.errors.into_iter().map(Err));
+                    plan.skipped.extend(ff.skipped);
+                }
+                Err(e) => entries.push(Err(e)),
+            }
+        }
+        entries
     }
 
     /// The folder an input's output goes in, created and checked only in
@@ -521,15 +572,6 @@ impl Job {
 
 /// Drop repeated inputs, comparing canonical paths where they resolve, and
 /// keep first-seen order.
-fn dedupe(inputs: &[PathBuf]) -> Vec<PathBuf> {
-    let mut seen = HashSet::new();
-    inputs
-        .iter()
-        .filter(|p| seen.insert(std::fs::canonicalize(p).unwrap_or_else(|_| (*p).clone())))
-        .cloned()
-        .collect()
-}
-
 /// The file name without its format extension: `photos.tar.gz` → `photos`,
 /// `v1.2.zip` → `v1.2`. Unknown extensions lose only the last one.
 pub(crate) fn stem_of(path: &Path, reg: &Registry) -> String {
@@ -1264,5 +1306,91 @@ mod tests {
             assert_eq!(plan.errors[0].file.as_deref(), Some(out.as_path()));
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn recursive(mut j: Job) -> Job {
+        j.options.recursive = true;
+        j
+    }
+
+    #[test]
+    fn convert_plans_each_file_of_a_folder() {
+        let dir = scratch("folder");
+        let album = dir.join("album");
+        std::fs::create_dir_all(album.join("sub")).unwrap();
+        put(&album, "a.png", &PNG_1X1);
+        put(&album, "sub/b.png", &PNG_1X1);
+        put(&album, "notes.txt", b"plain text");
+        let plan = recursive(job(
+            Operation::Convert,
+            vec![album.clone()],
+            Some(FormatId::Webp),
+        ))
+        .plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert_eq!(
+            outputs(&plan),
+            vec![album.join("a.webp"), album.join("sub/b.webp")]
+        );
+        assert_eq!(plan.skipped, vec![album.join("notes.txt")]);
+    }
+
+    #[test]
+    fn a_folder_and_a_file_inside_it_plan_the_file_once() {
+        let dir = scratch("folder-once");
+        let album = dir.join("album");
+        std::fs::create_dir_all(&album).unwrap();
+        let a = put(&album, "a.png", &PNG_1X1);
+        let plan = job(
+            Operation::Convert,
+            vec![album.clone(), a, album],
+            Some(FormatId::Webp),
+        )
+        .plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert_eq!(plan.tasks.len(), 1);
+    }
+
+    #[test]
+    fn recursive_outputs_into_one_out_folder_are_numbered() {
+        let dir = scratch("folder-out");
+        let album = dir.join("album");
+        std::fs::create_dir_all(album.join("x")).unwrap();
+        std::fs::create_dir_all(album.join("y")).unwrap();
+        put(&album, "x/p.png", &PNG_1X1);
+        put(&album, "y/p.png", &PNG_1X1);
+        let out = dir.join("out");
+        let mut j = recursive(job(Operation::Convert, vec![album], Some(FormatId::Webp)));
+        j.output.dir = Some(out.clone());
+        let plan = j.plan(&Registry::builtin());
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        let outs = outputs(&plan);
+        assert_eq!(outs.len(), 2);
+        assert_ne!(outs[0], outs[1]);
+        assert!(outs.iter().all(|o| o.parent() == Some(out.as_path())));
+    }
+
+    #[test]
+    fn a_folder_with_nothing_usable_is_one_planning_error() {
+        let dir = scratch("folder-empty");
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let plan =
+            job(Operation::Convert, vec![empty], Some(FormatId::Webp)).plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        assert_eq!(plan.errors.len(), 1);
+        assert_eq!(plan.errors[0].reason, "the folder is empty");
+    }
+
+    #[test]
+    fn extract_still_refuses_a_folder() {
+        let dir = scratch("folder-extract");
+        let album = dir.join("album");
+        std::fs::create_dir_all(&album).unwrap();
+        put(&album, "a.zip", &ZIP_EMPTY);
+        let plan = job(Operation::Extract, vec![album], None).plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        assert_eq!(plan.errors.len(), 1);
+        assert_eq!(plan.errors[0].reason, "is a folder");
     }
 }
