@@ -4,12 +4,12 @@
 //! The queue: one row per file, or one Combine row for many, each a job
 //! previewed before it runs (spec D1, "How the queue behaves").
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use persimmon_core::error::ErrorCode;
 use persimmon_core::format::{FormatId, MediaKind};
-use persimmon_core::inputs::expand_folder;
+use persimmon_core::inputs::{expand_folder, is_package};
 use persimmon_core::job::{Job, JobOptions, PlanMode};
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::registry::{Operation, Registry};
@@ -36,6 +36,14 @@ pub enum SkipWhy {
 pub struct SkipNote {
     pub count: usize,
     pub why: SkipWhy,
+}
+
+/// What the status bar says after an add: files that were already queued
+/// (counted after folders are expanded), and files a folder left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct AddNote {
+    pub already: usize,
+    pub skipped: Option<SkipNote>,
 }
 
 /// How new files become rows: a mode, or a preset (spec D4).
@@ -171,8 +179,8 @@ pub struct Queue {
     next_id: RowId,
     next_rev: u64,
     last: HashMap<MediaKind, FormatId>,
-    /// What the last add left out of the folders it was given.
-    skipped: Option<SkipNote>,
+    /// What the last add has to say: already queued, and left out.
+    note: AddNote,
 }
 
 impl Queue {
@@ -184,7 +192,7 @@ impl Queue {
             next_id: 1,
             next_rev: 1,
             last: HashMap::new(),
-            skipped: None,
+            note: AddNote::default(),
         }
     }
 
@@ -249,12 +257,18 @@ impl Queue {
     pub fn add_with(&mut self, paths: &[PathBuf], recipe: &Recipe) -> Vec<RowView> {
         let mode = recipe.mode();
         let paths = self.expand(paths, recipe);
+        let queued: HashSet<PathBuf> = self
+            .rows
+            .iter()
+            .flat_map(|r| r.keys.iter().cloned())
+            .collect();
+        let mut seen = HashSet::new();
         let mut fresh: Vec<(PathBuf, PathBuf)> = Vec::new();
         for path in &paths {
             let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            let known = self.rows.iter().any(|r| r.keys.contains(&key))
-                || fresh.iter().any(|(_, k)| *k == key);
-            if !known {
+            if queued.contains(&key) {
+                self.note.already += 1;
+            } else if seen.insert(key.clone()) {
                 fresh.push((path.clone(), key));
             }
         }
@@ -294,9 +308,10 @@ impl Queue {
         added
     }
 
-    /// What the last add left out of the folders it was given, once.
-    pub fn take_skipped(&mut self) -> Option<SkipNote> {
-        self.skipped.take()
+    /// What the last add has to say, once; `None` when there's nothing.
+    pub fn take_note(&mut self) -> Option<AddNote> {
+        let note = std::mem::take(&mut self.note);
+        (note.already > 0 || note.skipped.is_some()).then_some(note)
     }
 
     /// Paths with each folder, in Convert or Compress, replaced by the
@@ -304,12 +319,15 @@ impl Queue {
     /// contents"). A folder that yields nothing, and each subfolder that
     /// can't be read, stays as a path whose row fails and says why.
     fn expand(&mut self, paths: &[PathBuf], recipe: &Recipe) -> Vec<PathBuf> {
-        self.skipped = None;
+        self.note = AddNote::default();
         let (op, target) = folder_scope(recipe);
         let mut out = Vec::new();
         let mut count = 0;
         for path in paths {
-            if !path.is_dir() || !matches!(op, Operation::Convert | Operation::Compress) {
+            if !path.is_dir()
+                || is_package(path)
+                || !matches!(op, Operation::Convert | Operation::Compress)
+            {
                 out.push(path.clone());
                 continue;
             }
@@ -330,7 +348,7 @@ impl Queue {
                 },
                 (_, None) => SkipWhy::Convert,
             };
-            self.skipped = Some(SkipNote { count, why });
+            self.note.skipped = Some(SkipNote { count, why });
         }
         out
     }
@@ -554,7 +572,10 @@ impl Queue {
             Some(p) => (operation(p.mode), p.target),
             None => (row.job.op, None),
         };
-        if path.is_dir() && matches!(op, Operation::Convert | Operation::Compress) {
+        if path.is_dir()
+            && !is_package(&path)
+            && matches!(op, Operation::Convert | Operation::Compress)
+        {
             // Only a folder that yielded nothing, or couldn't be read, is
             // a row of its own.
             let error = match expand_folder(&self.reg, op, target_of_folder, &path, true) {
@@ -1280,13 +1301,53 @@ mod tests {
         );
         assert!(rows.iter().all(|r| r.state == RowState::Queued), "{rows:?}");
         assert_eq!(
-            q.take_skipped(),
-            Some(SkipNote {
-                count: 1,
-                why: SkipWhy::Convert
+            q.take_note(),
+            Some(AddNote {
+                already: 0,
+                skipped: Some(SkipNote {
+                    count: 1,
+                    why: SkipWhy::Convert
+                })
             })
         );
-        assert_eq!(q.take_skipped(), None);
+        assert_eq!(q.take_note(), None);
+    }
+
+    #[test]
+    fn re_adding_a_folder_says_its_files_are_already_queued() {
+        let d = Dir::new("folder-again");
+        let photos = d.0.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        std::fs::write(photos.join("x.png"), PNG_1X1).unwrap();
+        std::fs::write(photos.join("y.png"), PNG_1X1).unwrap();
+        let mut q = queue();
+        q.add(std::slice::from_ref(&photos), QueueMode::Convert);
+        assert_eq!(q.take_note(), None);
+        let again = q.add(std::slice::from_ref(&photos), QueueMode::Convert);
+        assert!(again.is_empty());
+        assert_eq!(
+            q.take_note(),
+            Some(AddNote {
+                already: 2,
+                skipped: None
+            })
+        );
+    }
+
+    #[test]
+    fn a_package_dropped_on_its_own_is_one_failed_row() {
+        let d = Dir::new("folder-package");
+        let app = d.0.join("Foo.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(app.join("Contents/icon.png"), PNG_1X1).unwrap();
+        let r = queue().add(std::slice::from_ref(&app), QueueMode::Convert);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].path, app);
+        assert!(
+            matches!(r[0].state, RowState::Failed { .. }),
+            "{:?}",
+            r[0].state
+        );
     }
 
     #[test]
@@ -1299,7 +1360,7 @@ mod tests {
         let mut q = queue();
         q.add_with(&[photos], &Recipe::Preset(builtin("web-image")));
         assert_eq!(
-            q.take_skipped(),
+            q.take_note().and_then(|n| n.skipped),
             Some(SkipNote {
                 count: 1,
                 why: SkipWhy::Become {
@@ -1333,7 +1394,7 @@ mod tests {
         let r = q.add(&[folder], QueueMode::Combine);
         assert_eq!(r[0].state, RowState::Queued);
         assert_eq!(q.targets(&[r[0].id]), vec![FormatId::Zip, FormatId::TarGz]);
-        assert_eq!(q.take_skipped(), None);
+        assert_eq!(q.take_note(), None);
     }
 
     #[test]

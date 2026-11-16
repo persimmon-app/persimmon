@@ -17,7 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::history::{Batch, Filter, History, Source, SystemTrash, UndoReport, undoable};
 use crate::presets::{Preset, Presets, command, kinds, presets_dir};
-use crate::queue::{Queue, QueueMode, Recipe, RowId, RowView, SetTarget, kinds_phrase};
+use crate::queue::{AddNote, Queue, QueueMode, Recipe, RowId, RowView, SetTarget, kinds_phrase};
 use crate::runner::Runner;
 use crate::settings::{
     OutputMode, Settings, SettingsView, load, output_policy, save, settings_path, view,
@@ -126,29 +126,37 @@ fn engine_version() -> String {
     persimmon_core::VERSION.to_string()
 }
 
+/// Async, so it runs off the main thread: a dropped folder can hold
+/// thousands of files, and the window must not stall while they're added.
 #[tauri::command]
-fn add_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
+async fn add_paths(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+) -> Result<Vec<RowView>, String> {
     let recipe = state.recipe();
-    let (rows, already) = {
+    let (rows, note) = {
         let mut queue = state.queue();
-        let already = queue.already_queued(&paths);
-        (queue.add_with(&paths, &recipe), already)
+        (queue.add_with(&paths, &recipe), queue.take_note())
     };
     emit_rows(&app, &rows);
-    note_already(&app, already);
-    note_skipped(&app, &state);
-    rows
+    emit_note(&app, note);
+    Ok(rows)
 }
 
+/// Async for the same reason as [`add_paths`].
 #[tauri::command]
-fn drop_paths(app: AppHandle, state: State<'_, AppState>, paths: Vec<PathBuf>) -> Vec<RowView> {
+async fn drop_paths(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+) -> Result<Vec<RowView>, String> {
     let recipe = state.recipe();
-    let already = state.queue().already_queued(&paths);
     let rows = add_and_start(&state.queue, &state.runner, &paths, &recipe);
+    let note = state.queue().take_note();
     emit_rows(&app, &rows);
-    note_already(&app, already);
-    note_skipped(&app, &state);
-    rows
+    emit_note(&app, note);
+    Ok(rows)
 }
 
 /// The macOS open panel, from Rust; runs off the main thread.
@@ -164,14 +172,12 @@ async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Ro
         .filter_map(|f| f.into_path().ok())
         .collect();
     let recipe = state.recipe();
-    let (rows, already) = {
+    let (rows, note) = {
         let mut queue = state.queue();
-        let already = queue.already_queued(&paths);
-        (queue.add_with(&paths, &recipe), already)
+        (queue.add_with(&paths, &recipe), queue.take_note())
     };
     emit_rows(&app, &rows);
-    note_already(&app, already);
-    note_skipped(&app, &state);
+    emit_note(&app, note);
     Ok(rows)
 }
 
@@ -546,7 +552,6 @@ fn retry_item(
     }
     emit_rows(&app, &rows);
     note_already(&app, already);
-    note_skipped(&app, &state);
     rows
 }
 
@@ -610,18 +615,25 @@ pub fn reveal_message(path: &Path) -> Option<String> {
     })
 }
 
-/// Tell the main window how many dropped or picked files were already in
-/// the queue (none: nothing is said).
+/// Tell the main window how many files were already in the queue (none:
+/// nothing is said).
 fn note_already(app: &AppHandle, n: usize) {
     if n > 0 {
-        let _ = app.emit_to("main", "queue-note", n);
+        emit_note(
+            app,
+            Some(AddNote {
+                already: n,
+                skipped: None,
+            }),
+        );
     }
 }
 
-/// The status bar's note when files inside a dropped folder were left out.
-fn note_skipped(app: &AppHandle, state: &AppState) {
-    if let Some(note) = state.queue().take_skipped() {
-        let _ = app.emit_to("main", "queue-skipped", note);
+/// The status bar's note after an add: files already queued, and files a
+/// dropped folder left out, in one message.
+fn emit_note(app: &AppHandle, note: Option<AddNote>) {
+    if let Some(note) = note {
+        let _ = app.emit_to("main", "queue-note", note);
     }
 }
 
@@ -936,14 +948,12 @@ pub fn run() {
             match app.try_state::<AppState>() {
                 Some(state) => {
                     let recipe = state.recipe();
-                    let (rows, already) = {
+                    let (rows, note) = {
                         let mut queue = state.queue();
-                        let already = queue.already_queued(&paths);
-                        (queue.add_with(&paths, &recipe), already)
+                        (queue.add_with(&paths, &recipe), queue.take_note())
                     };
                     emit_rows(app, &rows);
-                    note_already(app, already);
-                    note_skipped(app, &state);
+                    emit_note(app, note);
                 }
                 // Not started yet: setup queues these.
                 None => lock(&app.state::<Pending>().0).extend(paths),

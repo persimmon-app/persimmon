@@ -48,6 +48,20 @@ export function skippedMessage(note: SkipNote): string {
   return `${plural(note.count, "file")} skipped: can't ${why}`;
 }
 
+/** What the status bar says after an add. */
+export interface AddNote {
+  already: number;
+  skipped: SkipNote | null;
+}
+
+/** An add's notes in one message: already queued, then skipped. */
+export function noteMessage(note: AddNote): string {
+  const parts: string[] = [];
+  if (note.already > 0) parts.push(alreadyMessage(note.already));
+  if (note.skipped) parts.push(skippedMessage(note.skipped));
+  return parts.join(" · ");
+}
+
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }

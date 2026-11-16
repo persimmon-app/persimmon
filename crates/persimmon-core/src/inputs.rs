@@ -12,7 +12,10 @@
 //! followed, so a link back up the tree can't loop; a symlink to a file is
 //! a file. A file that can't become the target is *skipped* and counted,
 //! never failed. A file that's empty, unreadable or corrupt is kept, so
-//! planning reports it as it would any other input.
+//! planning reports it as it would any other input. A package (an `.app`,
+//! a Photos library, an `.rtfd`: a folder Finder shows as one file) is
+//! never entered: inside a walk it's skipped like a file that can't become
+//! the target.
 
 use std::path::{Path, PathBuf};
 
@@ -62,6 +65,12 @@ pub fn expand_folder(
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 continue;
             };
+            if meta.is_dir() && is_package(&path) {
+                // Finder shows a package as one file: never write inside it.
+                seen_file = true;
+                out.skipped.push(path);
+                continue;
+            }
             if meta.is_dir() {
                 seen_folder = true;
                 if recursive {
@@ -96,6 +105,54 @@ pub fn expand_folder(
         ));
     }
     Ok(out)
+}
+
+/// Folder extensions macOS treats as a single document or app (a
+/// package): a folder walk never goes inside one, and a package is never
+/// expanded, since converting inside it would write into an app bundle or
+/// a library such as Photos'.
+const PACKAGES: &[&str] = &[
+    "app",
+    "appex",
+    "bundle",
+    "component",
+    "dsym",
+    "fcpbundle",
+    "framework",
+    "imovielibrary",
+    "kext",
+    "key",
+    "logicx",
+    "mpkg",
+    "musiclibrary",
+    "numbers",
+    "pages",
+    "photolibrary",
+    "photoslibrary",
+    "pkg",
+    "playground",
+    "plugin",
+    "prefpane",
+    "qlgenerator",
+    "rtfd",
+    "saver",
+    "scptd",
+    "sparsebundle",
+    "theater",
+    "tvlibrary",
+    "wdgt",
+    "xcodeproj",
+    "xcworkspace",
+    "xpc",
+];
+
+/// Whether `path` is a folder macOS shows as one file (by its extension).
+pub fn is_package(path: &Path) -> bool {
+    path.is_dir()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| PACKAGES.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// A folder's entries worth looking at, sorted by name.
@@ -367,6 +424,26 @@ mod tests {
         assert_eq!(ff.files, vec![dir.join("a.png")]);
         assert_eq!(ff.errors.len(), 1);
         assert_eq!(ff.errors[0].file.as_deref(), Some(locked.as_path()));
+    }
+
+    #[test]
+    fn a_package_is_never_entered() {
+        let dir = scratch("package");
+        put(&dir, "a.png", &PNG_1X1);
+        put(&dir, "Foo.app/Contents/Resources/b.png", &PNG_1X1);
+        put(&dir, "x.photoslibrary/originals/c.png", &PNG_1X1);
+        put(&dir, "Notes.rtfd/d.png", &PNG_1X1);
+        let ff = webp(&dir, true).unwrap();
+        assert_eq!(ff.files, vec![dir.join("a.png")]);
+        assert_eq!(
+            ff.skipped,
+            vec![
+                dir.join("Foo.app"),
+                dir.join("Notes.rtfd"),
+                dir.join("x.photoslibrary")
+            ]
+        );
+        assert!(is_package(&dir.join("Foo.app")) && !is_package(&dir));
     }
 
     #[test]

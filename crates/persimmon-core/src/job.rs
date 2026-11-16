@@ -13,7 +13,7 @@ use crate::backend::pdf::pdf_info;
 use crate::detect::detect;
 use crate::error::{Error, ErrorCode, FixKind};
 use crate::format::{FormatId, format_for_name};
-use crate::inputs::expand_folder;
+use crate::inputs::{expand_folder, is_package};
 use crate::output::{OutputPolicy, free_name, reserve};
 use crate::registry::{Backend, Operation, Registry};
 
@@ -333,7 +333,7 @@ impl Job {
         };
         let mut entries = Vec::new();
         for input in &self.inputs {
-            if !input.is_dir() {
+            if !input.is_dir() || is_package(input) {
                 entries.push(Ok(input.clone()));
                 continue;
             }
@@ -1380,6 +1380,19 @@ mod tests {
         assert!(plan.tasks.is_empty());
         assert_eq!(plan.errors.len(), 1);
         assert_eq!(plan.errors[0].reason, "the folder is empty");
+    }
+
+    #[test]
+    fn a_package_given_directly_is_not_expanded() {
+        let dir = scratch("folder-package");
+        let app = dir.join("Foo.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        put(&app, "Contents/icon.png", &PNG_1X1);
+        let plan = recursive(job(Operation::Convert, vec![app], Some(FormatId::Webp)))
+            .plan(&Registry::builtin());
+        assert!(plan.tasks.is_empty());
+        assert_eq!(plan.errors.len(), 1);
+        assert_eq!(plan.errors[0].reason, "is a folder");
     }
 
     #[test]
