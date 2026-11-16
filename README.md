@@ -128,6 +128,7 @@ prsm convert clip.mov --to webm                  # VP9 and Opus; --preset small 
 prsm convert talk.mp4 --to m4a                   # just the audio
 prsm convert clip.mp4 --to gif --max-size 480    # an animated GIF, at most 480 px on the long edge
 prsm compress clip.mp4                           # re-encoded, kept only if it's smaller
+prsm convert ~/Pictures/trip --to webp           # every image directly inside the folder; add --recursive for its subfolders too
 prsm info clip.mov                               # duration, codecs, size and what it can become
 prsm convert scan.jpg --to pdf                   # one page per image; JPEGs go in untouched, without their EXIF or GPS
 prsm merge --to pdf a.pdf photo.jpg b.pdf        # merged.pdf, pages in argument order
@@ -141,6 +142,8 @@ prsm convert clip.mov --to mp4 --dry-run         # show what would be written, w
 ```
 
 `prsm` never overwrites a file unless you pass `--overwrite`. A clash becomes `name (1).ext`; a folder (rendered pages, an extracted archive) is never replaced, even with `--overwrite`. Extracting never writes outside its folder: an archive with an absolute path, a `..`, or a path through a link fails as a whole, and nothing is written. Output goes next to each source unless `--out <dir>` says otherwise. Ctrl-C stops a video at once and a PDF after the page it's on, lets an image in progress finish, skips the rest, and leaves no partial files behind. Closing the terminal or sending SIGTERM does the same. A second Ctrl-C quits at once and may leave a `.part` file. On a terminal, audio, video and PDFs show their progress as they convert.
+
+**A folder** given to `convert` or `compress` stands for the files directly inside it, in name order, and with `--recursive` for the files in its subfolders too. Each output goes next to its source, so the folder's structure is kept (with `--out`, they all go in that one folder, numbered on a clash). Hidden files are left out. Files that can't become the target, or can't be compressed, are skipped and counted on a last line such as `3 files skipped: can't become WebP`; a skip never changes the exit code. A folder with nothing to convert fails like an unsupported file.
 
 `prsm formats` lists every conversion, and `prsm info <file>` says what a file is and what it can become.
 

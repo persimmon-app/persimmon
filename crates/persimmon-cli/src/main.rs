@@ -54,6 +54,9 @@ enum Command {
         /// PDF to images: only these pages, e.g. 1-3,5.
         #[arg(long, value_name = "RANGES")]
         pages: Option<String>,
+        /// With a folder: also convert the files in its subfolders.
+        #[arg(long)]
+        recursive: bool,
     },
     /// Make files smaller, keeping their format.
     Compress {
@@ -63,6 +66,9 @@ enum Command {
         out: OutArgs,
         #[command(flatten)]
         tune: TuneArgs,
+        /// With a folder: also compress the files in its subfolders.
+        #[arg(long)]
+        recursive: bool,
     },
     /// Unpack archives into folders.
     Extract {
@@ -183,18 +189,29 @@ fn main() -> ExitCode {
             out,
             tune,
             pages,
+            recursive,
         } => parse_target(&reg, &to)
             .and_then(|target| {
                 let mut options = tune.options()?;
                 options.pages = pages.as_deref().map(PageRanges::parse).transpose()?;
+                options.recursive = recursive;
                 Ok((target, options))
             })
             .map_err(fail)
             .and_then(|(target, options)| {
                 run(&reg, Operation::Convert, files, Some(target), out, options)
             }),
-        Command::Compress { files, out, tune } => tune
+        Command::Compress {
+            files,
+            out,
+            tune,
+            recursive,
+        } => tune
             .options()
+            .map(|options| JobOptions {
+                recursive,
+                ..options
+            })
             .map_err(fail)
             .and_then(|options| run(&reg, Operation::Compress, files, None, out, options)),
         Command::Extract { archives, out } => run(
@@ -325,6 +342,18 @@ fn info(reg: &Registry, file: PathBuf, ffmpeg: Option<PathBuf>) -> Result<(), Er
 
 /// How a task's input is named in output lines: the file, or for a merge,
 /// how many files.
+/// The line after a batch whose folders held files it left alone:
+/// `1 file skipped: can't become WebP`, `3 files skipped: can't be compressed`.
+fn skip_line(n: usize, op: Operation, target: Option<&str>) -> String {
+    let files = if n == 1 { "file" } else { "files" };
+    let why = match (op, target) {
+        (Operation::Compress, _) => "be compressed".to_string(),
+        (_, Some(name)) => format!("become {name}"),
+        (_, None) => "be converted".to_string(),
+    };
+    format!("{n} {files} skipped: can't {why}")
+}
+
 fn label(op: Operation, task: &PlannedTask) -> String {
     match op {
         Operation::Merge => {
@@ -495,6 +524,10 @@ fn run(
         if cancel.is_cancelled() {
             first = Some(ErrorCode::Cancelled);
         }
+    }
+    if !plan.skipped.is_empty() {
+        let name = target.map(|t| reg.format(t).name);
+        line(skip_line(plan.skipped.len(), op, name));
     }
     match first {
         Some(code) => Err(code),

@@ -1344,3 +1344,120 @@ fn readme_lists_every_release_archive() {
         assert!(readme.contains(needle), "README.md lacks {needle:?}");
     }
 }
+
+/// A folder given to convert or compress (Phase 3, D1).
+mod folders {
+    use super::*;
+    use persimmon_corpus::PNG_1X1;
+    #[cfg(feature = "vips")]
+    use persimmon_corpus::ZIP_EMPTY;
+
+    /// A test's own folder, removed when the test ends.
+    struct Album(PathBuf);
+
+    impl Drop for Album {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `album/` under a fresh folder, holding `files` (path, bytes).
+    fn album(test: &str, files: &[(&str, &[u8])]) -> (Album, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("prsm-cli-folder-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let album = root.join("album");
+        for (name, bytes) in files {
+            let p = album.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, bytes).unwrap();
+        }
+        std::fs::create_dir_all(&album).unwrap();
+        (Album(root), album)
+    }
+
+    const NOTES: &[u8] = b"plain text, nothing to convert";
+
+    #[test]
+    fn a_folder_with_nothing_to_convert_fails_like_an_unsupported_file() {
+        let (_g, album) = album("nothing", &[("notes.txt", NOTES)]);
+        let folder_run = prsm(&album, ["convert", "--to", "webp", "."]);
+        let file_run = prsm(&album, ["convert", "--to", "webp", "notes.txt"]);
+        assert_eq!(folder_run.status.code(), file_run.status.code());
+        assert!(
+            stderr(&folder_run).contains("none of its files can become WebP"),
+            "{}",
+            stderr(&folder_run)
+        );
+    }
+
+    #[test]
+    fn dry_run_shows_the_skip_line() {
+        let (_g, album) = album("dry", &[("a.png", &PNG_1X1), ("notes.txt", NOTES)]);
+        let out = prsm(&album, ["convert", "--dry-run", "--to", "webp", "."]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let text = stdout(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains("→"), "{text}");
+        assert_eq!(lines[1], "1 file skipped: can't become WebP");
+        assert!(!album.join("a.webp").exists());
+    }
+
+    #[test]
+    fn without_recursive_a_folder_of_folders_names_the_flag() {
+        let (_g, album) = album("flag", &[("sub/c.png", &PNG_1X1)]);
+        let out = prsm(&album, ["convert", "--dry-run", "--to", "webp", "."]);
+        assert_ne!(out.status.code(), Some(0));
+        let err = stderr(&out);
+        assert!(err.contains("it has no files, only folders"), "{err}");
+        assert!(
+            err.contains("fix: add --recursive to include its subfolders"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "vips")]
+    #[test]
+    fn convert_a_folder_converts_its_files() {
+        let (_g, album) = album(
+            "convert",
+            &[
+                ("a.png", &PNG_1X1),
+                ("b.png", &PNG_1X1),
+                ("notes.txt", NOTES),
+            ],
+        );
+        let out = prsm(&album, ["convert", "--to", "webp", "."]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert!(album.join("a.webp").exists() && album.join("b.webp").exists());
+        assert_eq!(
+            stdout(&out).lines().last(),
+            Some("1 file skipped: can't become WebP")
+        );
+    }
+
+    #[cfg(feature = "vips")]
+    #[test]
+    fn recursive_includes_subfolders() {
+        let (_g, album) = album("recursive", &[("sub/c.png", &PNG_1X1)]);
+        let out = prsm(&album, ["convert", "--to", "webp", "--recursive", "."]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert!(album.join("sub/c.webp").exists());
+    }
+
+    #[cfg(feature = "vips")]
+    #[test]
+    fn compress_a_folder_skips_what_it_cant_compress() {
+        let (_g, album) = album(
+            "compress",
+            &[("a.png", &PNG_1X1), ("archive.zip", &ZIP_EMPTY)],
+        );
+        let out = prsm(&album, ["compress", "."]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out).lines().last(),
+            Some("1 file skipped: can't be compressed")
+        );
+    }
+}
