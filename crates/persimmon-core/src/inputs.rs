@@ -285,6 +285,8 @@ mod tests {
         put(&dir, "._a.png", b"litter");
         put(&dir, ".prsm-x.part", &PNG_1X1);
         put(&dir, ".hidden.png", &PNG_1X1);
+        // Windows forbids a carriage return in a name; Finder makes this file only on a Mac.
+        #[cfg(not(windows))]
         put(&dir, "Icon\r", b"");
         let ff = webp(&dir, true).unwrap();
         assert_eq!(ff.files, vec![dir.join("a.png")]);
