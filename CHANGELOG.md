@@ -2,6 +2,32 @@
 
 Every release of Persimmon and what changed in it. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Folders as inputs to `prsm convert` and `prsm compress`: a folder stands for the files directly inside it, and `--recursive` adds its subfolders. Files that can't become the target are skipped and counted on a last line, such as `3 files skipped: can't become WebP`.
+- A folder dropped on the app adds the files in it.
+- `--jobs <n>` and `--jobs auto` on `convert`, `compress` and `extract` work on several files at once. Results still print in the order you gave the files. The default is still one at a time.
+- The app converts several files at once, up to one per performance core.
+
+### Added: in the engine (`persimmon-core`)
+
+- `pool`: `Pool`, `Limits`, `Lane`, `Priority` and `Jobs`, the bounded pool that decides how many tasks run at once.
+- `execute_in` runs a plan's tasks in parallel within a pool and still reports them in task order.
+- `Claims` and `Job::plan_claimed`, so jobs planned apart never take the same output name.
+
+### Changed (engine, breaking)
+
+- `JobOptions::recursive` is a new field.
+- `FixKind::IncludeSubfolders` is a new variant.
+- `Job::plan` expands folders for convert and compress.
+- `Plan::skipped` is a new field.
+
+### Known limitations
+
+- Video and audio still run one at a time.
+
 ## [0.2.0] - 2026-11-16
 
 The first release of the macOS app, and `prsm` 0.2.0. This is an alpha: its purpose is to find bugs, so please report what you run into.

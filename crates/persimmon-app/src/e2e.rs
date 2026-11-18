@@ -790,3 +790,104 @@ fn undo_trashes_what_a_run_wrote() {
     assert!(outputs.iter().all(|o| !o.exists()));
     assert!(inputs.iter().all(|i| i.exists()));
 }
+
+/// A rig whose runner has these limits.
+fn rig_with(name: &str, limits: persimmon_core::pool::Limits) -> Rig {
+    let queue = Arc::new(Mutex::new(Queue::new(
+        Registry::builtin(),
+        OutputPolicy::default(),
+    )));
+    let runner = Runner::with_engine(
+        Arc::clone(&queue),
+        Arc::new(Backends::new()),
+        limits,
+        |_| {},
+    );
+    Rig {
+        queue,
+        runner,
+        dir: Scratch::new(name),
+    }
+}
+
+/// Every image pair, the PDF jobs and the archives, each input in its own
+/// folder; keyed by a name that's the same in every rig.
+fn corpus_rows(rig: &Rig) -> Vec<(String, RowId)> {
+    let reg = Registry::builtin();
+    let own = |key: &str, src: &Path, name: &str| {
+        let dir = rig.dir.0.join(key);
+        std::fs::create_dir_all(&dir).unwrap();
+        let to = dir.join(name);
+        std::fs::copy(src, &to).unwrap();
+        to
+    };
+    let mut rows = Vec::new();
+    let images = image_inputs(&rig.dir);
+    for (id, src) in &images {
+        let from = persimmon_core::detect::detect(src, reg.formats())
+            .unwrap()
+            .format;
+        for to in reg.targets(Operation::Convert, from) {
+            let key = format!("{id}-to-{to:?}");
+            let input = own(&key, src, &format!("in.{}", ext(src)));
+            rows.push((key, row(rig, &[input], QueueMode::Convert, Some(to))));
+        }
+    }
+    let text = write_pdf_sample(&rig.dir.0, "pdf-text");
+    for to in [FormatId::Png, FormatId::Jpeg] {
+        let key = format!("pdf-to-{to:?}");
+        let input = own(&key, &text, "in.pdf");
+        rows.push((key, row(rig, &[input], QueueMode::Convert, Some(to))));
+    }
+    for id in [
+        "arc-zip", "arc-tar", "arc-tgz", "arc-tbz2", "arc-txz", "arc-tzst", "arc-7z",
+    ] {
+        let sample = write_archive_sample(&rig.dir.0, id);
+        let name = sample.file_name().unwrap().to_string_lossy().into_owned();
+        let input = own(id, &sample, &name);
+        rows.push((id.to_string(), row(rig, &[input], QueueMode::Extract, None)));
+    }
+    rows
+}
+
+/// An output's path under the rig's folder, and its size (a folder's is
+/// the sum of the files in it, with their names).
+fn shape(rig: &Rig, out: &Path) -> (PathBuf, Vec<(PathBuf, u64)>) {
+    fn walk(base: &Path, at: &Path, into: &mut Vec<(PathBuf, u64)>) {
+        if at.is_dir() {
+            for e in std::fs::read_dir(at).unwrap() {
+                walk(base, &e.unwrap().path(), into);
+            }
+        } else {
+            let rel = at.strip_prefix(base).unwrap().to_path_buf();
+            into.push((rel, std::fs::metadata(at).unwrap().len()));
+        }
+    }
+    let mut files = Vec::new();
+    walk(out, out, &mut files);
+    files.sort();
+    (out.strip_prefix(&rig.dir.0).unwrap().to_path_buf(), files)
+}
+
+#[test]
+fn the_parallel_queue_gives_the_serial_outputs() {
+    use persimmon_core::pool::Limits;
+    let run = |name: &str, limits: Limits| {
+        let rig = rig_with(name, limits);
+        let rows = corpus_rows(&rig);
+        run_all(&rig, 300);
+        rows.iter()
+            .map(|(key, id)| (key.clone(), shape(&rig, &done_output(&rig, *id))))
+            .collect::<Vec<_>>()
+    };
+    // The parallel pool sets libvips to one thread for the process, and
+    // the AVIF encoder's output depends on its thread count; running the
+    // parallel pass first compares both at one thread.
+    let parallel = run("parallel", Limits { total: 4, media: 1 });
+    let serial = run("serial", Limits::serial());
+    assert!(serial.len() > 20, "only {} rows", serial.len());
+    assert_eq!(serial.len(), parallel.len());
+    for (s, p) in serial.iter().zip(&parallel) {
+        assert_eq!(s, p, "{} differs", s.0);
+    }
+}
