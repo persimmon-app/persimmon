@@ -1461,3 +1461,84 @@ mod folders {
         );
     }
 }
+
+mod jobs {
+    use super::*;
+    #[cfg(feature = "vips")]
+    use persimmon_corpus::PNG_1X1;
+    use persimmon_corpus::ZIP_EMPTY;
+
+    /// A fresh folder holding `files`, removed when the test ends.
+    struct Tmp(PathBuf);
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tmp(test: &str, files: &[(&str, &[u8])]) -> Tmp {
+        let dir = std::env::temp_dir().join(format!("prsm-cli-jobs-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, bytes) in files {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        Tmp(dir)
+    }
+
+    #[test]
+    fn jobs_zero_is_a_usage_error() {
+        let t = tmp("zero", &[("a.zip", &ZIP_EMPTY)]);
+        let out = prsm(&t.0, ["convert", "--to", "webp", "--jobs", "0", "a.zip"]);
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("takes a number of at least 1, or auto"),
+            "{}",
+            stderr(&out)
+        );
+    }
+
+    #[test]
+    fn merge_has_no_jobs_flag() {
+        let t = tmp("merge", &[("a.zip", &ZIP_EMPTY), ("b.zip", &ZIP_EMPTY)]);
+        let out = prsm(
+            &t.0,
+            ["merge", "--to", "zip", "--jobs", "2", "a.zip", "b.zip"],
+        );
+        assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    }
+
+    #[test]
+    fn jobs_keep_input_order_around_a_planning_error() {
+        let t = tmp("order", &[("a.zip", &ZIP_EMPTY), ("b.zip", &ZIP_EMPTY)]);
+        let out = prsm(
+            &t.0,
+            ["extract", "--jobs", "4", "a.zip", "missing.zip", "b.zip"],
+        );
+        assert_eq!(out.status.code(), Some(7), "{}", stderr(&out));
+        let text = stdout(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].starts_with("a.zip"), "{text}");
+        assert!(lines[1].starts_with("b.zip"), "{text}");
+        assert!(stderr(&out).contains("missing.zip"), "{}", stderr(&out));
+    }
+
+    #[cfg(feature = "vips")]
+    #[test]
+    fn jobs_auto_converts_a_folder_in_input_order() {
+        let names: Vec<String> = (1..=12).map(|i| format!("{i:02}.png")).collect();
+        let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &PNG_1X1[..])).collect();
+        let t = tmp("auto", &files);
+        let out = prsm(&t.0, ["convert", "--to", "webp", "--jobs", "auto", "."]);
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let text = stdout(&out);
+        let firsts: Vec<String> = text
+            .lines()
+            .map(|l| l.split_whitespace().next().unwrap().to_string())
+            .collect();
+        let want: Vec<String> = names.iter().map(|n| format!("./{n}")).collect();
+        assert!(firsts == names || firsts == want, "{text}");
+    }
+}

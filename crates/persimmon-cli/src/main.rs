@@ -18,10 +18,11 @@ use persimmon_core::backend::ffmpeg::Ffmpeg;
 use persimmon_core::backend::pdf::pdf_info;
 use persimmon_core::detect::detect;
 use persimmon_core::error::{Error, ErrorCode, FixKind};
-use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
+use persimmon_core::exec::{CancelToken, Event, Outcome, execute, execute_in};
 use persimmon_core::format::{FormatId, MediaKind};
 use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Preset, Quality};
 use persimmon_core::output::OutputPolicy;
+use persimmon_core::pool::{Jobs, Limits, Pool};
 use persimmon_core::registry::{Operation, Registry};
 
 use render::show;
@@ -57,6 +58,8 @@ enum Command {
         /// With a folder: also convert the files in its subfolders.
         #[arg(long)]
         recursive: bool,
+        #[command(flatten)]
+        run: RunArgs,
     },
     /// Make files smaller, keeping their format.
     Compress {
@@ -69,6 +72,8 @@ enum Command {
         /// With a folder: also compress the files in its subfolders.
         #[arg(long)]
         recursive: bool,
+        #[command(flatten)]
+        run: RunArgs,
     },
     /// Unpack archives into folders.
     Extract {
@@ -76,6 +81,8 @@ enum Command {
         archives: Vec<PathBuf>,
         #[command(flatten)]
         out: OutArgs,
+        #[command(flatten)]
+        run: RunArgs,
     },
     /// Combine files into one PDF, ZIP or tar.gz.
     Merge {
@@ -120,6 +127,17 @@ struct OutArgs {
     /// Print what would be written, and write nothing.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Args)]
+struct RunArgs {
+    /// How many files to work on at once: a number, or auto for one per performance core. Video and audio still go one at a time.
+    #[arg(long, value_name = "N|auto", default_value = "1", value_parser = parse_jobs)]
+    jobs: Jobs,
+}
+
+fn parse_jobs(s: &str) -> Result<Jobs, String> {
+    s.parse()
 }
 
 #[derive(Args)]
@@ -174,6 +192,9 @@ impl From<QualityArg> for Quality {
     }
 }
 
+/// One file at a time: merge and split, and the default.
+const SERIAL: Jobs = Jobs::Fixed(std::num::NonZeroUsize::MIN);
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let reg = Registry::builtin();
@@ -190,6 +211,7 @@ fn main() -> ExitCode {
             tune,
             pages,
             recursive,
+            run: r,
         } => parse_target(&reg, &to)
             .and_then(|target| {
                 let mut options = tune.options()?;
@@ -199,13 +221,22 @@ fn main() -> ExitCode {
             })
             .map_err(fail)
             .and_then(|(target, options)| {
-                run(&reg, Operation::Convert, files, Some(target), out, options)
+                run(
+                    &reg,
+                    Operation::Convert,
+                    files,
+                    Some(target),
+                    out,
+                    options,
+                    r.jobs,
+                )
             }),
         Command::Compress {
             files,
             out,
             tune,
             recursive,
+            run: r,
         } => tune
             .options()
             .map(|options| JobOptions {
@@ -213,14 +244,19 @@ fn main() -> ExitCode {
                 ..options
             })
             .map_err(fail)
-            .and_then(|options| run(&reg, Operation::Compress, files, None, out, options)),
-        Command::Extract { archives, out } => run(
+            .and_then(|options| run(&reg, Operation::Compress, files, None, out, options, r.jobs)),
+        Command::Extract {
+            archives,
+            out,
+            run: r,
+        } => run(
             &reg,
             Operation::Extract,
             archives,
             None,
             out,
             JobOptions::default(),
+            r.jobs,
         ),
         Command::Merge { files, to, out } => {
             parse_target(&reg, &to).map_err(fail).and_then(|target| {
@@ -231,6 +267,7 @@ fn main() -> ExitCode {
                     Some(target),
                     out,
                     JobOptions::default(),
+                    SERIAL,
                 )
             })
         }
@@ -247,6 +284,7 @@ fn main() -> ExitCode {
                     Some(FormatId::Pdf),
                     out,
                     options,
+                    SERIAL,
                 )
             })
         }
@@ -443,6 +481,7 @@ fn run(
     target: Option<FormatId>,
     out: OutArgs,
     options: JobOptions,
+    jobs: Jobs,
 ) -> Result<(), ErrorCode> {
     let job = Job {
         op,
@@ -484,7 +523,8 @@ fn run(
         let cancel = cancel_on_ctrl_c();
         let mut cursor = 0;
         let mut progress = Progress::new();
-        execute(&job, &plan, &Backends::new(), &cancel, &mut |event| {
+        let backends = Backends::new();
+        let mut on_event = |event: Event| {
             let (task, result) = match event {
                 Event::Started { .. } => return,
                 Event::Progress {
@@ -515,7 +555,13 @@ fn run(
                 )),
                 Err(e) => note(e, &mut first),
             }
-        });
+        };
+        if jobs == SERIAL {
+            execute(&job, &plan, &backends, &cancel, &mut on_event);
+        } else {
+            let pool = Pool::new(Limits::of(jobs));
+            execute_in(&job, &plan, &backends, &cancel, &pool, &mut on_event);
+        }
         for slot in &order[cursor.min(order.len())..] {
             if let Err(e) = slot {
                 note(e, &mut first);
