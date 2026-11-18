@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  let { open, onCancel, onQuit }: { open: boolean; onCancel: () => void; onQuit: () => void } = $props();
+  let { open, running, onCancel, onQuit }: { open: boolean; running: number; onCancel: () => void; onQuit: () => void } = $props();
   let dialog: HTMLDialogElement | undefined = $state();
   $effect(() => {
     if (!dialog) return;
@@ -10,7 +10,7 @@
 </script>
 
 <dialog bind:this={dialog} oncancel={(e) => { e.preventDefault(); onCancel(); }} aria-labelledby="quit-title">
-  <p id="quit-title">A conversion is running. Quit and cancel it?</p>
+  <p id="quit-title">{running > 1 ? `${running} conversions are running. Quit and cancel them?` : "A conversion is running. Quit and cancel it?"}</p>
   <div class="buttons">
     <button onclick={onCancel}>Cancel</button>
     <button class="quit" onclick={onQuit}>Quit</button>

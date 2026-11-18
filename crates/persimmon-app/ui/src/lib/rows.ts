@@ -16,3 +16,10 @@ export function upsert(rows: RowView[], row: RowView): RowView[] {
 export function without(rows: RowView[], ids: RowId[]): RowView[] {
   return rows.filter((r) => !ids.includes(r.id));
 }
+
+/** The row ⌘. cancels: the active row if it's running, else the first
+ * running row. */
+export function rowToCancel(rows: RowView[], activeId: RowId | null): RowView | undefined {
+  const active = rows.find((r) => r.id === activeId && r.state === "running");
+  return active ?? rows.find((r) => r.state === "running");
+}

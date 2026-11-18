@@ -8,7 +8,7 @@
   import CombineRow from "./components/CombineRow.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import EmptyState from "./components/EmptyState.svelte";
-  import { upsert as merge, without } from "./lib/rows";
+  import { rowToCancel, upsert as merge, without } from "./lib/rows";
   import StatusBar from "./components/StatusBar.svelte";
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
   import HistoryView from "./components/HistoryView.svelte";
@@ -139,7 +139,6 @@
     ({ selected, anchor } = moved(rows.map((r) => r.id), { selected, anchor }, by, extend));
   }
 
-  const running = () => rows.find((r) => r.state === "running");
   const chosen = () => rows.filter((r) => selected.includes(r.id));
 
   function onKey(e: KeyboardEvent) {
@@ -157,7 +156,7 @@
     else if (cmd && e.key === "o") { e.preventDefault(); if (!e.repeat) pick(); }
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
     else if (cmd && e.key === "a") { e.preventDefault(); selected = rows.map((r) => r.id); }
-    else if (cmd && e.key === ".") { e.preventDefault(); const r = running(); if (r) ipc.cancelRow(r.id); }
+    else if (cmd && e.key === ".") { e.preventDefault(); const r = rowToCancel(rows, anchor); if (r) ipc.cancelRow(r.id); }
     else if (cmd && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); chosen().filter((r) => r.state === "done").forEach((r) => reveal(ipc.revealRow(r.id))); }
     else if (cmd && e.key === "r") { e.preventDefault(); chosen().filter((r) => r.state === "failed" || r.state === "cancelled").forEach((r) => ipc.retryRow(r.id)); }
     else if (e.key === "Backspace" || e.key === "Delete") { if (selected.length) { e.preventDefault(); remove(selected); } }
@@ -235,7 +234,7 @@
       undoable={lastUndoable} onUndoLast={() => undo(null)} />
   </div>
 </div>
-<ConfirmQuit open={confirmQuit} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />
+<ConfirmQuit open={confirmQuit} running={rows.filter((r) => r.state === "running").length} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />
 
 <style>
   .window { height: 100vh; display: flex; }
