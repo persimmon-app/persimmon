@@ -728,7 +728,7 @@ fn quit_action(busy: bool) -> QuitAction {
 /// `terminate:`, which never reaches Tauri's ExitRequested, so it could
 /// neither ask nor cancel the running row.
 fn quit_requested(app: &AppHandle) {
-    match quit_action(app.state::<AppState>().runner.is_busy()) {
+    match quit_action(app.state::<AppState>().runner.running() > 0) {
         QuitAction::Confirm => {
             // The question is asked in the main window, so show it.
             show_main(app);
@@ -966,7 +966,7 @@ pub fn run() {
             api, code: None, ..
         } if app
             .try_state::<AppState>()
-            .is_some_and(|s| s.runner.is_busy()) =>
+            .is_some_and(|s| s.runner.running() > 0) =>
         {
             api.prevent_exit();
             let _ = app.emit("confirm-quit", ());

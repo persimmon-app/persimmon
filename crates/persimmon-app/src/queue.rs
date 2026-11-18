@@ -476,6 +476,27 @@ impl Queue {
         Some((row.id, row.job.clone()))
     }
 
+    /// The first queued row `ok` accepts, now marked running, with its job.
+    pub fn next_queued_where(
+        &mut self,
+        mut ok: impl FnMut(&RowView) -> bool,
+    ) -> Option<(RowId, Job)> {
+        let i = self
+            .rows
+            .iter()
+            .position(|r| r.state == RowState::Queued && ok(&view(r)))?;
+        let rev = self.bump();
+        let row = &mut self.rows[i];
+        row.state = RowState::Running { fraction: None };
+        row.rev = rev;
+        Some((row.id, row.job.clone()))
+    }
+
+    /// Whether any row is waiting to run.
+    pub fn any_queued(&self) -> bool {
+        self.rows.iter().any(|r| r.state == RowState::Queued)
+    }
+
     pub fn update(&mut self, id: RowId, state: RowState) -> Option<RowView> {
         let rev = self.bump();
         let note = match &state {

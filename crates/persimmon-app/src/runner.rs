@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Persimmon contributors
 
-//! The runner: one worker thread takes queued rows one at a time (D7) and
-//! runs each as its own one-task job with its own cancel token, so one row
-//! can be cancelled while the rest wait.
+//! The runner: a dispatcher thread starts queued rows, in queue order,
+//! whenever the pool has a slot for their kind of work (D6): images, PDFs
+//! and archives several at once, video and audio one at a time. Each row
+//! runs on its own thread as a one-task job with its own cancel token, so
+//! one row can be cancelled while the rest go on.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use persimmon_core::backend::Backends;
+use persimmon_core::backend::{Backends, Run};
 use persimmon_core::error::ErrorCode;
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
-use persimmon_core::job::{Job, PlanMode};
+use persimmon_core::job::Job;
+use persimmon_core::output::Claims;
+use persimmon_core::pool::{Lane, Limits, Pool};
 use persimmon_core::registry::Registry;
 
 use crate::history::{self, Batch, Item, ItemOutcome, Source};
@@ -22,6 +27,10 @@ use crate::wording::shown;
 /// Progress reaches the window at most this often per row.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
+/// How often the dispatcher looks again when it's waiting for a slot that
+/// someone outside this runner may free.
+const RECHECK: Duration = Duration::from_millis(100);
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -29,22 +38,29 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 type Sink = Box<dyn Fn(RowView) + Send + Sync>;
 
 struct State {
-    running: Option<(RowId, CancelToken)>,
+    running: HashMap<RowId, CancelToken>,
     go: bool,
     stop: bool,
 }
 
 struct Inner {
     queue: Arc<Mutex<Queue>>,
-    backends: Backends,
+    engine: Arc<dyn Run + Send + Sync>,
     reg: Registry,
+    pool: Pool,
+    /// Output names held by rows that are running, so two never share one.
+    claims: Claims,
     sink: Sink,
     state: Mutex<State>,
     wake: Condvar,
-    /// Told about each batch once the queue is empty (history).
+    /// Told about each batch once nothing is queued or running (history).
     on_batch: Mutex<Option<BatchSink>>,
     /// Where the next batch comes from.
     source: Mutex<Source>,
+    /// How each row of the running batch ended, in the order they ended.
+    ended: Mutex<Vec<RowView>>,
+    /// The threads of rows that are running or have just finished.
+    rows: Mutex<Vec<JoinHandle<()>>>,
 }
 
 type BatchSink = Box<dyn Fn(Batch) + Send + Sync>;
@@ -60,19 +76,33 @@ impl Runner {
         backends: Backends,
         sink: impl Fn(RowView) + Send + Sync + 'static,
     ) -> Runner {
+        Runner::with_engine(queue, Arc::new(backends), Limits::auto(), sink)
+    }
+
+    /// A runner over `engine`, running at most what `limits` allows at once.
+    pub fn with_engine(
+        queue: Arc<Mutex<Queue>>,
+        engine: Arc<dyn Run + Send + Sync>,
+        limits: Limits,
+        sink: impl Fn(RowView) + Send + Sync + 'static,
+    ) -> Runner {
         let inner = Arc::new(Inner {
             queue,
-            backends,
+            engine,
             reg: Registry::builtin(),
+            pool: Pool::new(limits),
+            claims: Claims::new(),
             sink: Box::new(sink),
             state: Mutex::new(State {
-                running: None,
+                running: HashMap::new(),
                 go: false,
                 stop: false,
             }),
             wake: Condvar::new(),
             on_batch: Mutex::new(None),
             source: Mutex::new(Source::Window),
+            ended: Mutex::new(Vec::new()),
+            rows: Mutex::new(Vec::new()),
         });
         let worker = {
             let inner = Arc::clone(&inner);
@@ -89,8 +119,8 @@ impl Runner {
         *lock(&self.inner.on_batch) = Some(Box::new(f));
     }
 
-    /// Run every queued row, one at a time, recording where the batch came
-    /// from.
+    /// Run every queued row, several at once within the pool's limits,
+    /// recording where the batch came from.
     pub fn start_from(&self, source: Source) {
         *lock(&self.inner.source) = source;
         lock(&self.inner.state).go = true;
@@ -102,7 +132,7 @@ impl Runner {
         self.start_from(Source::Window);
     }
 
-    /// Cancel row `id`: the running one stops mid-file where the backend
+    /// Cancel row `id`: a running one stops mid-file where the backend
     /// can; a queued one is marked cancelled. False if it's neither.
     pub fn cancel(&self, id: RowId) -> bool {
         // Locks are always taken queue first, then state.
@@ -114,16 +144,17 @@ impl Runner {
                 if let Some(v) = v {
                     (self.inner.sink)(v);
                 }
+                self.inner.wake.notify_all();
                 true
             }
             Some(RowState::Running { .. }) => {
                 let state = lock(&self.inner.state);
-                match &state.running {
-                    Some((running, token)) if *running == id => {
+                match state.running.get(&id) {
+                    Some(token) => {
                         token.cancel();
                         true
                     }
-                    _ => false,
+                    None => false,
                 }
             }
             _ => false,
@@ -138,22 +169,28 @@ impl Runner {
         Some(v)
     }
 
-    pub fn is_busy(&self) -> bool {
-        lock(&self.inner.state).running.is_some()
+    /// How many rows are running.
+    pub fn running(&self) -> usize {
+        lock(&self.inner.state).running.len()
     }
 
-    /// Cancel the running row, stop the worker and wait for it.
+    /// Cancel every running row, wait for them, and stop. Rows still
+    /// queued stay queued.
     pub fn shutdown(&self) {
         {
             let mut state = lock(&self.inner.state);
             state.stop = true;
-            if let Some((_, token)) = &state.running {
+            for token in state.running.values() {
                 token.cancel();
             }
         }
         self.inner.wake.notify_all();
         if let Some(worker) = lock(&self.worker).take() {
             let _ = worker.join();
+        }
+        let rows: Vec<JoinHandle<()>> = lock(&self.inner.rows).drain(..).collect();
+        for row in rows {
+            let _ = row.join();
         }
     }
 }
@@ -165,7 +202,7 @@ impl Drop for Runner {
 }
 
 impl Inner {
-    fn work(&self) {
+    fn work(self: &Arc<Self>) {
         loop {
             {
                 let mut state = lock(&self.state);
@@ -179,36 +216,12 @@ impl Inner {
             }
             let started = history::now();
             let source = *lock(&self.source);
-            let mut done: Vec<RowView> = Vec::new();
-            let mut stopping = false;
-            loop {
-                let token = CancelToken::new();
-                let next = {
-                    let mut queue = lock(&self.queue);
-                    let mut state = lock(&self.state);
-                    if state.stop {
-                        stopping = true;
-                        break;
-                    }
-                    let next = queue.next_queued();
-                    if let Some((id, _)) = &next {
-                        state.running = Some((*id, token.clone()));
-                    }
-                    next.map(|(id, job)| (id, job, queue.get(id)))
-                };
-                let Some((id, job, view)) = next else { break };
-                if let Some(v) = view {
-                    (self.sink)(v);
-                }
-                let end = self.run(id, &job, &token);
-                if let Some(v) = self.set(id, end) {
-                    done.push(v);
-                }
-                lock(&self.state).running = None;
-            }
+            let stopping = self.drain();
             // Recorded even when quitting cut the batch short.
-            if !done.is_empty() {
-                let batch = record(started, source, &done);
+            let ended: Vec<RowView> = lock(&self.ended).drain(..).collect();
+            if !ended.is_empty() {
+                let rows = in_queue_order(&lock(&self.queue).rows(), ended);
+                let batch = record(started, source, &rows);
                 if let Some(f) = lock(&self.on_batch).as_ref() {
                     f(batch);
                 }
@@ -219,14 +232,79 @@ impl Inner {
         }
     }
 
-    /// Plan the row for real, then run it; returns how it ended.
+    /// Start rows until nothing is queued or running; true if stopping.
+    fn drain(self: &Arc<Self>) -> bool {
+        loop {
+            let token = CancelToken::new();
+            let mut queue = lock(&self.queue);
+            let mut state = lock(&self.state);
+            if state.stop {
+                // Wait for the cancelled rows to end before recording; they
+                // need the queue to record how they ended.
+                drop(queue);
+                while !state.running.is_empty() {
+                    state = self.wake.wait(state).unwrap_or_else(|p| p.into_inner());
+                }
+                return true;
+            }
+            let mut permit = None;
+            let next = queue.next_queued_where(|row| {
+                permit = self.pool.try_acquire(self.lane_of(row));
+                permit.is_some()
+            });
+            if let (Some((id, job)), Some(permit)) = (next, permit) {
+                state.running.insert(id, token.clone());
+                let view = queue.get(id);
+                drop(state);
+                drop(queue);
+                if let Some(v) = view {
+                    (self.sink)(v);
+                }
+                let inner = Arc::clone(self);
+                let handle = std::thread::spawn(move || {
+                    let end = inner.run(id, &job, &token);
+                    let view = inner.set(id, end);
+                    drop(permit);
+                    lock(&inner.state).running.remove(&id);
+                    if let Some(v) = view {
+                        lock(&inner.ended).push(v);
+                    }
+                    inner.wake.notify_all();
+                });
+                let mut rows = lock(&self.rows);
+                rows.retain(|h| !h.is_finished());
+                rows.push(handle);
+                continue;
+            }
+            if state.running.is_empty() && !queue.any_queued() {
+                return false;
+            }
+            drop(queue);
+            // A row ending, a start, a cancel, a retry or a stop wakes this.
+            drop(
+                self.wake
+                    .wait_timeout(state, RECHECK)
+                    .unwrap_or_else(|p| p.into_inner()),
+            );
+        }
+    }
+
+    /// Which pool lane a row's work takes.
+    fn lane_of(&self, row: &RowView) -> Lane {
+        row.from
+            .and_then(|from| self.reg.find(row.op, from, row.to))
+            .map_or(Lane::Cpu, |cap| Lane::of(cap.backend))
+    }
+
+    /// Plan the row for real, claiming its output name, then run it;
+    /// returns how it ended.
     fn run(&self, id: RowId, job: &Job, token: &CancelToken) -> RowState {
-        let plan = job.plan_with(&self.reg, PlanMode::Commit);
+        let (plan, _claim) = job.plan_claimed(&self.reg, &self.claims);
         if let Some(e) = plan.errors.first() {
             return RowState::Failed { error: shown(e) };
         }
         let mut last = Instant::now() - PROGRESS_EVERY;
-        let results = execute(job, &plan, &self.backends, token, &mut |event| {
+        let results = execute(job, &plan, &*self.engine, token, &mut |event| {
             if let Event::Progress { fraction, .. } = event
                 && last.elapsed() >= PROGRESS_EVERY
             {
@@ -249,6 +327,19 @@ impl Inner {
         }
         v
     }
+}
+
+/// The batch's rows, each once as it last ended, in the queue's order;
+/// rows no longer in the queue go last, in the order they ended.
+fn in_queue_order(queue: &[RowView], ended: Vec<RowView>) -> Vec<RowView> {
+    let mut last: Vec<RowView> = Vec::new();
+    for v in ended {
+        last.retain(|r| r.id != v.id);
+        last.push(v);
+    }
+    let position = |id: RowId| queue.iter().position(|r| r.id == id).unwrap_or(usize::MAX);
+    last.sort_by_key(|r| position(r.id));
+    last
 }
 
 static BATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -482,17 +573,14 @@ mod tests {
             assert!(size.unwrap() > 0);
         }
         let seen = seen.lock().unwrap();
-        let first_done = seen
-            .iter()
-            .position(|v| v.id == ids[0] && matches!(v.state, RowState::Done { .. }))
-            .unwrap();
-        let second_runs = seen
-            .iter()
-            .position(|v| v.id == ids[1] && matches!(v.state, RowState::Running { .. }))
-            .unwrap();
+        let runs = |id| {
+            seen.iter()
+                .position(|v: &RowView| v.id == id && matches!(v.state, RowState::Running { .. }))
+                .unwrap()
+        };
         assert!(
-            first_done < second_runs,
-            "the second row started before the first finished"
+            runs(ids[0]) < runs(ids[1]),
+            "the second row started before the first"
         );
     }
 
@@ -613,10 +701,10 @@ mod tests {
             matches!(state(&q, v), RowState::Running { .. })
         });
         std::thread::sleep(Duration::from_millis(500));
-        assert!(r.is_busy());
+        assert!(r.running() > 0);
         r.shutdown();
         assert_eq!(state(&q, v), RowState::Cancelled);
-        assert!(!r.is_busy());
+        assert_eq!(r.running(), 0);
         assert!(d.no_partials());
         assert!(no_ffmpeg_child());
     }
@@ -724,5 +812,304 @@ mod tests {
             && i.output_mtime.is_some()
             && i.output_size.is_some()));
         assert!(b.finished >= b.started);
+    }
+
+    mod several {
+        use super::*;
+        use crate::history::Batch;
+        use persimmon_core::backend::{Done, Run};
+        use persimmon_core::error::{Error, ErrorCode};
+        use persimmon_core::job::{JobOptions, PlannedTask};
+        use persimmon_core::pool::Limits;
+        use std::sync::Condvar;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A stand-in engine. A task whose input's name starts with `hold`
+        /// waits until the gate opens (or its row is cancelled, or 10 s
+        /// pass); then each task writes its input's bytes. It counts how many
+        /// tasks run at once, and how many video tasks do.
+        #[derive(Default)]
+        struct Gate {
+            open: Mutex<bool>,
+            opened: Condvar,
+            now: AtomicUsize,
+            max: AtomicUsize,
+            media_now: AtomicUsize,
+            media_max: AtomicUsize,
+            ran: AtomicUsize,
+        }
+
+        impl Gate {
+            fn open(&self) {
+                *self.open.lock().unwrap() = true;
+                self.opened.notify_all();
+            }
+        }
+
+        impl Run for Gate {
+            fn run(
+                &self,
+                task: &PlannedTask,
+                _: &JobOptions,
+                temp: &Path,
+                cancel: &CancelToken,
+                _: &mut dyn FnMut(f32),
+            ) -> Result<Done, Error> {
+                let input = &task.inputs[0];
+                let video = task.backend == persimmon_core::registry::Backend::Ffmpeg;
+                self.ran.fetch_add(1, Ordering::SeqCst);
+                let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max.fetch_max(n, Ordering::SeqCst);
+                if video {
+                    let m = self.media_now.fetch_add(1, Ordering::SeqCst) + 1;
+                    self.media_max.fetch_max(m, Ordering::SeqCst);
+                }
+                let hold = input
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("hold"));
+                let end = Instant::now() + Duration::from_secs(10);
+                let mut open = self.open.lock().unwrap();
+                let mut result = Ok(Done::Written);
+                while hold && !*open {
+                    if cancel.is_cancelled() {
+                        result = Err(Error::new(ErrorCode::Cancelled, "cancelled"));
+                        break;
+                    }
+                    assert!(Instant::now() < end, "the gate never opened");
+                    open = self
+                        .opened
+                        .wait_timeout(open, Duration::from_millis(20))
+                        .unwrap()
+                        .0;
+                }
+                drop(open);
+                if result.is_ok() {
+                    std::fs::write(temp, std::fs::read(input).unwrap()).unwrap();
+                }
+                if video {
+                    self.media_now.fetch_sub(1, Ordering::SeqCst);
+                }
+                self.now.fetch_sub(1, Ordering::SeqCst);
+                result
+            }
+        }
+
+        fn gated(
+            limits: Limits,
+            policy: persimmon_core::output::OutputPolicy,
+        ) -> (Arc<Mutex<Queue>>, Runner, Arc<Gate>) {
+            let queue = Arc::new(Mutex::new(Queue::new(Registry::builtin(), policy)));
+            let gate = Arc::new(Gate::default());
+            let engine: Arc<dyn Run + Send + Sync> = gate.clone();
+            let runner = Runner::with_engine(Arc::clone(&queue), engine, limits, |_| {});
+            (queue, runner, gate)
+        }
+
+        fn add(q: &Arc<Mutex<Queue>>, paths: &[PathBuf]) -> Vec<RowId> {
+            q.lock()
+                .unwrap()
+                .add(paths, QueueMode::Convert)
+                .iter()
+                .map(|v| v.id)
+                .collect()
+        }
+
+        const TWO: Limits = Limits { total: 2, media: 1 };
+
+        #[test]
+        fn two_image_rows_run_at_once() {
+            let d = Dir::new("several-two");
+            let (q, r, gate) = gated(TWO, Default::default());
+            let ids = add(
+                &q,
+                &[d.put("hold-a.png", &PNG_1X1), d.put("hold-b.png", &PNG_1X1)],
+            );
+            r.start();
+            wait("both rows running together", 5, || {
+                gate.now.load(Ordering::SeqCst) == 2
+            });
+            gate.open();
+            wait("both rows", 5, || {
+                ids.iter().all(|&i| finished(&state(&q, i)))
+            });
+            assert!(
+                ids.iter()
+                    .all(|&i| matches!(state(&q, i), RowState::Done { .. }))
+            );
+        }
+
+        #[test]
+        fn rows_into_one_folder_never_share_a_name() {
+            let d = Dir::new("several-names");
+            for sub in ["a", "b", "out"] {
+                std::fs::create_dir_all(d.0.join(sub)).unwrap();
+            }
+            let a = d.0.join("a/hold.png");
+            let b = d.0.join("b/hold.png");
+            std::fs::write(&a, PNG_1X1).unwrap();
+            std::fs::write(&b, PNG_1X1).unwrap();
+            let policy = persimmon_core::output::OutputPolicy {
+                dir: Some(d.0.join("out")),
+                ..Default::default()
+            };
+            let (q, r, gate) = gated(TWO, policy);
+            let ids = add(&q, &[a, b]);
+            r.start();
+            wait("both rows running together", 5, || {
+                gate.now.load(Ordering::SeqCst) == 2
+            });
+            gate.open();
+            wait("both rows", 5, || {
+                ids.iter().all(|&i| finished(&state(&q, i)))
+            });
+            let outs: Vec<PathBuf> = ids
+                .iter()
+                .map(|&i| match state(&q, i) {
+                    RowState::Done { output, .. } => output,
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            assert_ne!(outs[0], outs[1]);
+            assert!(
+                outs.iter()
+                    .all(|o| o.is_file() && o.parent() == Some(d.0.join("out").as_path()))
+            );
+        }
+
+        #[test]
+        fn cancel_one_of_two_running_rows_leaves_the_other() {
+            let d = Dir::new("several-cancel");
+            let (q, r, gate) = gated(TWO, Default::default());
+            let ids = add(
+                &q,
+                &[d.put("hold-a.png", &PNG_1X1), d.put("hold-b.png", &PNG_1X1)],
+            );
+            r.start();
+            wait("both rows running together", 5, || {
+                gate.now.load(Ordering::SeqCst) == 2
+            });
+            assert!(r.cancel(ids[0]));
+            wait("the cancelled row", 5, || finished(&state(&q, ids[0])));
+            gate.open();
+            wait("the other row", 5, || finished(&state(&q, ids[1])));
+            assert_eq!(state(&q, ids[0]), RowState::Cancelled);
+            assert!(matches!(state(&q, ids[1]), RowState::Done { .. }));
+            assert!(d.no_partials());
+        }
+
+        #[test]
+        fn shutdown_cancels_running_and_never_starts_waiting_rows() {
+            let d = Dir::new("several-shutdown");
+            let (q, r, gate) = gated(Limits::serial(), Default::default());
+            let ids = add(
+                &q,
+                &[
+                    d.put("hold-a.png", &PNG_1X1),
+                    d.put("hold-b.png", &PNG_1X1),
+                    d.put("hold-c.png", &PNG_1X1),
+                ],
+            );
+            r.start();
+            wait("the first row", 5, || gate.now.load(Ordering::SeqCst) == 1);
+            r.shutdown();
+            assert_eq!(state(&q, ids[0]), RowState::Cancelled);
+            assert_eq!(gate.ran.load(Ordering::SeqCst), 1);
+            assert_eq!(state(&q, ids[1]), RowState::Queued);
+            assert_eq!(state(&q, ids[2]), RowState::Queued);
+            assert_eq!(r.running(), 0);
+            assert!(d.no_partials());
+        }
+
+        #[test]
+        fn a_row_that_fails_to_plan_frees_its_slot() {
+            let d = Dir::new("several-plan-fail");
+            let (q, r, gate) = gated(Limits::serial(), Default::default());
+            let a = d.put("a.png", &PNG_1X1);
+            let ids = add(&q, &[a.clone(), d.put("b.png", &PNG_1X1)]);
+            std::fs::remove_file(&a).unwrap();
+            gate.open();
+            r.start();
+            wait("both rows", 5, || {
+                ids.iter().all(|&i| finished(&state(&q, i)))
+            });
+            assert!(matches!(state(&q, ids[0]), RowState::Failed { .. }));
+            assert!(matches!(state(&q, ids[1]), RowState::Done { .. }));
+            assert_eq!(r.running(), 0);
+        }
+
+        #[test]
+        fn a_retried_row_joins_the_running_batch() {
+            let d = Dir::new("several-retry");
+            let (q, r, gate) = gated(TWO, Default::default());
+            let batches: Arc<Mutex<Vec<Batch>>> = Arc::default();
+            let b2 = Arc::clone(&batches);
+            r.set_on_batch(move |b| b2.lock().unwrap().push(b));
+            let a = d.put("a.png", &PNG_1X1);
+            let ids = add(&q, &[a.clone(), d.put("hold-b.png", &PNG_1X1)]);
+            std::fs::remove_file(&a).unwrap();
+            r.start();
+            wait("the first row to fail", 5, || {
+                matches!(state(&q, ids[0]), RowState::Failed { .. })
+            });
+            std::fs::write(&a, PNG_1X1).unwrap();
+            assert!(r.retry(ids[0]).is_some());
+            wait("the retried row", 5, || {
+                matches!(state(&q, ids[0]), RowState::Done { .. })
+            });
+            assert!(
+                batches.lock().unwrap().is_empty(),
+                "recorded while a row still ran"
+            );
+            gate.open();
+            wait("the batch", 5, || !batches.lock().unwrap().is_empty());
+            std::thread::sleep(Duration::from_millis(200));
+            let batches = batches.lock().unwrap();
+            assert_eq!(batches.len(), 1);
+            let inputs: Vec<&Path> = batches[0]
+                .items
+                .iter()
+                .map(|i| i.inputs[0].as_path())
+                .collect();
+            assert_eq!(inputs, [a.as_path(), d.0.join("hold-b.png").as_path()]);
+            assert!(
+                batches[0]
+                    .items
+                    .iter()
+                    .all(|i| i.outcome == crate::history::ItemOutcome::Done)
+            );
+        }
+
+        #[test]
+        fn video_rows_run_one_at_a_time() {
+            let Some(_ff) = ffmpeg() else { return };
+            let d = Dir::new("several-video");
+            let src = media_sample("vid-long").unwrap();
+            let ext = src.extension().unwrap().to_string_lossy().into_owned();
+            let v1 = d.0.join(format!("hold-1.{ext}"));
+            let v2 = d.0.join(format!("hold-2.{ext}"));
+            std::fs::copy(&src, &v1).unwrap();
+            std::fs::copy(&src, &v2).unwrap();
+            let (q, r, gate) = gated(Limits { total: 4, media: 1 }, Default::default());
+            let ids = add(&q, &[v1, v2, d.put("hold-p.png", &PNG_1X1)]);
+            r.start();
+            wait("a video and the image together", 5, || {
+                gate.now.load(Ordering::SeqCst) == 2
+            });
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(
+                gate.now.load(Ordering::SeqCst),
+                2,
+                "the second video started"
+            );
+            gate.open();
+            wait("every row", 10, || {
+                ids.iter().all(|&i| finished(&state(&q, i)))
+            });
+            assert_eq!(gate.media_max.load(Ordering::SeqCst), 1);
+            assert!(
+                ids.iter()
+                    .all(|&i| matches!(state(&q, i), RowState::Done { .. }))
+            );
+        }
     }
 }
