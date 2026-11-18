@@ -14,7 +14,7 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use image::ImageDecoder;
 use image::codecs::bmp::BmpDecoder;
@@ -282,10 +282,63 @@ pub(crate) fn decode_srgb8(
     page: u32,
 ) -> Result<Decoded, Error> {
     started(input)?;
-    Vips::error_clear();
-    let result = decode(input, from, max_size, page);
-    Vips::error_clear();
-    result
+    gated(|| decode(input, from, max_size, page))
+}
+
+/// libvips keeps one error buffer for the whole process, so when several
+/// tasks run at once one task's error can carry another's message. Each
+/// libvips task runs through here: tasks run side by side, and one that
+/// fails while another ran beside it runs again alone, with a clean buffer,
+/// so its error is exactly what it would be on its own (D6). The buffer is
+/// cleared whenever the last task running leaves.
+struct Gate {
+    /// Held shared by every task, and exclusively by a re-run.
+    alone: RwLock<()>,
+    /// (tasks running, tasks ever started).
+    count: Mutex<(usize, u64)>,
+}
+
+fn gate() -> &'static Gate {
+    static GATE: OnceLock<Gate> = OnceLock::new();
+    GATE.get_or_init(|| Gate {
+        alone: RwLock::new(()),
+        count: Mutex::new((0, 0)),
+    })
+}
+
+/// Run one libvips task through the [`Gate`]. `f` may run twice, so it
+/// must leave nothing behind when it fails.
+fn gated<T>(f: impl Fn() -> Result<T, Error>) -> Result<T, Error> {
+    let gate = gate();
+    let count = || gate.count.lock().unwrap_or_else(|p| p.into_inner());
+    let shared = gate.alone.read().unwrap_or_else(|p| p.into_inner());
+    let (mine, beside) = {
+        let mut c = count();
+        c.0 += 1;
+        c.1 += 1;
+        (c.1, c.0 > 1)
+    };
+    let result = f();
+    let beside = {
+        let mut c = count();
+        let beside = beside || c.1 != mine;
+        c.0 -= 1;
+        if c.0 == 0 {
+            Vips::error_clear();
+        }
+        beside
+    };
+    drop(shared);
+    match result {
+        Err(_) if beside => {
+            let _alone = gate.alone.write().unwrap_or_else(|p| p.into_inner());
+            Vips::error_clear();
+            let again = f();
+            Vips::error_clear();
+            again
+        }
+        done => done,
+    }
 }
 
 /// Set libvips's worker threads, once it has started.
@@ -310,15 +363,16 @@ fn started(input: &Path) -> Result<(), Error> {
 /// How many pages the TIFF at `input` holds: each becomes a PDF page.
 pub(crate) fn tiff_pages(input: &Path) -> Result<u32, Error> {
     started(input)?;
-    let img = load(input, FormatId::Tiff, "sequential").map_err(|e| {
-        Error::new(
-            ErrorCode::CorruptInput,
-            format!("can't read this image ({})", message(&e)),
-        )
-        .with_file(input)
-    });
-    Vips::error_clear();
-    Ok(img?.get_n_pages().max(1) as u32)
+    gated(|| {
+        let img = load(input, FormatId::Tiff, "sequential").map_err(|e| {
+            Error::new(
+                ErrorCode::CorruptInput,
+                format!("can't read this image ({})", message(&e)),
+            )
+            .with_file(input)
+        })?;
+        Ok(img.get_n_pages().max(1) as u32)
+    })
 }
 
 fn decode(
@@ -410,11 +464,7 @@ impl Run for ImageBackend {
                     "install or update libvips (brew upgrade vips, or a newer libvips-dev)",
                 )
         })?;
-        // libvips keeps one error buffer per process; start each task clean.
-        Vips::error_clear();
-        let result = self.convert(task, options, temp);
-        Vips::error_clear();
-        result
+        gated(|| self.convert(task, options, temp))
     }
 }
 
@@ -1013,5 +1063,82 @@ mod tests {
             n
         };
         assert!(size(Quality::Low) < size(Quality::Max));
+    }
+
+    mod attribution {
+        use super::*;
+        use crate::exec::{Outcome, execute, execute_in};
+        use crate::job::Job;
+        use crate::output::OutputPolicy;
+        use crate::pool::{Limits, Pool};
+        use crate::registry::{Operation, Registry};
+        use persimmon_corpus::{GIF_1X1, PNG_1X1};
+
+        #[test]
+        fn parallel_libvips_errors_match_serial() {
+            let dir = std::env::temp_dir().join(format!("prsm-vips-attr-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut inputs = Vec::new();
+            for i in 0..30 {
+                let p = dir.join(format!("good{i:02}.png"));
+                std::fs::write(&p, PNG_1X1).unwrap();
+                inputs.push(p);
+            }
+            // Broken files of two kinds, interleaved with the good ones.
+            for i in 0..12 {
+                let png = dir.join(format!("broken{i:02}.png"));
+                std::fs::write(&png, &PNG_1X1[..33]).unwrap();
+                let gif = dir.join(format!("broken{i:02}.gif"));
+                std::fs::write(&gif, &GIF_1X1[..GIF_1X1.len() - 6]).unwrap();
+                inputs.insert(i * 3, png);
+                inputs.insert(i * 3 + 1, gif);
+            }
+            let job = |out: &str| Job {
+                op: Operation::Convert,
+                inputs: inputs.clone(),
+                target: Some(FormatId::Webp),
+                output: OutputPolicy {
+                    dir: Some(dir.join(out)),
+                    ..OutputPolicy::default()
+                },
+                options: JobOptions::default(),
+            };
+            let reg = Registry::builtin();
+            let backends = crate::backend::Backends::new();
+            let reasons = |results: &[Result<Outcome, crate::error::Error>]| {
+                let mut bad = Vec::new();
+                for r in results {
+                    match r {
+                        Ok(Outcome::Written(_)) => {}
+                        Err(e) => bad.push((e.file.clone().unwrap(), e.reason.clone())),
+                        other => panic!("{other:?}"),
+                    }
+                }
+                bad
+            };
+            let serial_job = job("serial");
+            let serial = execute(
+                &serial_job,
+                &serial_job.plan(&reg),
+                &backends,
+                &CancelToken::new(),
+                &mut |_| {},
+            );
+            let parallel_job = job("parallel");
+            let parallel = execute_in(
+                &parallel_job,
+                &parallel_job.plan(&reg),
+                &backends,
+                &CancelToken::new(),
+                &Pool::new(Limits { total: 8, media: 1 }),
+                &mut |_| {},
+            );
+            let (s, p) = (reasons(&serial), reasons(&parallel));
+            assert_eq!(s.len(), 24, "{s:?}");
+            assert_ne!(s[0].1, s[1].1, "the two faults read alike: {s:?}");
+            assert_eq!(s, p);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
