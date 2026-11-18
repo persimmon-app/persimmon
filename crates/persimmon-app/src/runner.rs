@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use persimmon_core::backend::{Backends, Run};
-use persimmon_core::error::ErrorCode;
+use persimmon_core::error::{Error, ErrorCode};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
 use persimmon_core::job::Job;
 use persimmon_core::output::Claims;
@@ -262,13 +262,20 @@ impl Inner {
                 }
                 let inner = Arc::clone(self);
                 let handle = std::thread::spawn(move || {
-                    let end = inner.run(id, &job, &token);
+                    // A backend that panics fails its own row; the slot, the
+                    // name claim and the temp file go with the unwinding.
+                    let end = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        inner.run(id, &job, &token)
+                    }))
+                    .unwrap_or_else(|_| crashed(&job));
                     let view = inner.set(id, end);
                     drop(permit);
-                    lock(&inner.state).running.remove(&id);
+                    // Into `ended` before leaving `running`: once nothing is
+                    // running, every row that ended is there to record.
                     if let Some(v) = view {
                         lock(&inner.ended).push(v);
                     }
+                    lock(&inner.state).running.remove(&id);
                     inner.wake.notify_all();
                 });
                 let mut rows = lock(&self.rows);
@@ -327,6 +334,16 @@ impl Inner {
         }
         v
     }
+}
+
+/// How a row whose backend panicked ends.
+fn crashed(job: &Job) -> RowState {
+    let e = Error::new(ErrorCode::Internal, "the converter stopped unexpectedly");
+    let e = match job.inputs.as_slice() {
+        [one] => e.with_file(one),
+        _ => e,
+    };
+    RowState::Failed { error: shown(&e) }
 }
 
 /// The batch's rows, each once as it last ended, in the queue's order;
@@ -1035,6 +1052,63 @@ mod tests {
             assert!(matches!(state(&q, ids[0]), RowState::Failed { .. }));
             assert!(matches!(state(&q, ids[1]), RowState::Done { .. }));
             assert_eq!(r.running(), 0);
+        }
+
+        /// Panics on inputs named `boom*`; writes the others.
+        struct Boom;
+
+        impl Run for Boom {
+            fn run(
+                &self,
+                task: &PlannedTask,
+                _: &JobOptions,
+                temp: &Path,
+                _: &CancelToken,
+                _: &mut dyn FnMut(f32),
+            ) -> Result<Done, Error> {
+                let input = &task.inputs[0];
+                if input
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("boom"))
+                {
+                    panic!("a backend bug");
+                }
+                std::fs::write(temp, std::fs::read(input).unwrap()).unwrap();
+                Ok(Done::Written)
+            }
+        }
+
+        #[test]
+        fn a_row_whose_engine_panics_fails_and_the_queue_goes_on() {
+            let d = Dir::new("several-boom");
+            let queue = Arc::new(Mutex::new(Queue::new(
+                Registry::builtin(),
+                Default::default(),
+            )));
+            let r = Runner::with_engine(Arc::clone(&queue), Arc::new(Boom), TWO, |_| {});
+            let batches: Arc<Mutex<Vec<Batch>>> = Arc::default();
+            let b2 = Arc::clone(&batches);
+            r.set_on_batch(move |b| b2.lock().unwrap().push(b));
+            let ids = add(
+                &queue,
+                &[d.put("boom.png", &PNG_1X1), d.put("fine.png", &PNG_1X1)],
+            );
+            r.start();
+            wait("both rows", 5, || {
+                ids.iter().all(|&i| finished(&state(&queue, i)))
+            });
+            assert!(matches!(state(&queue, ids[0]), RowState::Failed { .. }));
+            assert!(matches!(state(&queue, ids[1]), RowState::Done { .. }));
+            wait("the batch", 5, || !batches.lock().unwrap().is_empty());
+            assert_eq!(batches.lock().unwrap()[0].items.len(), 2);
+            assert_eq!(r.running(), 0);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                r.shutdown();
+                let _ = tx.send(());
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("shutdown hung after a panic");
         }
 
         #[test]

@@ -142,6 +142,15 @@ fn cancelled(task: &PlannedTask) -> Error {
     }
 }
 
+/// The result of a task whose backend panicked.
+pub(crate) fn crashed(task: &PlannedTask) -> Error {
+    let e = Error::new(ErrorCode::Internal, "the converter stopped unexpectedly");
+    match task.inputs.as_slice() {
+        [one] => e.with_file(one),
+        _ => e,
+    }
+}
+
 /// Run one task and commit its output.
 fn run_task(
     job: &Job,
@@ -197,9 +206,14 @@ pub fn execute_in(
                 let tx = tx.clone();
                 scope.spawn(move || {
                     let _ = tx.send(Msg::Started(index));
-                    let result = run_task(job, task, runner, cancel, &mut |f| {
-                        let _ = tx.send(Msg::Progress(index, f));
-                    });
+                    // A backend that panics fails its own task, not the batch;
+                    // unwinding drops the temp file.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_task(job, task, runner, cancel, &mut |f| {
+                            let _ = tx.send(Msg::Progress(index, f));
+                        })
+                    }))
+                    .unwrap_or_else(|_| Err(crashed(task)));
                     // Free the slot before saying so, so the next task can start.
                     drop(permit);
                     let _ = tx.send(Msg::Finished(index, result));
@@ -540,6 +554,47 @@ mod tests {
             assert_eq!(written.len(), 1000);
             assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1000);
             assert!(no_parts(&out));
+        }
+
+        /// Panics on input 1; writes the others.
+        struct Panics;
+
+        impl Run for Panics {
+            fn run(
+                &self,
+                task: &PlannedTask,
+                _: &JobOptions,
+                temp: &Path,
+                _: &CancelToken,
+                _: &mut dyn FnMut(f32),
+            ) -> Result<Done, crate::error::Error> {
+                if task.inputs[0].file_name().is_some_and(|n| n == "in1.png") {
+                    panic!("a backend bug");
+                }
+                std::fs::write(temp, b"x").unwrap();
+                Ok(Done::Written)
+            }
+        }
+
+        #[test]
+        fn a_task_that_panics_fails_alone() {
+            let dir = scratch("panics");
+            let j = job(&dir, 3);
+            let plan = j.plan(&Registry::builtin());
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let pool = Pool::new(Limits { total: 4, media: 1 });
+                let results =
+                    execute_in(&j, &plan, &Panics, &CancelToken::new(), &pool, &mut |_| {});
+                let _ = tx.send(results);
+            });
+            let results = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("execute_in hung after a panic");
+            assert!(results[0].is_ok() && results[2].is_ok(), "{results:?}");
+            let e = results[1].as_ref().unwrap_err();
+            assert_eq!(e.code, ErrorCode::Internal);
+            assert!(no_parts(&dir));
         }
 
         #[test]
