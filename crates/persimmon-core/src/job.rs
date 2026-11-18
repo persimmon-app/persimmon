@@ -14,7 +14,7 @@ use crate::detect::detect;
 use crate::error::{Error, ErrorCode, FixKind};
 use crate::format::{FormatId, format_for_name};
 use crate::inputs::{expand_folder, is_package};
-use crate::output::{OutputPolicy, free_name, reserve};
+use crate::output::{Claim, Claims, OutputPolicy, clash_key, free_name, reserve};
 use crate::registry::{Backend, Operation, Registry};
 
 /// `--quality`.
@@ -272,6 +272,28 @@ impl Job {
     /// mode the only writes are the `--out` folder and the writability
     /// probe; in `Preview` mode there are none.
     pub fn plan_with(&self, reg: &Registry, mode: PlanMode) -> Plan {
+        self.plan_from(reg, mode, HashSet::new())
+    }
+
+    /// Plan the job to run it while other jobs run beside it: every name in
+    /// `claims` counts as taken, and this plan's outputs are claimed until
+    /// the returned [`Claim`] is dropped. Planning holds `claims` throughout,
+    /// so two jobs planned at once never choose the same name.
+    pub fn plan_claimed(&self, reg: &Registry, claims: &Claims) -> (Plan, Claim) {
+        let mut held = claims.lock();
+        let plan = self.plan_from(reg, PlanMode::Commit, held.clone());
+        let keys: Vec<PathBuf> = plan
+            .tasks
+            .iter()
+            .map(|t| clash_key(&t.output))
+            .filter(|k| held.insert(k.clone()))
+            .collect();
+        drop(held);
+        (plan, Claim::new(claims.clone(), keys))
+    }
+
+    /// Plan with `taken` already holding names no output may use.
+    fn plan_from(&self, reg: &Registry, mode: PlanMode, mut taken: HashSet<PathBuf>) -> Plan {
         let mut plan = Plan::new();
         let entries = match self.op {
             Operation::Convert | Operation::Compress => self.expand(reg, &mut plan),
@@ -290,7 +312,6 @@ impl Job {
             .iter()
             .filter_map(|e| e.as_ref().ok().cloned())
             .collect();
-        let mut taken = HashSet::new();
         for input in &inputs {
             reserve(&mut taken, input);
         }
@@ -1405,5 +1426,80 @@ mod tests {
         assert!(plan.tasks.is_empty());
         assert_eq!(plan.errors.len(), 1);
         assert_eq!(plan.errors[0].reason, "is a folder");
+    }
+
+    mod claims {
+        use super::*;
+        use crate::output::Claims;
+
+        /// `x.png` in two folders, both converted to WebP into one `out`.
+        fn two_jobs(name: &str, overwrite: bool) -> (PathBuf, Job, Job) {
+            let dir = scratch(name);
+            for sub in ["a", "b", "out"] {
+                std::fs::create_dir_all(dir.join(sub)).unwrap();
+            }
+            let make = |sub: &str| {
+                let mut j = job(
+                    Operation::Convert,
+                    vec![put(&dir.join(sub), "x.png", &PNG_1X1)],
+                    Some(FormatId::Webp),
+                );
+                j.output.dir = Some(dir.join("out"));
+                j.output.overwrite = overwrite;
+                j
+            };
+            let (a, b) = (make("a"), make("b"));
+            (dir.join("out"), a, b)
+        }
+
+        #[test]
+        fn two_claimed_plans_into_one_folder_get_different_names() {
+            let reg = Registry::builtin();
+            let (out, a, b) = two_jobs("claims-two", false);
+            let claims = Claims::new();
+            let (p1, _c1) = a.plan_claimed(&reg, &claims);
+            let (p2, _c2) = b.plan_claimed(&reg, &claims);
+            assert_eq!(outputs(&p1), vec![out.join("x.webp")]);
+            assert_eq!(outputs(&p2), vec![out.join("x (1).webp")]);
+        }
+
+        #[test]
+        fn a_dropped_claim_frees_its_name() {
+            let reg = Registry::builtin();
+            let (out, a, b) = two_jobs("claims-drop", false);
+            let claims = Claims::new();
+            let (_p1, c1) = a.plan_claimed(&reg, &claims);
+            assert_eq!(claims.len(), 1);
+            drop(c1);
+            assert_eq!(claims.len(), 0);
+            let (p2, _c2) = b.plan_claimed(&reg, &claims);
+            assert_eq!(outputs(&p2), vec![out.join("x.webp")]);
+        }
+
+        #[test]
+        fn claims_hold_even_with_overwrite() {
+            let reg = Registry::builtin();
+            let (out, a, b) = two_jobs("claims-overwrite", true);
+            let claims = Claims::new();
+            let (p1, _c1) = a.plan_claimed(&reg, &claims);
+            let (p2, _c2) = b.plan_claimed(&reg, &claims);
+            assert_eq!(outputs(&p1), vec![out.join("x.webp")]);
+            assert_eq!(outputs(&p2), vec![out.join("x (1).webp")]);
+        }
+
+        #[test]
+        fn a_plan_with_errors_claims_nothing_for_them() {
+            let reg = Registry::builtin();
+            let dir = scratch("claims-error");
+            let j = job(
+                Operation::Convert,
+                vec![dir.join("missing.png")],
+                Some(FormatId::Webp),
+            );
+            let claims = Claims::new();
+            let (plan, _c) = j.plan_claimed(&reg, &claims);
+            assert_eq!(plan.errors.len(), 1);
+            assert_eq!(claims.len(), 0);
+        }
     }
 }

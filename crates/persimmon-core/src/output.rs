@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use unicode_normalization::UnicodeNormalization;
 
@@ -139,7 +140,7 @@ pub fn ensure_writable(dir: &Path) -> Result<(), Error> {
 /// names that differ only in case or in Unicode normalisation (NFC vs NFD)
 /// as one file, so the key folds both, after resolving the folder. On a
 /// case-sensitive volume this only ever adds a needless counter.
-fn clash_key(path: &Path) -> PathBuf {
+pub(crate) fn clash_key(path: &Path) -> PathBuf {
     let fold = |s: &str| s.nfc().collect::<String>().to_lowercase();
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
@@ -151,6 +152,52 @@ fn clash_key(path: &Path) -> PathBuf {
         .map(|n| fold(&n.to_string_lossy()))
         .unwrap_or_default();
     PathBuf::from(fold(&dir.to_string_lossy())).join(name)
+}
+
+/// Output names held by jobs planned apart that haven't finished yet, so
+/// two jobs running at once never write the same file. Clones share them.
+#[derive(Debug, Clone, Default)]
+pub struct Claims(Arc<Mutex<HashSet<PathBuf>>>);
+
+impl Claims {
+    pub fn new() -> Claims {
+        Claims::default()
+    }
+
+    /// How many names are held.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) fn lock(&self) -> MutexGuard<'_, HashSet<PathBuf>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// The names one plan holds; dropping it releases them.
+#[derive(Debug)]
+pub struct Claim {
+    claims: Claims,
+    keys: Vec<PathBuf>,
+}
+
+impl Claim {
+    pub(crate) fn new(claims: Claims, keys: Vec<PathBuf>) -> Claim {
+        Claim { claims, keys }
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let mut held = self.claims.lock();
+        for k in &self.keys {
+            held.remove(k);
+        }
+    }
 }
 
 /// Mark `path` as taken, so no output in this batch is given its name.
