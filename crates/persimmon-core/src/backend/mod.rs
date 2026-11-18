@@ -21,6 +21,15 @@ use crate::exec::CancelToken;
 use crate::job::{JobOptions, PlannedTask};
 use crate::registry::Backend;
 
+/// Set libvips's own worker threads (the pool sets one when it runs several
+/// tasks at once). Without libvips in the build, nothing to set.
+pub(crate) fn set_vips_threads(n: i32) {
+    #[cfg(feature = "vips")]
+    image::set_threads(n);
+    #[cfg(not(feature = "vips"))]
+    let _ = n;
+}
+
 /// What a backend did with a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Done {

@@ -16,6 +16,7 @@ pub mod inputs;
 pub mod job;
 pub mod output;
 pub mod platform;
+pub mod pool;
 pub mod registry;
 #[cfg(feature = "serde")]
 mod serde_util;

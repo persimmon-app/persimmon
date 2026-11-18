@@ -288,6 +288,13 @@ pub(crate) fn decode_srgb8(
     result
 }
 
+/// Set libvips's worker threads, once it has started.
+pub(crate) fn set_threads(n: i32) {
+    if init().is_ok() {
+        Vips::concurrency_set(n);
+    }
+}
+
 /// libvips started, or `BACKEND_MISSING` naming `input`.
 fn started(input: &Path) -> Result<(), Error> {
     init().map_err(|reason| {
