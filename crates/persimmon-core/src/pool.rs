@@ -191,7 +191,8 @@ impl Pool {
     }
 
     /// Wait for a slot in `lane`. A `Background` waiter never takes a slot
-    /// while a `User` waiter wants the same lane. `None` once `cancel` fires.
+    /// while a `User` waiter (or a [`Wanting`]) wants a lane that has room.
+    /// `None` once `cancel` fires.
     pub fn acquire(&self, lane: Lane, priority: Priority, cancel: &CancelToken) -> Option<Permit> {
         let mut state = lock(&self.0.state);
         if priority == Priority::User {
@@ -201,7 +202,11 @@ impl Pool {
             if cancel.is_cancelled() {
                 break None;
             }
-            let ahead = priority == Priority::Background && state.users_waiting[slot(lane)] > 0;
+            // Background work defers to any user whose lane has room now.
+            let ahead = priority == Priority::Background
+                && [Lane::Cpu, Lane::Media]
+                    .into_iter()
+                    .any(|l| state.users_waiting[slot(l)] > 0 && self.fits(&state, l));
             if !ahead && self.fits(&state, lane) {
                 break Some(self.take(&mut state, lane));
             }
@@ -218,6 +223,32 @@ impl Pool {
             self.0.freed.notify_all();
         }
         permit
+    }
+}
+
+/// A user's standing claim on a lane: while it lives, background work
+/// waiting for a slot defers to it.
+#[derive(Debug)]
+pub struct Wanting {
+    pool: Pool,
+    lane: Lane,
+}
+
+impl Pool {
+    /// Count as a user waiting for `lane` until the guard is dropped.
+    pub fn want(&self, lane: Lane) -> Wanting {
+        lock(&self.0.state).users_waiting[slot(lane)] += 1;
+        Wanting {
+            pool: self.clone(),
+            lane,
+        }
+    }
+}
+
+impl Drop for Wanting {
+    fn drop(&mut self) {
+        lock(&self.pool.0.state).users_waiting[slot(self.lane)] -= 1;
+        self.pool.0.freed.notify_all();
     }
 }
 
@@ -349,6 +380,81 @@ mod tests {
         background.join().unwrap();
         user.join().unwrap();
         assert_eq!(*order.lock().unwrap(), vec!["user", "background"]);
+    }
+
+    /// A thread waiting for a Background slot in `lane`; it reports when it
+    /// gets one, then holds it until `release` fires.
+    fn background(
+        pool: &Pool,
+        lane: Lane,
+    ) -> (
+        std::sync::mpsc::Receiver<()>,
+        CancelToken,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let release = CancelToken::new();
+        let (pool, r) = (pool.clone(), release.clone());
+        let handle = std::thread::spawn(move || {
+            let permit = pool.acquire(lane, Priority::Background, &CancelToken::new());
+            let _ = tx.send(());
+            while !r.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            drop(permit);
+        });
+        (rx, release, handle)
+    }
+
+    #[test]
+    fn a_registered_want_holds_background_back() {
+        let pool = Pool::new(Limits::serial());
+        let held = pool.try_acquire(Lane::Cpu).unwrap();
+        let (got, release, bg) = background(&pool, Lane::Cpu);
+        std::thread::sleep(Duration::from_millis(100));
+        let want = pool.want(Lane::Cpu);
+        drop(held);
+        assert!(
+            got.recv_timeout(Duration::from_millis(200)).is_err(),
+            "background work took the slot a user wanted"
+        );
+        let user = pool.try_acquire(Lane::Cpu).unwrap();
+        drop(want);
+        drop(user);
+        got.recv_timeout(Duration::from_secs(1)).unwrap();
+        release.cancel();
+        bg.join().unwrap();
+    }
+
+    #[test]
+    fn background_media_yields_to_a_user_wanting_cpu() {
+        let pool = Pool::new(Limits { total: 1, media: 1 });
+        let held = pool.try_acquire(Lane::Cpu).unwrap();
+        let (got, release, bg) = background(&pool, Lane::Media);
+        std::thread::sleep(Duration::from_millis(100));
+        let want = pool.want(Lane::Cpu);
+        drop(held);
+        assert!(
+            got.recv_timeout(Duration::from_millis(200)).is_err(),
+            "background video took the slot a user's image wanted"
+        );
+        assert_eq!(pool.running(), 0);
+        drop(want);
+        got.recv_timeout(Duration::from_secs(1)).unwrap();
+        release.cancel();
+        bg.join().unwrap();
+    }
+
+    #[test]
+    fn background_goes_when_the_wanted_lane_is_full() {
+        let pool = Pool::new(Limits { total: 3, media: 1 });
+        let _video = pool.try_acquire(Lane::Media).unwrap();
+        let _want = pool.want(Lane::Media);
+        let (got, release, bg) = background(&pool, Lane::Cpu);
+        got.recv_timeout(Duration::from_millis(200))
+            .expect("background image work waited for a user whose lane is full");
+        release.cancel();
+        bg.join().unwrap();
     }
 
     #[cfg(feature = "vips")]

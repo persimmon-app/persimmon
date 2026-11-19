@@ -17,7 +17,7 @@ use persimmon_core::error::{Error, ErrorCode};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute};
 use persimmon_core::job::Job;
 use persimmon_core::output::Claims;
-use persimmon_core::pool::{Lane, Limits, Pool};
+use persimmon_core::pool::{Lane, Limits, Pool, Wanting};
 use persimmon_core::registry::Registry;
 
 use crate::history::{self, Batch, Item, ItemOutcome, Source};
@@ -41,6 +41,9 @@ struct State {
     running: HashMap<RowId, CancelToken>,
     go: bool,
     stop: bool,
+    /// The lanes queued rows are waiting for, [cpu, media], held as wants
+    /// so background work never takes a slot ahead of them (DD-56).
+    wants: [Option<Wanting>; 2],
 }
 
 struct Inner {
@@ -97,6 +100,7 @@ impl Runner {
                 running: HashMap::new(),
                 go: false,
                 stop: false,
+                wants: [None, None],
             }),
             wake: Condvar::new(),
             on_batch: Mutex::new(None),
@@ -167,6 +171,11 @@ impl Runner {
         (self.inner.sink)(v.clone());
         self.start();
         Some(v)
+    }
+
+    /// The pool the rows run in, for work that shares it (watch folders).
+    pub fn pool(&self) -> &Pool {
+        &self.inner.pool
     }
 
     /// How many rows are running.
@@ -242,6 +251,7 @@ impl Inner {
                 // Wait for the cancelled rows to end before recording; they
                 // need the queue to record how they ended.
                 drop(queue);
+                state.wants = [None, None];
                 while !state.running.is_empty() {
                     state = self.wake.wait(state).unwrap_or_else(|p| p.into_inner());
                 }
@@ -284,7 +294,20 @@ impl Inner {
                 continue;
             }
             if state.running.is_empty() && !queue.any_queued() {
+                state.wants = [None, None];
                 return false;
+            }
+            // Rows still queued wait for their lanes, ahead of background work.
+            let mut wanted = [false, false];
+            for row in queue.rows().iter().filter(|r| r.state == RowState::Queued) {
+                wanted[lane_index(self.lane_of(row))] = true;
+            }
+            for (i, lane) in [Lane::Cpu, Lane::Media].into_iter().enumerate() {
+                if !wanted[i] {
+                    state.wants[i] = None;
+                } else if state.wants[i].is_none() {
+                    state.wants[i] = Some(self.pool.want(lane));
+                }
             }
             drop(queue);
             // A row ending, a start, a cancel, a retry or a stop wakes this.
@@ -333,6 +356,14 @@ impl Inner {
             (self.sink)(v.clone());
         }
         v
+    }
+}
+
+/// A lane's slot in [`State::wants`].
+fn lane_index(lane: Lane) -> usize {
+    match lane {
+        Lane::Cpu => 0,
+        Lane::Media => 1,
     }
 }
 
@@ -1109,6 +1140,41 @@ mod tests {
             });
             rx.recv_timeout(Duration::from_secs(5))
                 .expect("shutdown hung after a panic");
+        }
+
+        #[test]
+        fn queued_rows_go_before_background_work() {
+            use persimmon_core::pool::{Lane, Priority};
+            let d = Dir::new("several-first");
+            let (q, r, gate) = gated(Limits { total: 1, media: 1 }, Default::default());
+            let ids = add(
+                &q,
+                &[d.put("hold-a.png", &PNG_1X1), d.put("b.png", &PNG_1X1)],
+            );
+            r.start();
+            wait("the first row running", 5, || {
+                gate.now.load(Ordering::SeqCst) == 1
+            });
+            let background = {
+                let (pool, q) = (r.pool().clone(), Arc::clone(&q));
+                let b = ids[1];
+                std::thread::spawn(move || {
+                    let permit = pool.acquire(Lane::Cpu, Priority::Background, &CancelToken::new());
+                    let seen = state(&q, b);
+                    drop(permit);
+                    seen
+                })
+            };
+            std::thread::sleep(Duration::from_millis(100));
+            gate.open();
+            wait("both rows", 5, || {
+                ids.iter().all(|&i| finished(&state(&q, i)))
+            });
+            let seen = background.join().unwrap();
+            assert!(
+                !matches!(seen, RowState::Queued),
+                "background work took the slot ahead of a queued row"
+            );
         }
 
         #[test]
