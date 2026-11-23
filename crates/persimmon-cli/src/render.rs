@@ -314,6 +314,8 @@ mod tests {
         assert_eq!(human_size(4_294_967_296), "4.3 GB");
     }
 
+    // Unix paths; on Windows `/Users` is a path on the current drive.
+    #[cfg(unix)]
     #[test]
     fn tilde_shows_home_as_a_tilde() {
         let home = Path::new("/Users/someone");

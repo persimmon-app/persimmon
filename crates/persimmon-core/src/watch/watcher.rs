@@ -25,6 +25,9 @@ use crate::registry::{Operation, Registry};
 use super::patterns::Patterns;
 use super::tracker::{Stamp, Tracker};
 
+/// The most events handled between two looks at the folder and the stop.
+const MAX_EVENTS_PER_TICK: usize = 1_000;
+
 /// Name endings of files still being written: never touched.
 const IN_PROGRESS: &[&str] = &[".part", ".download", ".crdownload", ".tmp"];
 
@@ -265,7 +268,13 @@ impl Watcher {
             }
             if let Ok(event) = self.rx.recv_timeout(self.timing.tick) {
                 self.on_event(event);
-                while let Ok(event) = self.rx.try_recv() {
+                // A bounded drain, so a flood of events can't keep a stop
+                // or a tick from coming round.
+                for _ in 0..MAX_EVENTS_PER_TICK {
+                    if cancel.is_cancelled() {
+                        return None;
+                    }
+                    let Ok(event) = self.rx.try_recv() else { break };
                     self.on_event(event);
                 }
             }
@@ -311,6 +320,9 @@ impl Watcher {
             return;
         }
         let Ok(event) = event else { return };
+        if !relevant(&event.kind) {
+            return;
+        }
         let now = Instant::now();
         for path in event.paths {
             match std::fs::metadata(&path) {
@@ -459,6 +471,19 @@ impl Watcher {
     }
 }
 
+/// Whether an event can mean a file appeared, changed or went. Reads
+/// can't, and on Linux listing a folder is itself an open event, so
+/// heeding them would make every scan trigger another.
+fn relevant(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, EventKind};
+    match kind {
+        // Closing a file opened for writing: it may be finished.
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
+}
+
 /// A name that doesn't mark something still being written: a Chrome
 /// `.crdownload` file, or Safari's `.download` folder, which holds the
 /// partial file under its final name.
@@ -584,6 +609,24 @@ mod tests {
     const SOON: Duration = Duration::from_millis(1_500);
 
     #[test]
+    fn reads_are_not_changes() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, EventKind, ModifyKind};
+        assert!(!relevant(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
+        assert!(!relevant(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+        assert!(!relevant(&EventKind::Access(AccessKind::Read)));
+        assert!(relevant(&EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+        assert!(relevant(&EventKind::Create(CreateKind::File)));
+        assert!(relevant(&EventKind::Modify(ModifyKind::Any)));
+        assert!(relevant(&EventKind::Any));
+    }
+
+    #[test]
     fn a_file_that_appears_is_ready_once() {
         let d = Dir::new("appears");
         let mut w = Watcher::start(&spec(&d)).unwrap();
@@ -600,12 +643,14 @@ mod tests {
         let writer = std::thread::spawn(move || {
             use std::io::Write;
             let mut f = std::fs::File::create(&path).unwrap();
+            let mut last = Instant::now();
             for _ in 0..5 {
                 f.write_all(&[0; 1024]).unwrap();
                 f.flush().unwrap();
+                last = Instant::now();
                 std::thread::sleep(Duration::from_millis(150));
             }
-            Instant::now() - Duration::from_millis(150)
+            last
         });
         let (name, at) = first_ready(&mut w, Duration::from_secs(4)).expect("never ready");
         let last_write = writer.join().unwrap();
