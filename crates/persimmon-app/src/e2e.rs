@@ -645,8 +645,12 @@ fn cancel_racing_the_finish_leaves_a_whole_or_no_output() {
             other => panic!("run {i}: {other:?}"),
         }
         assert!(no_partials(&rig.dir.0), "run {i}");
+        // Each row its own batch: a row added before the dispatcher sees
+        // the queue empty would join the running batch, by design.
+        wait_until("the row's batch", 10, || {
+            recorded.lock().unwrap().len() == i + 1
+        });
     }
-    wait_until("the batches", 10, || recorded.lock().unwrap().len() == 20);
     for b in recorded.lock().unwrap().iter() {
         for item in &b.items {
             if let Some(out) = &item.output {

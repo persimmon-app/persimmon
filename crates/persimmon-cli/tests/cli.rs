@@ -1786,6 +1786,25 @@ mod watch {
     }
 
     #[test]
+    fn watch_then_move_into_the_parent_exits_2() {
+        let d = Dir::new("done-above");
+        let out = prsm(&d.0, ["watch", "in", "--to", "pdf", "--then-move", "."]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("the done folder holds the watched folder"));
+    }
+
+    #[test]
+    fn watch_an_unreadable_folder_exits_3() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("unreadable");
+        std::fs::set_permissions(d.input(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let out = prsm(&d.0, ["watch", "in", "--to", "pdf"]);
+        std::fs::set_permissions(d.input(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+        assert!(!d.input().join("converted").exists());
+    }
+
+    #[test]
     fn watch_stops_ffmpeg_on_ctrl_c() {
         use persimmon_corpus::media::{media_sample, test_ffmpeg};
         let Some(ff) = test_ffmpeg() else { return };
@@ -1814,8 +1833,9 @@ mod watch {
             assert!(Instant::now() < end, "ffmpeg never started");
             std::thread::sleep(Duration::from_millis(20));
         }
-        let (status, _, _) = w.stop(10);
+        let (status, rest, _) = w.stop(10);
         assert_eq!(status.code(), Some(0));
+        assert_eq!(rest, ["clip.mov: stopped, not converted"]);
         assert!(!running(), "ffmpeg is still running");
         assert!(temp_files(&d.0).is_empty());
     }

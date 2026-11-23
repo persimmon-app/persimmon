@@ -604,8 +604,11 @@ fn watch(reg: &Registry, spec: &WatchSpec) -> Result<(), ErrorCode> {
                 Ok(Outcome::NotSmaller) => {
                     line(format_args!("{name}: already compact, nothing written"))
                 }
-                // Stopping: the file stays as it was, and nothing is said.
-                Err(e) if e.code == ErrorCode::Cancelled => {}
+                // Stopping: the file stays as it was. Said, since the next
+                // run leaves it alone unless given --existing.
+                Err(e) if e.code == ErrorCode::Cancelled => {
+                    line(format_args!("{name}: stopped, not converted"))
+                }
                 Err(e) => report(&e),
             }
         }

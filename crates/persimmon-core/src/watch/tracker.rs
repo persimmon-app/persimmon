@@ -96,6 +96,11 @@ impl Tracker {
         self.known.remove(path);
     }
 
+    /// The stamp a file was last handed out (or baselined) with.
+    pub(crate) fn known(&self, path: &Path) -> Option<Stamp> {
+        self.known.get(path).copied()
+    }
+
     /// Files waiting to settle.
     pub(crate) fn pending(&self) -> Vec<PathBuf> {
         self.pending.keys().cloned().collect()

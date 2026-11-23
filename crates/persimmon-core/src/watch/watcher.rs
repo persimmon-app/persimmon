@@ -155,8 +155,37 @@ impl Watcher {
             Err(e) => return Err(unreadable(folder, &e)),
         }
         let root = std::fs::canonicalize(folder).map_err(|e| unreadable(folder, &e))?;
-        let is_root = |p: &Path| std::fs::canonicalize(p).is_ok_and(|c| c == root);
-        if is_root(&spec.results) {
+        // Read the folder now, before creating anything, so a refusal shows
+        // while someone is there and leaves nothing behind.
+        std::fs::read_dir(&root).map_err(|e| unreadable(folder, &e))?;
+        let results = resolve(&spec.results);
+        let done = spec.done.as_deref().map(resolve);
+        let is_root = |p: &PathBuf| *p == root;
+        // A folder above the watched one would hold it: excluding it would
+        // exclude everything, and mirrored results could land back inside.
+        let holds_root = |p: &PathBuf| root.starts_with(p) && *p != root;
+        if holds_root(&results) {
+            return Err(Error::new(
+                ErrorCode::Usage,
+                "the results folder holds the watched folder",
+            )
+            .with_file(&spec.results)
+            .with_fix_as(
+                FixKind::ChooseOutputFolder,
+                "choose another folder with --out <dir>",
+            ));
+        }
+        if done.as_ref().is_some_and(holds_root) {
+            return Err(
+                Error::new(ErrorCode::Usage, "the done folder holds the watched folder")
+                    .with_file(spec.done.as_deref().unwrap_or(folder))
+                    .with_fix_as(
+                        FixKind::ChooseDoneFolder,
+                        "choose another folder with --then-move <dir>",
+                    ),
+            );
+        }
+        if is_root(&results) {
             return Err(
                 Error::new(ErrorCode::Usage, "results would be converted again")
                     .with_file(folder)
@@ -166,7 +195,7 @@ impl Watcher {
                     ),
             );
         }
-        if spec.done.as_deref().is_some_and(is_root) {
+        if done.as_ref().is_some_and(is_root) {
             return Err(
                 Error::new(ErrorCode::Usage, "moved originals would be converted again")
                     .with_file(folder)
@@ -202,8 +231,6 @@ impl Watcher {
             missing: false,
             queue: VecDeque::new(),
         };
-        // Read the folder now, so a refusal shows while someone is there.
-        std::fs::read_dir(&w.root).map_err(|e| unreadable(folder, &e))?;
         w.arm();
         let now = Instant::now();
         let root = w.root.clone();
@@ -229,6 +256,11 @@ impl Watcher {
                 return None;
             }
             if let Some(change) = self.queue.pop_front() {
+                if let Change::Ready(path) = &change
+                    && !self.still_ready(path)
+                {
+                    continue;
+                }
                 return Some(change);
             }
             if let Ok(event) = self.rx.recv_timeout(self.timing.tick) {
@@ -238,6 +270,27 @@ impl Watcher {
                 }
             }
             self.step(Instant::now());
+        }
+    }
+
+    /// Whether a file handed out as ready is still as it was then. A file
+    /// that went is forgotten; one that changed settles again, so it
+    /// converts once, in its final state.
+    fn still_ready(&mut self, path: &Path) -> bool {
+        let now = std::fs::metadata(path)
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| Stamp::of(&m));
+        match now {
+            Some(stamp) if Some(stamp) == self.tracker.known(path) => true,
+            Some(stamp) => {
+                self.tracker.observe(path, stamp, Instant::now());
+                false
+            }
+            None => {
+                self.tracker.gone(path);
+                false
+            }
         }
     }
 
@@ -364,7 +417,9 @@ impl Watcher {
             return false;
         };
         !self.excluded.iter().any(|e| dir.starts_with(e))
-            && rel.components().all(|c| visible(c.as_os_str()))
+            && rel
+                .components()
+                .all(|c| visible(c.as_os_str()) && settled_name(c.as_os_str()))
             && !self.in_package(rel, true)
     }
 
@@ -378,12 +433,12 @@ impl Watcher {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return false;
         };
-        let lower = name.to_lowercase();
         (self.recursive || rel.components().count() == 1)
             && !self.excluded.iter().any(|e| path.starts_with(e))
-            && rel.components().all(|c| visible(c.as_os_str()))
+            && rel
+                .components()
+                .all(|c| visible(c.as_os_str()) && settled_name(c.as_os_str()))
             && !self.in_package(rel, false)
-            && !IN_PROGRESS.iter().any(|end| lower.ends_with(end))
             && self.patterns.matches(name)
     }
 
@@ -402,6 +457,42 @@ impl Watcher {
             is_package(&at)
         })
     }
+}
+
+/// A name that doesn't mark something still being written: a Chrome
+/// `.crdownload` file, or Safari's `.download` folder, which holds the
+/// partial file under its final name.
+fn settled_name(name: &std::ffi::OsStr) -> bool {
+    let lower = name.to_string_lossy().to_lowercase();
+    !IN_PROGRESS.iter().any(|end| lower.ends_with(end))
+}
+
+/// Where `path` leads, resolving the part that exists (symlinks, `/var`
+/// as `/private/var`) and, below it, `.` and `..` by name.
+fn resolve(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut at = PathBuf::new();
+    let mut exists = true;
+    for c in abs.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => at.push(c),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                at.pop();
+            }
+            Component::Normal(name) => {
+                at.push(name);
+                if exists {
+                    match std::fs::canonicalize(&at) {
+                        Ok(real) => at = real,
+                        Err(_) => exists = false,
+                    }
+                }
+            }
+        }
+    }
+    at
 }
 
 /// A name that isn't hidden and isn't Finder's `Icon\r`.
@@ -670,6 +761,77 @@ mod tests {
         let e = Watcher::start(&s).err().unwrap();
         assert_eq!(e.code, ErrorCode::Usage);
         assert_eq!(e.reason, "moved originals would be converted again");
+    }
+
+    #[test]
+    fn results_or_done_above_the_watched_folder_is_refused() {
+        let d = Dir::new("above");
+        let mut s = spec(&d);
+        s.results = d.0.clone();
+        let e = Watcher::start(&s)
+            .err()
+            .expect("results above the folder was accepted");
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "the results folder holds the watched folder");
+        let mut s = spec(&d);
+        s.done = Some(d.0.clone());
+        let e = Watcher::start(&s)
+            .err()
+            .expect("done above the folder was accepted");
+        assert_eq!(e.code, ErrorCode::Usage);
+        assert_eq!(e.reason, "the done folder holds the watched folder");
+    }
+
+    #[test]
+    fn a_spelling_that_resolves_to_the_folder_is_refused_without_creating_anything() {
+        let d = Dir::new("spelling");
+        let mut s = spec(&d);
+        s.results = d.input().join("x/..");
+        let e = Watcher::start(&s).err().expect("in/x/.. was accepted");
+        assert_eq!(e.reason, "results would be converted again");
+        assert!(!d.input().join("x").exists(), "in/x was created");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_folder_is_refused_before_anything_is_created() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dir::new("unreadable");
+        std::fs::set_permissions(d.input(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let e = Watcher::start(&spec(&d)).err();
+        std::fs::set_permissions(d.input(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let e = e.expect("an unreadable folder was accepted");
+        assert_eq!(e.code, ErrorCode::UnsupportedInput, "{e}");
+        assert!(!d.input().join("converted").exists());
+    }
+
+    #[test]
+    fn a_safari_download_in_progress_is_never_touched() {
+        let d = Dir::new("safari");
+        let mut s = spec(&d);
+        s.recursive = true;
+        let mut w = Watcher::start(&s).unwrap();
+        d.put("photo.png.download/photo.png", b"partial");
+        d.put("photo.png.download/Info.plist", b"plist");
+        assert!(collect(&mut w, SOON).is_empty());
+    }
+
+    #[test]
+    fn a_file_that_changes_or_goes_before_its_turn_converts_once_or_not_at_all() {
+        let d = Dir::new("turn");
+        for name in ["a.png", "b.png", "c.png"] {
+            d.put(name, b"png");
+        }
+        let mut s = spec(&d);
+        s.existing = true;
+        s.settle = false;
+        let mut w = Watcher::start(&s).unwrap();
+        let cancel = CancelToken::new();
+        assert_eq!(w.next(&cancel), Some(Change::Ready(w.root().join("a.png"))));
+        // b and c are ready and waiting their turn.
+        std::fs::remove_file(d.input().join("b.png")).unwrap();
+        std::fs::write(d.input().join("c.png"), b"png, now longer").unwrap();
+        assert_eq!(collect(&mut w, SOON), ["c.png"]);
     }
 
     #[test]
