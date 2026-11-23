@@ -5,9 +5,9 @@
 //! converted once.
 
 mod patterns;
-// The watcher (next) is the tracker's only caller.
-#[allow(dead_code)]
 mod tracker;
+mod watcher;
 
 pub use patterns::Patterns;
 pub use tracker::Stamp;
+pub use watcher::{Change, Timing, WatchSpec, Watcher};

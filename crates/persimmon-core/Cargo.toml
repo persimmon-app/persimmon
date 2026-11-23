@@ -45,6 +45,9 @@ rs-vips = { version = "0.7", optional = true }
 # BMP decoding, which libvips can't do without ImageMagick (DD-34), and
 # PNG and JPEG for rendered PDF pages, which needs no libvips (DD-36).
 image = { version = "0.25", default-features = false, features = ["bmp", "png", "jpeg"] }
+# File events for watch folders (D2): FSEvents on macOS, inotify on Linux,
+# ReadDirectoryChangesW on Windows. CC0-1.0, allowed for this crate alone.
+notify = "8.2"
 
 [dev-dependencies]
 persimmon-corpus = { path = "../persimmon-corpus" }

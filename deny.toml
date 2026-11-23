@@ -39,3 +39,9 @@ allow = [
     "MIT-0",
 ]
 confidence-threshold = 0.9
+
+[[licenses.exceptions]]
+# notify, the file-event crate for watch folders (FSEvents on macOS).
+# Owner-approved for this crate alone, 2026-11-18.
+allow = ["CC0-1.0"]
+crate = "notify"

@@ -90,6 +90,10 @@ fn reason(r: &str) -> String {
             "--max-size is for images and video",
             "A size limit is for images and video",
         ),
+        (
+            "--match needs at least one pattern",
+            "Match files needs at least one pattern",
+        ),
     ];
     for (cli, app) in rewrites {
         if let Some(rest) = r.strip_prefix(cli) {
@@ -131,6 +135,7 @@ fn fix(f: &Fix) -> String {
         }
         FixKind::SeeFormats => "Pick one of the formats this file can become.".into(),
         FixKind::IncludeSubfolders => "Drop the folders inside it instead.".into(),
+        FixKind::ChooseDoneFolder => "Choose another folder for finished originals.".into(),
         FixKind::InstallFfmpeg => {
             "Persimmon's FFmpeg is missing or damaged. Reinstall Persimmon.".into()
         }
@@ -235,6 +240,10 @@ mod tests {
             (
                 FixKind::IncludeSubfolders,
                 "Drop the folders inside it instead.",
+            ),
+            (
+                FixKind::ChooseDoneFolder,
+                "Choose another folder for finished originals.",
             ),
             (
                 FixKind::InstallFfmpeg,

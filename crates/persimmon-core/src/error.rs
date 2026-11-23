@@ -118,6 +118,8 @@ pub enum FixKind {
     SeeFormats,
     /// A folder holds only folders: include them (`--recursive`).
     IncludeSubfolders,
+    /// Move finished originals somewhere else (`--then-move`).
+    ChooseDoneFolder,
     /// FFmpeg is missing, too old, or not where it was said to be.
     InstallFfmpeg,
     /// The image backend (libvips) is missing or too old.
