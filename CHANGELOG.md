@@ -10,17 +10,21 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - A folder dropped on the app adds the files in it.
 - `--jobs <n>` and `--jobs auto` on `convert`, `compress` and `extract` work on several files at once. Results still print in the order you gave the files. The default is still one at a time.
 - The app converts several files at once, up to one per performance core.
+- `prsm watch <folder> --to <format>` converts each file that lands in a folder, until Ctrl-C, which exits 0. A file converts once it has stopped growing for 2 seconds, and partial downloads are never touched. Results go in `converted` inside the folder unless `--out` says otherwise, and that folder is never watched. `--then-move <dir>` moves each original there once its result is safely written. A failed file isn't tried again until it changes, and a folder that goes away is waited for. The other flags are `--match`, `--recursive`, `--existing` and `--no-wait`.
 
 ### Added: in the engine (`persimmon-core`)
 
 - `pool`: `Pool`, `Limits`, `Lane`, `Priority` and `Jobs`, the bounded pool that decides how many tasks run at once.
 - `execute_in` runs a plan's tasks in parallel within a pool and still reports them in task order.
 - `Claims` and `Job::plan_claimed`, so jobs planned apart never take the same output name.
+- `Pool::want`, so a front end's queued work keeps background work from taking a free slot ahead of it.
+- `watch`: `WatchSpec`, `Watcher`, `Change`, `Patterns`, `Timing` and `Stamp`. The watcher turns file events into settled, matched files, each converted once.
+- `original`: `move_original`, `restore`, `Moved` and `NotRestored`, to move an original after success and move it back on undo.
 
 ### Changed (engine, breaking)
 
 - `JobOptions::recursive` is a new field.
-- `FixKind::IncludeSubfolders` is a new variant.
+- `FixKind::IncludeSubfolders` and `FixKind::ChooseDoneFolder` are new variants.
 - `Job::plan` expands folders for convert and compress.
 - `Plan::skipped` is a new field.
 
