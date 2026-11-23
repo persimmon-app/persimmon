@@ -14,6 +14,7 @@ pub mod exec;
 pub mod format;
 pub mod inputs;
 pub mod job;
+pub mod original;
 pub mod output;
 pub mod platform;
 pub mod pool;
