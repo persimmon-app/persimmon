@@ -1542,3 +1542,281 @@ mod jobs {
         assert!(firsts == names || firsts == want, "{text}");
     }
 }
+
+/// `prsm watch`: started on a temp folder, fed files, stopped with SIGINT.
+#[cfg(unix)]
+mod watch {
+    use super::*;
+    use persimmon_corpus::IMAGE_SAMPLES;
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::{Child, ExitStatus, Stdio};
+    use std::sync::mpsc::{Receiver, channel};
+
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(name: &str) -> Dir {
+            let d =
+                std::env::temp_dir().join(format!("prsm-cli-watch-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(d.join("in")).unwrap();
+            Dir(d)
+        }
+        fn input(&self) -> PathBuf {
+            self.0.join("in")
+        }
+        fn put(&self, rel: &str, bytes: &[u8]) -> PathBuf {
+            let p = self.input().join(rel);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn jpeg() -> &'static [u8] {
+        IMAGE_SAMPLES.iter().find(|s| s.0 == "img-jpeg").unwrap().2
+    }
+
+    struct Watching {
+        child: Child,
+        lines: Receiver<String>,
+        header: String,
+    }
+
+    impl Watching {
+        fn start(cwd: &Path, args: &[&str], home: Option<&Path>) -> Watching {
+            let mut cmd = Command::new(PRSM);
+            cmd.current_dir(cwd)
+                .arg("watch")
+                .args(args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(home) = home {
+                cmd.env("HOME", home);
+            }
+            let mut child = cmd.spawn().unwrap();
+            let out = child.stdout.take().unwrap();
+            let (tx, lines) = channel();
+            std::thread::spawn(move || {
+                for line in BufReader::new(out).lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let header = lines
+                .recv_timeout(Duration::from_secs(10))
+                .expect("no header line");
+            Watching {
+                child,
+                lines,
+                header,
+            }
+        }
+
+        /// The next stdout line within `secs`.
+        fn line(&self, secs: u64) -> Option<String> {
+            self.lines.recv_timeout(Duration::from_secs(secs)).ok()
+        }
+
+        fn interrupt(&self) {
+            let ok = Command::new("kill")
+                .args(["-INT", &self.child.id().to_string()])
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+
+        /// SIGINT, then wait up to `secs` for the exit; the status, any
+        /// further stdout lines, and stderr.
+        fn stop(mut self, secs: u64) -> (ExitStatus, Vec<String>, String) {
+            self.interrupt();
+            let end = Instant::now() + Duration::from_secs(secs);
+            let status = loop {
+                if let Some(s) = self.child.try_wait().unwrap() {
+                    break s;
+                }
+                if Instant::now() > end {
+                    let _ = self.child.kill();
+                    panic!("prsm watch didn't stop within {secs}s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let mut err = String::new();
+            self.child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut err)
+                .unwrap();
+            let rest = self.lines.try_iter().collect();
+            (status, rest, err)
+        }
+    }
+
+    fn temp_files(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if e.file_name().to_string_lossy().starts_with(".prsm-") {
+                    found.push(p);
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn watch_converts_files_that_arrive() {
+        let d = Dir::new("arrive");
+        let w = Watching::start(&d.0, &["in", "--to", "pdf"], None);
+        d.put("a.jpg", jpeg());
+        d.put("b.jpg", jpeg());
+        let mut lines = vec![w.line(15).expect("no line for a file")];
+        lines.push(w.line(15).expect("no line for the second file"));
+        lines.sort();
+        assert!(lines[0].starts_with("a.jpg → "), "{lines:?}");
+        assert!(lines[1].starts_with("b.jpg → "), "{lines:?}");
+        let (status, _, err) = w.stop(5);
+        assert_eq!(status.code(), Some(0), "{err}");
+        assert!(d.input().join("converted/a.pdf").is_file());
+        assert!(d.input().join("converted/b.pdf").is_file());
+        assert!(temp_files(&d.0).is_empty());
+    }
+
+    #[test]
+    fn watch_prints_its_header_with_tilde() {
+        let d = Dir::new("header");
+        let w = Watching::start(&d.0, &["in", "--to", "pdf"], Some(&d.0));
+        assert_eq!(w.header, "watching ~/in → ~/in/converted (ctrl-c to stop)");
+        let (status, _, _) = w.stop(5);
+        assert_eq!(status.code(), Some(0));
+    }
+
+    #[test]
+    fn watch_existing_converts_what_was_there() {
+        let d = Dir::new("existing");
+        d.put("old.jpg", jpeg());
+        let w = Watching::start(&d.0, &["in", "--to", "pdf", "--existing"], None);
+        let line = w.line(15).expect("the existing file wasn't converted");
+        assert!(line.starts_with("old.jpg → "), "{line}");
+        let (status, _, _) = w.stop(5);
+        assert_eq!(status.code(), Some(0));
+    }
+
+    #[test]
+    fn watch_then_move_moves_only_after_success() {
+        let d = Dir::new("then-move");
+        let w = Watching::start(&d.0, &["in", "--to", "pdf", "--then-move", "done"], None);
+        d.put("bad.jpg", b"not a jpeg at all");
+        std::thread::sleep(Duration::from_millis(500));
+        d.put("good.jpg", jpeg());
+        let line = w.line(15).expect("no line for the good file");
+        assert!(line.starts_with("good.jpg → "), "{line}");
+        assert!(line.contains(" (original moved to "), "{line}");
+        let (status, _, err) = w.stop(5);
+        assert_eq!(status.code(), Some(0));
+        assert!(err.contains("bad.jpg"), "{err}");
+        assert!(d.0.join("done/good.jpg").is_file());
+        assert!(!d.input().join("good.jpg").exists());
+        assert!(d.input().join("bad.jpg").is_file());
+    }
+
+    #[test]
+    fn a_relative_folder_never_watches_its_results() {
+        let d = Dir::new("relative");
+        let w = Watching::start(&d.input(), &[".", "--to", "pdf"], None);
+        d.put("a.jpg", jpeg());
+        let line = w.line(15).expect("no line for the file");
+        assert!(line.starts_with("a.jpg → "), "{line}");
+        assert_eq!(w.line(3), None, "something else converted");
+        let (status, _, _) = w.stop(5);
+        assert_eq!(status.code(), Some(0));
+        let outputs = std::fs::read_dir(d.input().join("converted"))
+            .unwrap()
+            .count();
+        assert_eq!(outputs, 1);
+    }
+
+    #[test]
+    fn ctrl_c_while_settling_exits_0_at_once() {
+        let d = Dir::new("settling");
+        let w = Watching::start(&d.0, &["in", "--to", "pdf"], None);
+        d.put("a.jpg", jpeg());
+        std::thread::sleep(Duration::from_millis(200));
+        let started = Instant::now();
+        let (status, rest, _) = w.stop(5);
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(rest.is_empty(), "{rest:?}");
+        let converted = d.input().join("converted");
+        assert_eq!(std::fs::read_dir(&converted).map_or(0, |r| r.count()), 0);
+        assert!(temp_files(&d.0).is_empty());
+    }
+
+    #[test]
+    fn watch_a_missing_folder_exits_7() {
+        let d = Dir::new("missing");
+        let out = prsm(&d.0, ["watch", "nowhere", "--to", "pdf"]);
+        assert_eq!(out.status.code(), Some(7));
+        assert!(stderr(&out).contains("nowhere"));
+    }
+
+    #[test]
+    fn watch_out_equal_to_the_folder_exits_2() {
+        let d = Dir::new("out-is-in");
+        let out = prsm(&d.0, ["watch", "in", "--to", "pdf", "--out", "in"]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("results would be converted again"));
+    }
+
+    #[test]
+    fn watch_stops_ffmpeg_on_ctrl_c() {
+        use persimmon_corpus::media::{media_sample, test_ffmpeg};
+        let Some(ff) = test_ffmpeg() else { return };
+        let Some(clip) = media_sample("vid-mov") else {
+            return;
+        };
+        let d = Dir::new("ffmpeg");
+        let ff = ff.to_string_lossy().into_owned();
+        let w = Watching::start(
+            &d.0,
+            &["in", "--to", "mp4", "--preset", "small", "--ffmpeg", &ff],
+            None,
+        );
+        std::fs::copy(&clip, d.input().join("clip.mov")).unwrap();
+        let pid = w.child.id().to_string();
+        let running = || {
+            Command::new("pgrep")
+                .args(["-P", &pid, "ffmpeg"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        let end = Instant::now() + Duration::from_secs(15);
+        while !running() {
+            assert!(Instant::now() < end, "ffmpeg never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (status, _, _) = w.stop(10);
+        assert_eq!(status.code(), Some(0));
+        assert!(!running(), "ffmpeg is still running");
+        assert!(temp_files(&d.0).is_empty());
+    }
+}

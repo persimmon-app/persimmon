@@ -21,11 +21,13 @@ use persimmon_core::error::{Error, ErrorCode, FixKind};
 use persimmon_core::exec::{CancelToken, Event, Outcome, execute, execute_in};
 use persimmon_core::format::{FormatId, MediaKind};
 use persimmon_core::job::{Job, JobOptions, PageRanges, PlannedTask, Preset, Quality};
+use persimmon_core::original::move_original;
 use persimmon_core::output::OutputPolicy;
 use persimmon_core::pool::{Jobs, Limits, Pool};
 use persimmon_core::registry::{Operation, Registry};
+use persimmon_core::watch::{Change, Patterns, WatchSpec, Watcher};
 
-use render::show;
+use render::{show, tilde};
 
 #[derive(Parser)]
 #[command(
@@ -114,6 +116,34 @@ enum Command {
     },
     /// List every format and what it can become.
     Formats,
+    /// Convert files as they land in a folder, until ctrl-c.
+    Watch {
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+        /// The format to convert to, e.g. webp, mp4, pdf.
+        #[arg(long, value_name = "FMT")]
+        to: String,
+        /// Which files to convert, e.g. "*.jpg,*.png". Default: every kind that can become the target.
+        #[arg(long = "match", value_name = "PATTERNS")]
+        patterns: Option<String>,
+        /// Where results go. Default: converted, inside the folder. Never watched.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// After a file converts, move the original here. Never watched.
+        #[arg(long, value_name = "DIR")]
+        then_move: Option<PathBuf>,
+        /// Also watch the folder's subfolders; results mirror them.
+        #[arg(long)]
+        recursive: bool,
+        /// Also convert the files already in the folder.
+        #[arg(long)]
+        existing: bool,
+        /// Convert a file as soon as it appears, without waiting for it to stop growing.
+        #[arg(long)]
+        no_wait: bool,
+        #[command(flatten)]
+        tune: TuneArgs,
+    },
 }
 
 #[derive(Args)]
@@ -271,6 +301,34 @@ fn main() -> ExitCode {
                 )
             })
         }
+        Command::Watch {
+            folder,
+            to,
+            patterns,
+            out,
+            then_move,
+            recursive,
+            existing,
+            no_wait,
+            tune,
+        } => parse_target(&reg, &to)
+            .and_then(|target| {
+                let mut spec = WatchSpec::new(&reg, folder, target);
+                spec.options = tune.options()?;
+                if let Some(p) = patterns {
+                    spec.patterns = Patterns::parse(&p)?;
+                }
+                if let Some(out) = out {
+                    spec.results = out;
+                }
+                spec.done = then_move;
+                spec.recursive = recursive;
+                spec.existing = existing;
+                spec.settle = !no_wait;
+                Ok(spec)
+            })
+            .map_err(fail)
+            .and_then(|spec| watch(&reg, &spec)),
         Command::Split { pdf, pages, out } => {
             PageRanges::parse(&pages).map_err(fail).and_then(|pages| {
                 let options = JobOptions {
@@ -470,6 +528,89 @@ impl Progress {
             self.shown = false;
         }
     }
+}
+
+/// `prsm watch`: convert each settled file that lands in the folder, one
+/// at a time, until Ctrl-C (which exits 0). A file that fails prints its
+/// error and watching goes on; its original is never moved.
+fn watch(reg: &Registry, spec: &WatchSpec) -> Result<(), ErrorCode> {
+    let mut watcher = Watcher::start(spec).map_err(fail)?;
+    line(format_args!(
+        "watching {} → {} (ctrl-c to stop)",
+        tilde(&spec.folder),
+        tilde(&spec.results)
+    ));
+    let cancel = cancel_on_ctrl_c();
+    let backends = Backends::new();
+    let mut progress = Progress::new();
+    while let Some(change) = watcher.next(&cancel) {
+        let path = match change {
+            Change::Missing => {
+                line(format_args!(
+                    "waiting for {}, which isn't there now",
+                    tilde(&spec.folder)
+                ));
+                continue;
+            }
+            Change::Back => {
+                line(format_args!(
+                    "{} is back, watching again",
+                    tilde(&spec.folder)
+                ));
+                continue;
+            }
+            Change::Ready(path) => path,
+        };
+        let root = watcher.root();
+        let name = show(path.strip_prefix(root).unwrap_or(&path));
+        let job = spec.job_for(root, &path);
+        let plan = job.plan(reg);
+        for e in &plan.errors {
+            report(e);
+        }
+        let results = execute(&job, &plan, &backends, &cancel, &mut |event| {
+            if let Event::Progress {
+                index,
+                total,
+                fraction,
+                ..
+            } = event
+            {
+                progress.draw(index, total, &name, fraction);
+            }
+        });
+        progress.clear();
+        for result in results {
+            match result {
+                Ok(Outcome::Written(out)) => {
+                    let mut text = format!("{name} → {}", tilde(&out));
+                    let moved = spec
+                        .done
+                        .as_ref()
+                        .map(|done| move_original(&path, root, done));
+                    match moved {
+                        Some(Ok(m)) => {
+                            text.push_str(&format!(" (original moved to {})", tilde(&m.to)))
+                        }
+                        Some(Err(e)) => {
+                            line(&text);
+                            report(&e);
+                            continue;
+                        }
+                        None => {}
+                    }
+                    line(text);
+                }
+                Ok(Outcome::NotSmaller) => {
+                    line(format_args!("{name}: already compact, nothing written"))
+                }
+                // Stopping: the file stays as it was, and nothing is said.
+                Err(e) if e.code == ErrorCode::Cancelled => {}
+                Err(e) => report(&e),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Plan a job, then run it (or, with `--dry-run`, print the plan). Output

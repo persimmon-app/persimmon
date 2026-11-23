@@ -140,11 +140,14 @@ prsm extract photos.zip                          # a folder "photos" next to it;
 prsm extract src.tar.zst --out ~/src             # ZIP, TAR, TAR.GZ/BZ2/XZ/ZST, 7z and RAR
 prsm merge --to zip notes/ photo.jpg             # merged.zip; also --to tar.gz
 prsm convert clip.mov --to mp4 --dry-run         # show what would be written, write nothing
+prsm watch ~/Inbox --to webp --then-move ~/Inbox/done   # convert what lands in a folder, until ctrl-c
 ```
 
 `prsm` never overwrites a file unless you pass `--overwrite`. A clash becomes `name (1).ext`; a folder (rendered pages, an extracted archive) is never replaced, even with `--overwrite`. Extracting never writes outside its folder: an archive with an absolute path, a `..`, or a path through a link fails as a whole, and nothing is written. Output goes next to each source unless `--out <dir>` says otherwise. Ctrl-C stops a video at once and a PDF after the page it's on, lets an image in progress finish, skips the rest, and leaves no partial files behind. Closing the terminal or sending SIGTERM does the same. A second Ctrl-C quits at once and may leave a `.part` file. On a terminal, audio, video and PDFs show their progress as they convert.
 
 **A folder** given to `convert` or `compress` stands for the files directly inside it, in name order, and with `--recursive` for the files in its subfolders too. Each output goes next to its source, so the folder's structure is kept (with `--out`, they all go in that one folder, numbered on a clash). Hidden files are left out. Files that can't become the target, or can't be compressed, are skipped and counted on a last line such as `3 files skipped: can't become WebP`; a skip never changes the exit code. A folder with nothing to convert fails like an unsupported file.
+
+**Watching a folder:** `prsm watch <folder> --to <format>` converts each file that lands in the folder, one at a time, until you press Ctrl-C. Nothing already there is touched unless you add `--existing`. A file is converted once it has stopped growing for 2 seconds (`--no-wait` converts it as soon as it appears). Names ending in `.part`, `.download`, `.crdownload` or `.tmp` are never touched, so a download is converted only once it finishes. Hidden files, Finder's litter and files that don't match are left alone. `--match "*.jpg,*.png"` says which files to convert; the default is every kind that can become the target. Results go in a `converted` folder inside the watched one, or wherever `--out` says, and a clash is numbered, never overwritten. `--then-move <dir>` moves each original there once its result is safely written. Neither of those folders is ever watched, so nothing converts twice, and `--out` can't be the watched folder itself. A file converts once per run; one that fails prints its error, stays where it is, and isn't tried again until it changes. `--recursive` watches the subfolders too, and results (and moved originals) keep the subfolder they came from. If the folder goes away, as when a drive is unplugged, `prsm watch` waits for it to come back. Ctrl-C stops it and exits 0.
 
 **Several at once:** `--jobs <n>` (or `--jobs auto`) on `convert`, `compress` and `extract` works on that many files at the same time; video and audio still go one at a time, since FFmpeg already uses every core. Results still print in the order you gave the files, and the exit code is still the first failure's. The default is one at a time.
 
@@ -172,7 +175,7 @@ Exit 10 was `NOT_IMPLEMENTED` before every backend existed. It is retired and ne
 
 ### Batches
 
-When a command takes several inputs, `prsm` keeps going after a failure. It exits 0 only if every input succeeded. Otherwise it exits with the code of the **first failing input, in argument order**. The one exception is cancelling: a batch you cancel exits 130, even if an input before it failed, so a script can always tell it was interrupted. Only the first input that was cancelled or skipped gets a `cancelled` line.
+When a command takes several inputs, `prsm` keeps going after a failure. It exits 0 only if every input succeeded. Otherwise it exits with the code of the **first failing input, in argument order**. The one exception is cancelling: a batch you cancel exits 130, even if an input before it failed, so a script can always tell it was interrupted. `prsm watch` is different: Ctrl-C is how you stop it, so it exits 0, and a file that fails while watching doesn't change that. Only the first input that was cancelled or skipped gets a `cancelled` line.
 
 ### Error messages
 

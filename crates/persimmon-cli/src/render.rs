@@ -3,7 +3,7 @@
 
 //! How `prsm` prints things: sizes, paths, `formats` and `info`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use persimmon_core::backend::ffmpeg::{MediaInfo, Stream};
 use persimmon_core::backend::pdf::PdfInfo;
@@ -31,6 +31,33 @@ pub fn human_size(bytes: u64) -> String {
 /// A path as people expect to read it: without a leading `./`.
 pub fn show(path: &Path) -> String {
     path.strip_prefix(".").unwrap_or(path).display().to_string()
+}
+
+/// `path` made absolute, with the home folder shown as `~`.
+pub fn tilde(path: &Path) -> String {
+    tilde_in(path, std::env::var_os("HOME").map(PathBuf::from).as_deref())
+}
+
+/// [`tilde`] with the home folder given. The home folder is also tried
+/// resolved (`/var` is `/private/var` on macOS), since watched paths are.
+fn tilde_in(path: &Path, home: Option<&Path>) -> String {
+    let abs: PathBuf = std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .components()
+        .collect();
+    if let Some(home) = home {
+        let homes = [Some(home.to_path_buf()), std::fs::canonicalize(home).ok()];
+        for h in homes.into_iter().flatten() {
+            if let Ok(rest) = abs.strip_prefix(&h) {
+                return if rest.as_os_str().is_empty() {
+                    "~".into()
+                } else {
+                    format!("~/{}", rest.display())
+                };
+            }
+        }
+    }
+    abs.display().to_string()
 }
 
 /// `prsm formats`: one section per operation, one line per source format.
@@ -285,6 +312,18 @@ mod tests {
         assert_eq!(human_size(1500), "1.5 KB");
         assert_eq!(human_size(999_960), "1.0 MB");
         assert_eq!(human_size(4_294_967_296), "4.3 GB");
+    }
+
+    #[test]
+    fn tilde_shows_home_as_a_tilde() {
+        let home = Path::new("/Users/someone");
+        assert_eq!(
+            tilde_in(Path::new("/Users/someone/in/converted"), Some(home)),
+            "~/in/converted"
+        );
+        assert_eq!(tilde_in(home, Some(home)), "~");
+        assert_eq!(tilde_in(Path::new("/tmp/./x"), Some(home)), "/tmp/x");
+        assert_eq!(tilde_in(Path::new("/tmp/x"), None), "/tmp/x");
     }
 
     #[test]
