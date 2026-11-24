@@ -217,7 +217,7 @@
 
   onMount(() => {
     ipc.queueRows().then((r) => r.forEach(upsert));
-    ipc.getSettings().then((s) => { settings = s; firstRun = s.newInstall && !s.firstRunSeen; });
+    ipc.getSettings().then((s) => { settings = s; firstRun = !!s && s.newInstall && !s.firstRunSeen; });
     ipc.presets().then((p) => (presets = p));
     refreshHistory();
     refreshWatch();
