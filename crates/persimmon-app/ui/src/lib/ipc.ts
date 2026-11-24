@@ -74,7 +74,8 @@ export const watchPatterns = (target: FormatId) => invoke<string>("watch_pattern
 /** The open panel for a folder; null if cancelled. */
 export const pickWatchFolder = () => invoke<string | null>("pick_watch_folder");
 export const newRule = (folder: string, target: FormatId) => invoke<RuleDraftView>("new_rule", { folder, target });
-export const ruleCommand = (rule: Rule) => invoke<string>("rule_command", { rule });
+/** The rule as it stands: its command line and the files already in its folder. */
+export const ruleDraft = (rule: Rule) => invoke<RuleDraftView>("rule_draft", { rule });
 /** Rejects with a Shown when the rule is refused. */
 export const saveRule = (rule: Rule, existing: boolean) => invoke<RuleView[]>("save_rule", { rule, existing, since: midnight(new Date()) });
 export const toggleRule = (id: string, on: boolean) => invoke<RuleView[]>("toggle_rule", { id, on, since: midnight(new Date()) });

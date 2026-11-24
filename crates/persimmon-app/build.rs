@@ -49,7 +49,7 @@ fn main() {
             "watch_patterns",
             "pick_watch_folder",
             "new_rule",
-            "rule_command",
+            "rule_draft",
             "save_rule",
             "toggle_rule",
             "remove_rule",

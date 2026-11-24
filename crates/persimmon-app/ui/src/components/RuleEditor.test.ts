@@ -18,7 +18,7 @@ const draft = (existing = 0): RuleDraftView => ({ rule, command: "prsm watch ~/I
 function props(over: Record<string, unknown> = {}) {
   return {
     draft: draft(), isNew: true, targets: ["jpeg", "png", "webp"], presets,
-    onCommand: vi.fn().mockResolvedValue("prsm watch ~/Inbox --to png"),
+    onDraft: vi.fn((r: Rule) => Promise.resolve({ rule: r, command: "prsm watch ~/Inbox --to png", existing: 0 })),
     onDefaults: vi.fn((t: string) => Promise.resolve(t === "png" ? "*.jpg,*.webp" : "*.jpg,*.png")),
     onChoose: vi.fn().mockResolvedValue(null),
     onSave: vi.fn().mockResolvedValue(null),
@@ -102,5 +102,18 @@ describe("RuleEditor", () => {
     render(RuleEditor, p);
     await fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
     expect(p.onCancel).toHaveBeenCalled();
+  });
+
+  it("counts the files already here again when the folder changes", async () => {
+    const p = props({
+      onChoose: vi.fn().mockResolvedValue("/Users/me/Scans"),
+      onDraft: vi.fn((r: Rule) => Promise.resolve({ rule: r, command: "c", existing: r.folder === "/Users/me/Scans" ? 5 : 0 })),
+    });
+    render(RuleEditor, p);
+    await flush();
+    expect(screen.queryByLabelText(/already here/)).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Choose the watched folder" }));
+    await flush();
+    expect(screen.getByLabelText("Also convert the 5 files already here")).toBeTruthy();
   });
 });

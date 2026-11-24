@@ -170,9 +170,12 @@ pub(crate) fn new_rule(
     draft_view(rule::draft(&reg, folder, target), &presets, &reg)
 }
 
+/// The rule as the editor has it now: its command line, and the files
+/// already in its folder it would match.
 #[tauri::command]
-pub(crate) fn rule_command(state: State<'_, AppState>, rule: Rule) -> String {
-    rule::command(&rule, &lock(&state.presets))
+pub(crate) fn rule_draft(state: State<'_, AppState>, rule: Rule) -> RuleDraftView {
+    let presets = lock(&state.presets).clone();
+    draft_view(rule, &presets, &Registry::builtin())
 }
 
 /// Save a rule after its checks, which read its folder so macOS asks for

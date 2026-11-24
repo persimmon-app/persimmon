@@ -293,7 +293,7 @@
 </div>
 {#if editor}
   <RuleEditor draft={editor.draft} isNew={editor.isNew} targets={watchTargets} {presets}
-    onCommand={(r) => ipc.ruleCommand(r)} onDefaults={(t) => ipc.watchPatterns(t)}
+    onDraft={(r) => ipc.ruleDraft(r)} onDefaults={(t) => ipc.watchPatterns(t)}
     onChoose={() => ipc.pickWatchFolder()} onSave={saveRule} onCancel={() => (editor = null)} />
 {/if}
 <ConfirmQuit open={confirmQuit} running={rows.filter((r) => r.state === "running").length} rules={quitRules} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />

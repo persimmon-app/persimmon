@@ -5,10 +5,11 @@
   import { badge } from "../lib/format";
   import type { FormatId, PresetView, Rule, RuleDraftView, Shown } from "../lib/types";
 
-  let { draft, isNew, targets, presets, onCommand, onDefaults, onChoose, onSave, onCancel }: {
+  let { draft, isNew, targets, presets, onDraft, onDefaults, onChoose, onSave, onCancel }: {
     draft: RuleDraftView; isNew: boolean; targets: FormatId[]; presets: PresetView[];
-    /** The `prsm watch` line for the rule as it stands. */
-    onCommand: (rule: Rule) => Promise<string>;
+    /** The rule as it stands: its `prsm watch` line, and how many files
+     * already in its folder it would match. */
+    onDraft: (rule: Rule) => Promise<RuleDraftView>;
     /** Match files' defaults for a target. */
     onDefaults: (target: FormatId) => Promise<string>;
     /** The open panel, for the watched, results or done folder. */
@@ -31,13 +32,13 @@
 
   const fitting = $derived(presets.filter((p) => p.mode === "convert" && (p.target === null || p.target === rule.target)));
   // svelte-ignore state_referenced_locally
-  const count = draft.existing;
+  let count = $state(draft.existing);
 
   onMount(() => dialog?.showModal());
 
   $effect(() => {
     const snapshot = $state.snapshot(rule);
-    onCommand(snapshot).then((c) => (command = c), () => {});
+    onDraft(snapshot).then((d) => { command = d.command; count = d.existing; }, () => {});
   });
 
   async function retarget(to: FormatId) {
