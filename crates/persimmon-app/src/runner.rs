@@ -440,6 +440,8 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
                     Operation::Merge => crate::queue::QueueMode::Combine,
                     _ => crate::queue::QueueMode::Convert,
                 }),
+                moved: None,
+                restored: false,
             }
         })
         .collect();
@@ -453,6 +455,8 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
         mode,
         items,
         undone: false,
+        rule: None,
+        folder: None,
     }
 }
 

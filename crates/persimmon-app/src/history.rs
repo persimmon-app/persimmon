@@ -7,7 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
+use persimmon_core::original::{Moved, NotRestored, restore};
+
 use crate::queue::QueueMode;
+use crate::watch::record::FileStamp;
 use crate::wording::Shown;
 
 /// Where a batch came from.
@@ -17,6 +20,8 @@ pub enum Source {
     Window,
     Drop,
     Opened,
+    /// A watch rule's burst (spec D8).
+    Watch,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -48,6 +53,41 @@ pub struct Item {
     pub to: Option<persimmon_core::format::FormatId>,
     #[serde(default)]
     pub mode: Option<QueueMode>,
+    /// The original a watch rule moved to its done folder after this
+    /// item converted.
+    #[serde(default)]
+    pub moved: Option<MovedOriginal>,
+    /// Whether undo put that original back.
+    #[serde(default)]
+    pub restored: bool,
+}
+
+/// An original a watch rule moved, as History keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovedOriginal {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    /// The file as it was at `to` right after the move.
+    pub stamp: FileStamp,
+}
+
+impl MovedOriginal {
+    pub fn from_core(m: &Moved) -> MovedOriginal {
+        MovedOriginal {
+            from: m.from.clone(),
+            to: m.to.clone(),
+            stamp: FileStamp::from_core(&m.stamp),
+        }
+    }
+
+    pub fn to_core(&self) -> Moved {
+        Moved {
+            from: self.from.clone(),
+            to: self.to.clone(),
+            stamp: self.stamp.to_core(),
+        }
+    }
 }
 
 /// The rows one Start (or one drop) ran.
@@ -64,6 +104,12 @@ pub struct Batch {
     pub items: Vec<Item>,
     #[serde(default)]
     pub undone: bool,
+    /// The watch rule whose burst this was.
+    #[serde(default)]
+    pub rule: Option<String>,
+    /// That rule's folder, as History shows it.
+    #[serde(default)]
+    pub folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -79,6 +125,8 @@ pub enum Filter {
 #[serde(rename_all = "camelCase")]
 pub struct UndoReport {
     pub trashed: usize,
+    /// Originals put back where they were.
+    pub restored: usize,
     pub skipped: Vec<String>,
 }
 
@@ -293,10 +341,25 @@ impl History {
         v
     }
 
-    /// The newest batch, while it can still be undone; never an older one,
-    /// so a repeated Undo Last Batch stops after one batch.
+    /// The newest batch you started, while it can still be undone; never
+    /// an older one, so a repeated Undo Last Batch stops after one batch.
+    /// Watch batches are undone from History only (DD-58).
     pub fn newest_undoable(&self) -> Option<&Batch> {
-        self.batches().into_iter().next().filter(|b| undoable(b))
+        self.batches()
+            .into_iter()
+            .find(|b| b.source != Source::Watch)
+            .filter(|b| undoable(b))
+    }
+
+    /// How many files rule `rule` converted in batches finished at or
+    /// after `since` (Unix seconds).
+    pub fn converted_since(&self, rule: &str, since: u64) -> usize {
+        self.batches
+            .iter()
+            .filter(|b| b.rule.as_deref() == Some(rule) && b.finished >= since)
+            .flat_map(|b| &b.items)
+            .filter(|i| i.outcome == ItemOutcome::Done)
+            .count()
     }
 
     pub fn get(&self, id: &str) -> Option<&Batch> {
@@ -346,8 +409,21 @@ impl History {
     /// since it was written is left alone and named; inputs are never
     /// touched.
     pub fn undo(&mut self, id: &str, trash: &dyn Trasher) -> UndoReport {
+        self.undo_restoring(id, trash, &mut |_, _, _| {})
+    }
+
+    /// Undo, telling `before_restore` (the rule, the original's old place
+    /// and its stamp) just before each moved original goes back, so the
+    /// rule's record holds it before it reappears.
+    pub fn undo_restoring(
+        &mut self,
+        id: &str,
+        trash: &dyn Trasher,
+        before_restore: &mut dyn FnMut(&str, &Path, FileStamp),
+    ) -> UndoReport {
         let mut report = UndoReport {
             trashed: 0,
+            restored: 0,
             skipped: Vec::new(),
         };
         if !self.readable {
@@ -384,11 +460,41 @@ impl History {
                     .push(format!("{name} couldn't be moved to the Trash ({e})")),
             }
         }
+        let rule = batch.rule.clone().unwrap_or_default();
+        for item in batch.items.iter_mut() {
+            let Some(m) = item.moved.as_ref().filter(|_| !item.restored) else {
+                continue;
+            };
+            let name = m
+                .from
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            before_restore(&rule, &m.from, m.stamp);
+            match restore(&m.to_core()) {
+                Ok(()) => {
+                    item.restored = true;
+                    report.restored += 1;
+                }
+                Err(NotRestored::Taken) => report.skipped.push(format!(
+                    "{name} wasn't put back: something else is at its old place now"
+                )),
+                Err(NotRestored::Changed) => report.skipped.push(format!(
+                    "{name} changed since it was moved, so it was left in the done folder"
+                )),
+                Err(NotRestored::Gone) => report.skipped.push(format!(
+                    "{name} is no longer in the done folder, so it wasn't put back"
+                )),
+                Err(NotRestored::Failed(e)) => report
+                    .skipped
+                    .push(format!("{name} couldn't be put back ({})", e.reason)),
+            }
+        }
         batch.undone = batch
             .items
             .iter()
             .filter(|i| i.outcome == ItemOutcome::Done)
-            .all(|i| i.undone);
+            .all(|i| i.undone && (i.moved.is_none() || i.restored));
         let _ = self.rewrite();
         report
     }
@@ -427,9 +533,23 @@ pub fn retry_recipe(
 /// is still the file (or folder) the batch wrote.
 pub fn undoable(batch: &Batch) -> bool {
     batch.items.iter().any(|i| {
-        !i.undone
+        (!i.undone
             && i.outcome == ItemOutcome::Done
-            && i.output.as_deref().is_some_and(|o| unchanged(i, o))
+            && i.output.as_deref().is_some_and(|o| unchanged(i, o)))
+            || restorable(i)
+    })
+}
+
+/// A moved original that can still go back: not put back yet, still in
+/// the done folder as it was moved, and nothing at its old place.
+fn restorable(item: &Item) -> bool {
+    item.moved.as_ref().is_some_and(|m| {
+        !item.restored
+            && std::fs::metadata(&m.to)
+                .ok()
+                .and_then(|meta| FileStamp::of(&meta))
+                == Some(m.stamp)
+            && std::fs::symlink_metadata(&m.from).is_err()
     })
 }
 
@@ -480,6 +600,8 @@ mod tests {
             undone: false,
             to: None,
             mode: None,
+            moved: None,
+            restored: false,
         }
     }
 
@@ -493,6 +615,8 @@ mod tests {
             mode: QueueMode::Convert,
             items,
             undone: false,
+            rule: None,
+            folder: None,
         }
     }
 
@@ -561,6 +685,7 @@ mod tests {
             report,
             UndoReport {
                 trashed: 1,
+                restored: 0,
                 skipped: vec![]
             }
         );
@@ -764,6 +889,8 @@ mod tests {
             undone: false,
             to: None,
             mode: None,
+            moved: None,
+            restored: false,
         };
         h.append(batch("bad", now(), vec![failed])).unwrap();
         let ids = |v: Vec<&Batch>| v.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
@@ -786,5 +913,147 @@ mod tests {
         h.clear().unwrap();
         assert!(h.batches().is_empty() && History::open(&path).batches().is_empty());
         assert!(output.exists() && input.exists());
+    }
+
+    fn watch_batch(id: &str, finished: u64, items: Vec<Item>) -> Batch {
+        Batch {
+            source: Source::Watch,
+            rule: Some("r1".into()),
+            folder: Some(PathBuf::from("/in")),
+            ..batch(id, finished, items)
+        }
+    }
+
+    /// A watch item whose original was moved into `done` by the engine.
+    fn moved(d: &Dir) -> (Item, PathBuf) {
+        let original = d.put("a.png", b"in");
+        let output = d.put("a.jpg", b"out");
+        let m =
+            persimmon_core::original::move_original(&original, &d.0, &d.0.join("done")).unwrap();
+        let item = Item {
+            moved: Some(MovedOriginal::from_core(&m)),
+            ..done(&original, &output)
+        };
+        (item, original)
+    }
+
+    #[test]
+    fn undo_puts_moved_originals_back() {
+        let d = Dir::new("restore");
+        let (item, original) = moved(&d);
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(watch_batch("w", now(), vec![item])).unwrap();
+        assert!(!original.exists());
+        let mut seen = Vec::new();
+        let report = h.undo_restoring(
+            "w",
+            &FakeTrash(d.0.join("trash")),
+            &mut |rule, from, stamp| {
+                seen.push((rule.to_string(), from.to_path_buf(), stamp));
+            },
+        );
+        assert_eq!((report.trashed, report.restored), (1, 1));
+        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+        assert_eq!(std::fs::read(&original).unwrap(), b"in");
+        let b = h.get("w").unwrap();
+        assert!(b.items[0].restored && b.undone);
+        assert_eq!(seen.len(), 1);
+        assert_eq!((seen[0].0.as_str(), &seen[0].1), ("r1", &original));
+        assert_eq!(seen[0].2.size, 2);
+        assert!(!undoable(b));
+    }
+
+    #[test]
+    fn undo_names_an_original_it_couldnt_put_back() {
+        type Spoil = fn(&Path, &Path);
+        let cases: [(&str, Spoil, &str); 3] = [
+            (
+                "taken",
+                |from, _| std::fs::write(from, b"someone else").unwrap(),
+                "a.png wasn't put back: something else is at its old place now",
+            ),
+            (
+                "changed",
+                |_, to| std::fs::write(to, b"edited since").unwrap(),
+                "a.png changed since it was moved, so it was left in the done folder",
+            ),
+            (
+                "gone",
+                |_, to| std::fs::remove_file(to).unwrap(),
+                "a.png is no longer in the done folder, so it wasn't put back",
+            ),
+        ];
+        for (name, spoil, said) in cases {
+            let d = Dir::new(&format!("restore-{name}"));
+            let (item, original) = moved(&d);
+            let to = item.moved.as_ref().unwrap().to.clone();
+            let mut h = History::open(&d.0.join("history.jsonl"));
+            h.append(watch_batch("w", now(), vec![item])).unwrap();
+            spoil(&original, &to);
+            let report = h.undo_restoring("w", &FakeTrash(d.0.join("trash")), &mut |_, _, _| {});
+            assert_eq!(report.restored, 0, "{name}");
+            assert_eq!(report.skipped, [said.to_string()], "{name}");
+            assert!(!h.get("w").unwrap().items[0].restored, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_moved_original_alone_keeps_a_batch_undoable() {
+        let d = Dir::new("restore-only");
+        let (item, _) = moved(&d);
+        let out = item.output.clone().unwrap();
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(watch_batch("w", now(), vec![item])).unwrap();
+        std::fs::write(&out, b"edited output").unwrap();
+        assert!(undoable(h.get("w").unwrap()));
+        let report = h.undo_restoring("w", &FakeTrash(d.0.join("trash")), &mut |_, _, _| {});
+        assert_eq!((report.trashed, report.restored), (0, 1));
+    }
+
+    #[test]
+    fn undo_last_skips_watch_batches() {
+        let d = Dir::new("last-watch");
+        let i1 = d.put("a.png", b"in");
+        let o1 = d.put("a.jpg", b"out");
+        let i2 = d.put("b.png", b"in");
+        let o2 = d.put("b.jpg", b"out");
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(batch("mine", now() - 10, vec![done(&i1, &o1)]))
+            .unwrap();
+        h.append(watch_batch("watch", now(), vec![done(&i2, &o2)]))
+            .unwrap();
+        assert_eq!(h.newest_undoable().map(|b| b.id.as_str()), Some("mine"));
+    }
+
+    #[test]
+    fn older_lines_still_read() {
+        let line = r#"{"id":"a","started":1,"finished":2,"source":"window","preset":null,"mode":"convert","items":[{"inputs":["/a.png"],"output":null,"outputSize":null,"outputMtime":null,"size":1,"outcome":"cancelled"}]}"#;
+        let b: Batch = serde_json::from_str(line).unwrap();
+        assert_eq!((b.rule.as_deref(), b.folder.as_deref()), (None, None));
+        assert_eq!(b.items[0].moved, None);
+        assert!(!b.items[0].restored);
+    }
+
+    #[test]
+    fn converted_since_counts_a_rules_done_items() {
+        let d = Dir::new("since");
+        let i = d.put("a.png", b"in");
+        let o = d.put("a.jpg", b"out");
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        let failed = Item {
+            outcome: ItemOutcome::Cancelled,
+            ..done(&i, &o)
+        };
+        h.append(watch_batch("old", 100, vec![done(&i, &o)]))
+            .unwrap_or(());
+        h.append(watch_batch(
+            "new",
+            now(),
+            vec![done(&i, &o), done(&i, &o), failed],
+        ))
+        .unwrap();
+        h.append(batch("mine", now(), vec![done(&i, &o)])).unwrap();
+        assert_eq!(h.converted_since("r1", now() - 60), 2);
+        assert_eq!(h.converted_since("r2", 0), 0);
     }
 }

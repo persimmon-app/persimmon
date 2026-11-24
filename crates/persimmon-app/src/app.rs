@@ -1023,8 +1023,12 @@ mod tests {
                 undone: false,
                 to: None,
                 mode: None,
+                moved: None,
+                restored: false,
             }],
             undone: false,
+            rule: None,
+            folder: None,
         })
         .unwrap();
         assert!(super::reveal_allowed(&h, std::path::Path::new("/x/a.jpg")));
@@ -1481,8 +1485,12 @@ mod tests {
                 undone: false,
                 to: Some(persimmon_core::format::FormatId::Webp),
                 mode: Some(crate::queue::QueueMode::Convert),
+                moved: None,
+                restored: false,
             }],
             undone: false,
+            rule: None,
+            folder: None,
         }
     }
 
@@ -1503,6 +1511,29 @@ mod tests {
         let rows = super::retry_rows(&mut q, &failed_batch(&png, Some("Web image")), 0, &presets);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].preset.as_deref(), Some("Web image"));
+        assert_eq!(rows[0].to, Some(persimmon_core::format::FormatId::Webp));
+        let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_watch_item_retries_with_its_rules_preset() {
+        let d = macos_dir("retry-watch");
+        let png = d.join("a.png");
+        std::fs::write(&png, persimmon_corpus::PNG_1X1).unwrap();
+        let presets = crate::presets::Presets::load(&d.join("presets"));
+        let watch = |preset| crate::history::Batch {
+            source: crate::history::Source::Watch,
+            rule: Some("r1".into()),
+            folder: Some(d.clone()),
+            ..failed_batch(&png, preset)
+        };
+        let mut q = retry_queue();
+        let rows = super::retry_rows(&mut q, &watch(Some("Web image")), 0, &presets);
+        assert_eq!(rows[0].preset.as_deref(), Some("Web image"));
+        assert_eq!(rows[0].to, Some(persimmon_core::format::FormatId::Webp));
+        let mut q = retry_queue();
+        let rows = super::retry_rows(&mut q, &watch(Some("Deleted since")), 0, &presets);
+        assert_eq!(rows[0].preset, None);
         assert_eq!(rows[0].to, Some(persimmon_core::format::FormatId::Webp));
         let _ = std::fs::remove_dir_all(d.parent().unwrap().parent().unwrap());
     }
