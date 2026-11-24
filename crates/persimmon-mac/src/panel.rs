@@ -121,6 +121,12 @@ pub fn set_panel_visible(name: &str, show: bool) -> Result<bool, String> {
     .map(|done| done.is_some())
 }
 
+/// Give the panel called `name` the keyboard (for Esc), without
+/// activating the app; `Ok(false)` when there's none. Main thread only.
+pub fn focus_panel(name: &str) -> Result<bool, String> {
+    with_panel(name, |panel| panel.makeKeyAndOrderFront(None)).map(|done| done.is_some())
+}
+
 /// Centre the panel called `name` on `centre`, a point in AppKit's screen
 /// coordinates (origin at the bottom left of the main screen), kept whole
 /// on the screen that point is on; `Ok(false)` when there's no such
@@ -205,6 +211,7 @@ mod tests {
         );
         assert_eq!(set_panel_visible("drop", true), refused);
         assert_eq!(place_panel("drop", (100.0, 100.0)), refused);
+        assert_eq!(focus_panel("wheel"), refused);
     }
 
     #[test]

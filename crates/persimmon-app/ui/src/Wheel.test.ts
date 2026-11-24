@@ -65,6 +65,12 @@ describe("the wheel", () => {
     expect(onPick).toHaveBeenLastCalledWith(-1);
   });
 
+  it("cancels when it loses the keyboard (a click elsewhere)", async () => {
+    const { onPick } = setup();
+    await fireEvent.blur(window);
+    expect(onPick).toHaveBeenLastCalledWith(-1);
+  });
+
   it("hands a drop to the app with its point, in points", () => {
     const { drag, onDrop } = setup({ });
     drag({ payload: { type: "drop", paths: ["/x/a.mov"], position: { x: 160, y: 40 } } });

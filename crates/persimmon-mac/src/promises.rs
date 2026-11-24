@@ -29,7 +29,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 const PHOTOS_ASSET: &str = "com.apple.photos.object-reference.asset";
 
 /// A promised file's progress.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PromiseEvent {
     /// A promised file is on its way; `name` when the sender gave one,
     /// `photos` when the sender is Photos (whose originals may download
@@ -38,6 +38,8 @@ pub enum PromiseEvent {
         item: u64,
         name: Option<String>,
         photos: bool,
+        /// Where it was dropped, in points from the window's top left.
+        at: Option<(f64, f64)>,
     },
     /// It's complete at `path`.
     Arrived { item: u64, path: PathBuf },
@@ -106,6 +108,12 @@ define_class!(
     }
 );
 
+/// A point in a view of `height`, measured from its top left: AppKit's
+/// views count up from the bottom unless flipped.
+fn top_left(p: NSPoint, height: f64, flipped: bool) -> (f64, f64) {
+    (p.x, if flipped { p.y } else { height - p.y })
+}
+
 /// Whether a drag offers file promises (or a Photos asset with them).
 fn carries_promises(sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
     let wanted: Vec<String> = NSFilePromiseReceiver::readableDraggedTypes()
@@ -141,11 +149,18 @@ impl Overlay {
             .types()
             .is_some_and(|types| types.iter().any(|t| t.to_string() == PHOTOS_ASSET));
         let drop = DROPS.fetch_add(1, Ordering::Relaxed);
+        let point = self.convertPoint_fromView(sender.draggingLocation(), None);
+        let at = Some(top_left(point, self.bounds().size.height, self.isFlipped()));
         let queue = NSOperationQueue::new();
         for receiver in receivers {
             let item = ITEMS.fetch_add(1, Ordering::Relaxed);
             let name = receiver.fileNames().iter().next().map(|n| n.to_string());
-            (ivars.sink)(PromiseEvent::Started { item, name, photos });
+            (ivars.sink)(PromiseEvent::Started {
+                item,
+                name,
+                photos,
+                at,
+            });
             let folder = match staging_folder(&ivars.staging, drop, item) {
                 Ok(f) => f,
                 Err(e) => {
@@ -238,6 +253,18 @@ pub fn install_overlay(
     overlay.registerForDraggedTypes(&NSArray::from_retained_slice(&types));
     content.addSubview_positioned_relativeTo(&overlay, NSWindowOrderingMode::Above, None);
     Ok(())
+}
+
+#[cfg(test)]
+mod point_tests {
+    use super::*;
+
+    #[test]
+    fn a_drop_point_is_measured_from_the_top_left() {
+        let p = NSPoint::new(100.0, 40.0);
+        assert_eq!(top_left(p, 360.0, false), (100.0, 320.0));
+        assert_eq!(top_left(p, 360.0, true), (100.0, 40.0));
+    }
 }
 
 #[cfg(test)]

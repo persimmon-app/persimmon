@@ -62,4 +62,9 @@ describe("HistoryBatch", () => {
     expect(screen.getByText("FINDER")).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Undo batch/ })).toBeTruthy();
   });
+
+  it("tags a wheel batch WHEEL", () => {
+    render(HistoryBatch, { batch: batch({ id: "w", source: "wheel" }), onReveal: vi.fn(), onUndo: vi.fn() });
+    expect(screen.getByText("WHEEL")).toBeTruthy();
+  });
 });

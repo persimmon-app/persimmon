@@ -111,7 +111,7 @@ export interface BatchView {
   id: string;
   started: number;
   finished: number;
-  source: "window" | "drop" | "opened" | "watch" | "finder";
+  source: "window" | "drop" | "opened" | "watch" | "finder" | "wheel";
   /** A watch batch's rule and folder, and the folder as shown (~/Inbox). */
   rule?: string | null;
   folder?: string | null;

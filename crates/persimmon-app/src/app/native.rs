@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Persimmon contributors
 
-//! The native drag layer in the app (spec D3, D5): the floating drop
-//! panel, Photos originals arriving as rows, and Finder's Services.
+//! The native drag layer in the app (spec D3, D4, D5): the floating drop
+//! panel and wheel, Photos originals arriving as rows, and Finder's
+//! Services.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,7 +12,7 @@ use persimmon_mac::promises::PromiseEvent;
 use persimmon_mac::services::{Service, ServiceRequest};
 use tauri::{AppHandle, Manager};
 
-use super::{AppState, emit_note, emit_rows, lock, show_main};
+use super::{AppState, emit_note, emit_rows, lock, show_main, wheel};
 use crate::history::{Batch, ItemOutcome, Source};
 use crate::queue::{Queue, Received, Recipe, RowView};
 
@@ -33,10 +34,10 @@ pub(super) fn add_service_paths(
     queue.add_with(paths, recipe)
 }
 
-/// What a Finder batch with failures says when the window isn't in front
-/// (spec D9); `None` for any other batch.
-pub(super) fn finder_failure_note(batch: &Batch) -> Option<String> {
-    if batch.source != Source::Finder {
+/// What a Finder or wheel batch with failures says when the window isn't
+/// in front (spec D9); `None` for any other batch.
+pub(super) fn failure_note(batch: &Batch) -> Option<String> {
+    if !matches!(batch.source, Source::Finder | Source::Wheel) {
         return None;
     }
     let n = batch.items.len();
@@ -53,24 +54,49 @@ pub(super) fn finder_failure_note(batch: &Batch) -> Option<String> {
     (failed > 0).then(|| format!("{done} of {n} converted, {failed} failed"))
 }
 
-/// A promised file's progress, from the main window's overlay or the drop
-/// panel's (`from_panel`, whose files start as they arrive).
-pub(super) fn on_promise(app: &AppHandle, event: PromiseEvent, from_panel: bool) {
+/// Which overlay a promised file was dropped on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Origin {
+    /// The main window: the file waits for Start.
+    Window,
+    /// The drop panel: the file starts as it arrives.
+    Panel,
+    /// The wheel: the segment it landed on decides.
+    Wheel,
+}
+
+/// A promised file's progress, from the overlay of `origin`.
+pub(super) fn on_promise(app: &AppHandle, event: PromiseEvent, origin: Origin) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
     match event {
-        PromiseEvent::Started { item, name, photos } => {
-            let recipe = state.recipe();
-            let view = state.queue().add_receiving(
-                name.as_deref().unwrap_or(""),
-                &recipe,
-                from_panel,
-                photos,
-            );
-            let id = view.id;
-            lock(&state.receiving).insert(item, id);
-            emit_rows(app, &[view]);
+        PromiseEvent::Started {
+            item,
+            name,
+            photos,
+            at,
+        } => {
+            let id = if origin == Origin::Wheel {
+                wheel::on_promise_started(app, item, name, photos, at);
+                lock(&state.receiving).get(&item).copied()
+            } else {
+                let recipe = state.recipe();
+                let view = state.queue().add_receiving(
+                    name.as_deref().unwrap_or(""),
+                    &recipe,
+                    origin == Origin::Panel,
+                    photos,
+                    None,
+                );
+                let id = view.id;
+                lock(&state.receiving).insert(item, id);
+                emit_rows(app, &[view]);
+                Some(id)
+            };
+            let Some(id) = id else {
+                return;
+            };
             let app = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(SLOW);
@@ -89,7 +115,10 @@ pub(super) fn on_promise(app: &AppHandle, event: PromiseEvent, from_panel: bool)
                 Some(Received::Queued { view, start }) => {
                     emit_rows(app, &[*view]);
                     if start {
-                        state.runner.start_from(Source::Drop);
+                        state.runner.start_from(match origin {
+                            Origin::Wheel => Source::Wheel,
+                            _ => Source::Drop,
+                        });
                     }
                 }
                 // Cancelled meanwhile, or an extra file from one promise:
@@ -118,11 +147,15 @@ pub(super) fn discard(path: &Path) {
 }
 
 /// A Services request from Finder: Open adds the files and shows the
-/// window; Convert adds them and starts at once (the wheel comes in week 6).
+/// window; Convert shows the wheel at the pointer (spec D3), or, with no
+/// wheel to show, adds them and starts at once.
 pub(super) fn on_service(app: &AppHandle, request: ServiceRequest) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
+    if request.service == Service::Convert && wheel::show_for(app, &request.paths) {
+        return;
+    }
     let recipe = state.recipe();
     let (rows, note) = {
         let mut queue = state.queue();
@@ -149,7 +182,11 @@ pub(super) fn install(app: &AppHandle, staging: &Path) {
             eprintln!("persimmon: couldn't set up {what}: {e}");
         }
     };
-    for (label, from_panel) in [("main", false), ("drop", true)] {
+    for (label, origin) in [
+        ("main", Origin::Window),
+        ("drop", Origin::Panel),
+        ("wheel", Origin::Wheel),
+    ] {
         if let Some(window) = app.get_webview_window(label) {
             let app = app.clone();
             report(
@@ -157,18 +194,23 @@ pub(super) fn install(app: &AppHandle, staging: &Path) {
                 persimmon_mac::promises::install_overlay(
                     &window,
                     staging.to_path_buf(),
-                    move |event| on_promise(&app, event, from_panel),
+                    move |event| on_promise(&app, event, origin),
                 ),
             );
         }
     }
-    // After the overlays: the drop window's overlay moves into the panel
-    // with its webview.
-    if let Some(drop) = app.get_webview_window("drop") {
-        report(
-            "the drop panel",
-            persimmon_mac::panel::adopt_as_panel(&drop, "drop"),
-        );
+    // After the overlays: each window's overlay moves into its panel with
+    // its webview.
+    for (label, what) in [("drop", "the drop panel"), ("wheel", "the wheel")] {
+        if let Some(window) = app.get_webview_window(label) {
+            report(what, persimmon_mac::panel::adopt_as_panel(&window, label));
+        }
+    }
+    let on = app
+        .try_state::<AppState>()
+        .is_some_and(|s| lock(&s.settings).wheel);
+    if on {
+        wheel::apply(app, true);
     }
     let app = app.clone();
     report(
@@ -288,18 +330,14 @@ mod tests {
     }
 
     #[test]
-    fn a_finder_batch_with_failures_has_a_note() {
-        assert_eq!(
-            finder_failure_note(&batch(Source::Finder, &[true, true, false])).as_deref(),
-            Some("2 of 3 converted, 1 failed")
-        );
-        assert_eq!(
-            finder_failure_note(&batch(Source::Finder, &[true, true])),
-            None
-        );
-        assert_eq!(
-            finder_failure_note(&batch(Source::Window, &[true, false])),
-            None
-        );
+    fn a_finder_or_wheel_batch_with_failures_has_a_note() {
+        for source in [Source::Finder, Source::Wheel] {
+            assert_eq!(
+                failure_note(&batch(source, &[true, true, false])).as_deref(),
+                Some("2 of 3 converted, 1 failed")
+            );
+            assert_eq!(failure_note(&batch(source, &[true, true])), None);
+        }
+        assert_eq!(failure_note(&batch(Source::Window, &[true, false])), None);
     }
 }

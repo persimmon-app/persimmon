@@ -44,8 +44,10 @@
   });
 </script>
 
+<!-- Losing the keyboard (a click in another app) cancels a wheel that
+     waits for a click; a drag's wheel never has the keyboard. -->
 <svelte:window onmousemove={(e) => point(e.clientX, e.clientY)} onclick={click}
-  onkeydown={(e) => { if (e.key === "Escape") onPick(-1); }} />
+  onkeydown={(e) => { if (e.key === "Escape") onPick(-1); }} onblur={() => onPick(-1)} />
 
 <div class="wheel">
   <svg width={SIZE} height={SIZE} viewBox="0 0 {SIZE} {SIZE}" role="img" aria-label={hub}>

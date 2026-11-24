@@ -24,7 +24,7 @@
     const dot = name.indexOf(".");
     return dot > 0 ? name.slice(dot + 1).toUpperCase() : "FOLDER";
   });
-  const source = $derived({ window: "WINDOW", drop: "DROP", opened: "OPEN WITH", watch: "WATCH", finder: "FINDER" }[batch.source]);
+  const source = $derived({ window: "WINDOW", drop: "DROP", opened: "OPEN WITH", watch: "WATCH", finder: "FINDER", wheel: "WHEEL" }[batch.source]);
   const inBytes = $derived(batch.items.reduce((n, i) => n + i.size, 0));
   const outBytes = $derived(batch.items.reduce((n, i) => n + (i.outputSize ?? 0), 0));
   const done = $derived(batch.items.filter((i) => i.outcome === "done").length);

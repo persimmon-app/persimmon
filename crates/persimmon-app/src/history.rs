@@ -24,6 +24,8 @@ pub enum Source {
     Watch,
     /// Finder's Convert with Persimmon (spec D8).
     Finder,
+    /// A drop on the format wheel (spec D8).
+    Wheel,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1057,6 +1059,25 @@ mod tests {
         h.append(batch("mine", now(), vec![done(&i, &o)])).unwrap();
         assert_eq!(h.converted_since("r1", now() - 60), 2);
         assert_eq!(h.converted_since("r2", 0), 0);
+    }
+
+    #[test]
+    fn wheel_batches_are_tagged_and_undoable_last() {
+        let d = Dir::new("last-wheel");
+        let i1 = d.put("a.png", b"in");
+        let o1 = d.put("a.jpg", b"out");
+        let i2 = d.put("b.png", b"in");
+        let o2 = d.put("b.jpg", b"out");
+        let mut h = History::open(&d.0.join("history.jsonl"));
+        h.append(batch("mine", now() - 10, vec![done(&i1, &o1)]))
+            .unwrap();
+        h.append(Batch {
+            source: Source::Wheel,
+            ..batch("wheel", now(), vec![done(&i2, &o2)])
+        })
+        .unwrap();
+        assert_eq!(h.newest_undoable().map(|b| b.id.as_str()), Some("wheel"));
+        assert_eq!(serde_json::to_string(&Source::Wheel).unwrap(), "\"wheel\"");
     }
 
     #[test]

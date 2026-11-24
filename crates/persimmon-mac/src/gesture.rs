@@ -188,6 +188,13 @@ pub fn start(on: impl Fn(Gesture) + Send + Sync + 'static) -> Result<(), String>
     Ok(())
 }
 
+/// Where the pointer is, in AppKit's screen coordinates (origin at the
+/// main screen's bottom left).
+pub fn pointer() -> (f64, f64) {
+    let p = NSEvent::mouseLocation();
+    (p.x, p.y)
+}
+
 /// Stop watching (the wheel switch turned off). Harmless when nothing is
 /// watched, or off the main thread, where nothing ever is.
 pub fn stop() {

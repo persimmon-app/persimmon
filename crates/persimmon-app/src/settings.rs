@@ -34,6 +34,15 @@ pub struct Settings {
     /// Whether notifications were asked for: once, when the first watch
     /// rule is saved (spec D9).
     pub notifications_asked: bool,
+    /// The format wheel: ⇧ while dragging files anywhere (spec D4). Off
+    /// until turned on.
+    pub wheel: bool,
+    /// The wheel's formats, most recently used first.
+    pub wheel_recent: Vec<persimmon_core::format::FormatId>,
+    /// The first-run card was answered.
+    pub first_run_seen: bool,
+    /// The upgrade's wheel tip was answered.
+    pub wheel_tip_seen: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +57,10 @@ impl Default for Settings {
             drop_window: false,
             preset: None,
             notifications_asked: false,
+            wheel: false,
+            wheel_recent: Vec::new(),
+            first_run_seen: false,
+            wheel_tip_seen: false,
         }
     }
 }
@@ -133,6 +146,25 @@ pub fn view(settings: &Settings) -> SettingsView {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn old_settings_load_with_the_wheel_off() {
+        let dir = std::env::temp_dir().join(format!("prsm-settings-v02-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"output":{"mode":"beside"},"fallback":"/x","mode":"convert","dropWindow":true,"preset":null}"#,
+        )
+        .unwrap();
+        let s = load(&path);
+        assert!(s.drop_window, "the file was read");
+        assert!(!s.wheel);
+        assert!(s.wheel_recent.is_empty());
+        assert!(!s.first_run_seen);
+        assert!(!s.wheel_tip_seen);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use super::*;
 
     struct Dir(PathBuf);
@@ -186,6 +218,13 @@ mod tests {
             drop_window: true,
             preset: Some("web-image".into()),
             notifications_asked: true,
+            wheel: true,
+            wheel_recent: vec![
+                persimmon_core::format::FormatId::Mp4,
+                persimmon_core::format::FormatId::Webp,
+            ],
+            first_run_seen: true,
+            wheel_tip_seen: true,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);

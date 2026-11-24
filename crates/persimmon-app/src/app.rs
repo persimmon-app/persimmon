@@ -17,6 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 
 mod native;
 mod watching;
+mod wheel;
 
 use crate::history::{Batch, Filter, History, Source, SystemTrash, UndoReport, undoable};
 use crate::presets::{Preset, Presets, command, kinds, presets_dir};
@@ -42,6 +43,8 @@ pub struct AppState {
     receiving: Mutex<std::collections::HashMap<u64, RowId>>,
     /// `~/Library/Application Support/Persimmon`.
     data: PathBuf,
+    /// The wheel between showing and a drop or a click.
+    wheel: Mutex<wheel::WheelState>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -935,7 +938,7 @@ pub fn run() {
                 // A Finder conversion that failed, with the window not in
                 // front: the one way anyone hears of it (spec D9).
                 use crate::watch::runner::Notifier;
-                if let Some(note) = native::finder_failure_note(&batch)
+                if let Some(note) = native::failure_note(&batch)
                     && !persimmon_mac::app_is_active()
                     && finder_notes.allowed()
                 {
@@ -956,6 +959,7 @@ pub fn run() {
                 watch,
                 receiving: Mutex::new(std::collections::HashMap::new()),
                 data,
+                wheel: Mutex::new(wheel::WheelState::default()),
             });
             // Rules run whether or not a window is open (D2).
             watching::apply(&app.state::<AppState>());
@@ -1017,6 +1021,8 @@ pub fn run() {
             engine_version,
             add_paths,
             drop_paths,
+            wheel::wheel_drop,
+            wheel::wheel_pick,
             pick_files,
             set_target,
             targets,
