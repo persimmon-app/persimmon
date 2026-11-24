@@ -11,6 +11,11 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - `--jobs <n>` and `--jobs auto` on `convert`, `compress` and `extract` work on several files at once. Results still print in the order you gave the files. The default is still one at a time.
 - The app converts several files at once, up to one per performance core.
 - `prsm watch <folder> --to <format>` converts each file that lands in a folder, until Ctrl-C, which exits 0. A file converts once it has stopped growing for 2 seconds, and partial downloads are never touched. Results go in `converted` inside the folder unless `--out` says otherwise, and that folder is never watched. `--then-move <dir>` moves each original there once its result is safely written. A failed file isn't tried again until it changes, and a folder that goes away is waited for. The other flags are `--match`, `--recursive`, `--existing` and `--no-wait`.
+- Watch folders in the app, under Automation in the sidebar. Each rule says which files to match, what to convert them to (with a preset if you like), where results go, and whether to move each original to a done folder after it converts. Rules keep working while the window is closed. Files that arrived while Persimmon wasn't running are converted when it starts, and no file is converted twice. A rule reads its folder when you save it, so macOS asks for access then. Each rule shows what it's doing, its last failure and its `prsm watch` command, which copies with one click.
+- Start at login: Persimmon opens with no window and its watch rules run. It's in Settings → General and at the foot of the Watch folders view.
+- Notifications for watch folders: one summary when a rule's files stop arriving, such as "~/Inbox — 23 of 24 converted, 1 failed", with Show files and Undo. "Notify on every file" adds one per file. Persimmon asks for permission when you save your first rule, and when notifications are off, History still has every result.
+- Watch batches in History, tagged WATCH. Undoing one moves its results to the Trash and puts each moved original back where it was, unless something else is there now or the original changed, and it names each file it left. Undo Last Batch (⌥⌘Z) never undoes a watch batch: it means the newest batch you started.
+- Quitting with active watch rules asks first: "Watch folders stop while Persimmon is closed. Quit anyway?"
 
 ### Added: in the engine (`persimmon-core`)
 
@@ -20,6 +25,7 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - `Pool::want`, so a front end's queued work keeps background work from taking a free slot ahead of it.
 - `watch`: `WatchSpec`, `Watcher`, `Change`, `Patterns`, `Timing` and `Stamp`. The watcher turns file events into settled, matched files, each converted once.
 - `original`: `move_original`, `restore`, `Moved` and `NotRestored`, to move an original after success and move it back on undo.
+- `watch::files_in`: the files a watcher would pick up from a folder now, with the same filters.
 
 ### Changed (engine, breaking)
 
