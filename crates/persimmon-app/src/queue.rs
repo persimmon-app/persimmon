@@ -539,6 +539,26 @@ impl Queue {
         else {
             return Received::Dropped;
         };
+        // In Combine, the file joins the combine row as a dropped file would
+        // (or starts one): the waiting row goes.
+        if self.rows[i].job.op == Operation::Merge {
+            let row = self.rows.remove(i);
+            let recipe = match row.preset {
+                Some(p) => Recipe::Preset(p),
+                None => Recipe::Mode(QueueMode::Combine),
+            };
+            return match self
+                .add_with(&[path.to_path_buf()], &recipe)
+                .into_iter()
+                .next()
+            {
+                Some(view) => Received::Queued {
+                    view: Box::new(view),
+                    start: row.start_when_ready,
+                },
+                None => Received::Dropped,
+            };
+        }
         let row = &mut self.rows[i];
         row.inputs = vec![path.to_path_buf()];
         row.keys = vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())];
@@ -1184,6 +1204,36 @@ mod tests {
             "only the arrived row runs"
         );
         assert!(q.next_queued().is_none());
+    }
+
+    /// In Combine, a photo from Photos joins the combine row like any
+    /// dropped file, rather than failing on its own.
+    #[test]
+    fn in_combine_a_promised_file_joins_the_combine_row() {
+        let d = Dir::new("promised-combine");
+        let mut q = photos_queue(&d.0.join("out"));
+        let combine = Recipe::Mode(QueueMode::Combine);
+        let first = d.put("first.png", &PNG_1X1);
+        let row = q.add_with(std::slice::from_ref(&first), &combine)[0].clone();
+        let waiting = q.add_receiving("IMG.HEIC", &combine, false);
+        let Received::Queued { view, .. } = q.received(waiting.id, &land(&d, "1-1", "IMG.png"))
+        else {
+            panic!("dropped")
+        };
+        assert_eq!(view.id, row.id);
+        assert_eq!(view.inputs.len(), 2);
+        assert_eq!(view.state, RowState::Queued);
+        assert!(q.get(waiting.id).is_none(), "the waiting row stayed");
+        assert_eq!(q.rows().len(), 1);
+        // With no combine row yet, the photo starts one.
+        let mut q = photos_queue(&d.0.join("out"));
+        let waiting = q.add_receiving("IMG.HEIC", &combine, false);
+        let Received::Queued { view, .. } = q.received(waiting.id, &land(&d, "1-2", "IMG.png"))
+        else {
+            panic!("dropped")
+        };
+        assert_eq!(view.op, Operation::Merge);
+        assert_eq!(q.rows().len(), 1);
     }
 
     #[test]
