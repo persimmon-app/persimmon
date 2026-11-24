@@ -133,4 +133,15 @@ describe("QueueRow", () => {
     expect(screen.getByText("Still receiving the file…")).toBeTruthy();
     expect(screen.queryByText(/Photos|iCloud/)).toBeNull();
   });
+
+  it("offers no Retry for a file that never came", () => {
+    for (const state of [
+      { state: "cancelled" },
+      { state: "failed", error: { code: "INPUT_NOT_FOUND", file: "IMG.HEIC", reason: "The original couldn't be downloaded from iCloud", fix: "Open it in Photos to download it, then try again" } },
+    ]) {
+      const { unmount } = render(QueueRow, { row: row({ ...state, name: "IMG.HEIC", inputs: [], path: "" }), selected: false, onCancel: vi.fn(), onRetry: vi.fn(), onReveal: vi.fn(), onSelect: vi.fn() });
+      expect(screen.queryByText("Retry")).toBeNull();
+      unmount();
+    }
+  });
 });

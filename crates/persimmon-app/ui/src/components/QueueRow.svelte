@@ -92,7 +92,7 @@
       <button class="icon" tabindex={tab} aria-label="Cancel {row.name}" title="Cancel (⌘.)" onclick={(e) => { e.stopPropagation(); onCancel(row.id); }}><Icon name="close" size={14} /></button>
     {:else if row.state === "done"}
       <button class="text" tabindex={tab} aria-label="Reveal {outputName} in Finder" title="Reveal in Finder (⇧⌘R)" onclick={(e) => { e.stopPropagation(); onReveal(row.id); }}>Reveal</button>
-    {:else if row.state === "failed" || row.state === "cancelled"}
+    {:else if (row.state === "failed" || row.state === "cancelled") && row.inputs.length > 0}
       <button class="text" tabindex={tab} aria-label="Retry {row.name}" title="Retry (⌘R)" onclick={(e) => { e.stopPropagation(); onRetry(row.id); }}>Retry</button>
     {/if}
   </span>

@@ -202,7 +202,7 @@
     else if (cmd && e.key === "a") { e.preventDefault(); selected = rows.map((r) => r.id); }
     else if (cmd && e.key === ".") { e.preventDefault(); const r = rowToCancel(rows, anchor); if (r) ipc.cancelRow(r.id); }
     else if (cmd && e.shiftKey && e.key.toLowerCase() === "r") { e.preventDefault(); chosen().filter((r) => r.state === "done").forEach((r) => reveal(ipc.revealRow(r.id))); }
-    else if (cmd && e.key === "r") { e.preventDefault(); chosen().filter((r) => r.state === "failed" || r.state === "cancelled").forEach((r) => ipc.retryRow(r.id)); }
+    else if (cmd && e.key === "r") { e.preventDefault(); chosen().filter((r) => (r.state === "failed" || r.state === "cancelled") && r.inputs.length > 0).forEach((r) => ipc.retryRow(r.id)); }
     else if (e.key === "Backspace" || e.key === "Delete") { if (selected.length) { e.preventDefault(); remove(selected); } }
     else if (e.key === "ArrowDown") { e.preventDefault(); move(1, e.shiftKey); }
     else if (e.key === "ArrowUp") { e.preventDefault(); move(-1, e.shiftKey); }
