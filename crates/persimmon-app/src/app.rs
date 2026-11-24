@@ -1017,6 +1017,9 @@ pub fn run() {
                     };
                     emit_rows(app, &rows);
                     emit_note(app, note);
+                    // The window may be hidden (closed, or opened at login
+                    // with none): show the files that just arrived.
+                    show_main(app);
                 }
                 // Not started yet: setup queues these.
                 None => lock(&app.state::<Pending>().0).extend(paths),
