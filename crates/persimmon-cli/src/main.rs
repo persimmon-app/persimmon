@@ -186,6 +186,9 @@ struct TuneArgs {
     /// Remove metadata: EXIF, XMP, tags and colour profiles (images convert to sRGB first).
     #[arg(long)]
     strip_metadata: bool,
+    /// Use the hardware video encoder (VideoToolbox) for H.264 and HEVC where available; falls back to software.
+    #[arg(long)]
+    hardware: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -364,8 +367,17 @@ impl TuneArgs {
             strip_metadata: self.strip_metadata,
             pages: None,
             recursive: false,
-            hardware: false,
+            hardware: self.hardware,
         })
+    }
+}
+
+/// `text`, then its notes in one pair of parentheses, joined by `"; "`.
+fn with_notes(text: &str, notes: &[String]) -> String {
+    if notes.is_empty() {
+        text.to_string()
+    } else {
+        format!("{text} ({})", notes.join("; "))
     }
 }
 
@@ -583,24 +595,28 @@ fn watch(reg: &Registry, spec: &WatchSpec) -> Result<(), ErrorCode> {
         progress.clear();
         for result in results {
             match result {
-                Ok(Outcome::Written(out) | Outcome::WrittenNoted(out, _)) => {
-                    let mut text = format!("{name} → {}", tilde(&out));
+                Ok(outcome @ (Outcome::Written(_) | Outcome::WrittenNoted(..))) => {
+                    let (out, note) = match outcome {
+                        Outcome::WrittenNoted(out, note) => (out, Some(note.text)),
+                        Outcome::Written(out) => (out, None),
+                        Outcome::NotSmaller => unreachable!(),
+                    };
+                    let text = format!("{name} → {}", tilde(&out));
                     let moved = spec
                         .done
                         .as_ref()
                         .map(|done| move_original(&path, root, done));
+                    let mut extras: Vec<String> = note.into_iter().collect();
                     match moved {
-                        Some(Ok(m)) => {
-                            text.push_str(&format!(" (original moved to {})", tilde(&m.to)))
-                        }
+                        Some(Ok(m)) => extras.push(format!("original moved to {}", tilde(&m.to))),
                         Some(Err(e)) => {
-                            line(&text);
+                            line(with_notes(&text, &extras));
                             report(&e);
                             continue;
                         }
                         None => {}
                     }
-                    line(text);
+                    line(with_notes(&text, &extras));
                 }
                 Ok(Outcome::NotSmaller) => {
                     line(format_args!("{name}: already compact, nothing written"))
@@ -691,8 +707,11 @@ fn run(
             }
             cursor += 1;
             match result {
-                Ok(Outcome::Written(path) | Outcome::WrittenNoted(path, _)) => {
+                Ok(Outcome::Written(path)) => {
                     line(format_args!("{} → {}", label(op, task), show(path)))
+                }
+                Ok(Outcome::WrittenNoted(path, n)) => {
+                    line(format_args!("{} → {} ({n})", label(op, task), show(path)))
                 }
                 Ok(Outcome::NotSmaller) => line(format_args!(
                     "{}: already compact, nothing written",

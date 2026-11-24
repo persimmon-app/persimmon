@@ -84,6 +84,19 @@ fn max_size_over_i32_is_usage() {
 }
 
 #[test]
+fn hardware_is_listed_in_help() {
+    for op in ["convert", "compress", "watch"] {
+        let out = prsm(Path::new("."), [op, "--help"]);
+        let text = stdout(&out);
+        assert!(text.contains("--hardware"), "{op}: {text}");
+        assert!(
+            text.contains("Use the hardware video encoder (VideoToolbox) for H.264 and HEVC where available; falls back to software"),
+            "{op}: {text}"
+        );
+    }
+}
+
+#[test]
 fn compress_help_has_no_pages() {
     let out = prsm(Path::new("."), ["compress", "--help"]);
     assert!(out.status.success());
@@ -849,6 +862,61 @@ mod media {
         assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
         assert_eq!(stdout(&out), "clip.mov → clip.mp4\n");
         assert!(!stderr(&out).contains('%'), "{}", stderr(&out));
+        assert!(dir.join("clip.mp4").is_file());
+    }
+
+    /// An FFmpeg like the test one, but listing no VideoToolbox encoder.
+    #[cfg(unix)]
+    fn ffmpeg_without_videotoolbox(dir: &Path) -> Option<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+        let real = persimmon_corpus::media::test_ffmpeg()?;
+        let probe = real.with_file_name("ffprobe");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = |name: &str, body: String| {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        script("ffprobe", format!("exec '{}' \"$@\"", probe.display()));
+        Some(script(
+            "ffmpeg",
+            format!(
+                "case \"$*\" in *-encoders*) '{0}' \"$@\" | grep -v videotoolbox;; *) exec '{0}' \"$@\";; esac",
+                real.display()
+            ),
+        ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardware_without_videotoolbox_says_it_used_software() {
+        let Some((dir, _)) = sample("hardware-none", "vid-mov") else {
+            return;
+        };
+        let Some(ff) = ffmpeg_without_videotoolbox(&dir) else {
+            return;
+        };
+        let out = prsm(
+            &dir,
+            [
+                "convert".as_ref(),
+                "clip.mov".as_ref(),
+                "--to".as_ref(),
+                "mp4".as_ref(),
+                "--quality".as_ref(),
+                "low".as_ref(),
+                "--hardware".as_ref(),
+                "--ffmpeg".as_ref(),
+                ff.as_os_str(),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            "clip.mov → clip.mp4 (hardware encoder unavailable — used software)\n"
+        );
         assert!(dir.join("clip.mp4").is_file());
     }
 

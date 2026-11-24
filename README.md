@@ -93,6 +93,8 @@ winget install Gyan.FFmpeg           # Windows
 
 Without it, everything else still works, and audio and video conversions fail with `BACKEND_MISSING` and the install command.
 
+`--hardware` encodes H.264 and HEVC with the Mac's hardware encoder (VideoToolbox) where FFmpeg has it; where it doesn't, or the encoder refuses a video, `prsm` uses software and says so on the result line.
+
 PDFs need nothing installed: reading, rendering and writing them is built in. Turning images other than JPEG into a PDF uses libvips, like other image conversions.
 
 The workspace has four crates. `persimmon-core` is the engine, platform-neutral by rule. `persimmon-cli` builds the `prsm` binary. `persimmon-app` is the macOS app; elsewhere it builds as an empty stub. `persimmon-corpus` generates the test files and is never published. CI builds and tests the workspace on macOS, Windows and Linux on every push. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
@@ -125,6 +127,7 @@ prsm compress scan.png                           # "scan (compressed).png", only
 prsm convert clip.mov --to mp4                   # copies the video stream when MP4 already takes it: fast and lossless
 prsm convert clip.mov --to mp4 --preset small    # HEVC: smaller, slower. --preset compatible is H.264, which plays anywhere
 prsm convert clip.mov --to webm                  # VP9 and Opus; --preset small makes AV1
+prsm compress clip.mp4 --hardware                # the Mac's hardware encoder: much faster, slightly larger
 prsm convert talk.mp4 --to m4a                   # just the audio
 prsm convert clip.mp4 --to gif --max-size 480    # an animated GIF, at most 480 px on the long edge
 prsm compress clip.mp4                           # re-encoded, kept only if it's smaller
