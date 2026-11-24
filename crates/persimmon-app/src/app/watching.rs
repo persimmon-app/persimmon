@@ -190,9 +190,19 @@ pub(crate) fn save_rule(
     let presets = lock(&state.presets).clone();
     let others = lock(&state.rules).all().to_vec();
     let (spec, _) = rule::check(&rule, &others, &presets, &reg)?;
-    let is_new = !others.iter().any(|r| r.id == rule.id);
-    if is_new && !existing {
-        state.watch.baseline(&rule.id, &spec);
+    match others.iter().find(|r| r.id == rule.id) {
+        None if !existing => {
+            state.watch.baseline(&rule.id, &spec);
+        }
+        None => {}
+        // An edit leaves alone what it newly brings in (another folder,
+        // more patterns, subfolders), as a new rule does.
+        Some(old) => {
+            let (before, _) = rule::spec(old, &presets, &reg);
+            state
+                .watch
+                .baseline_files(&rule.id, &rule::newly_matched(&before, &spec));
+        }
     }
     lock(&state.rules).put(rule.clone()).map_err(|e| {
         app_error(

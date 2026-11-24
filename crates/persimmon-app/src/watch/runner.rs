@@ -214,20 +214,26 @@ impl WatchRunner {
     /// alone; how many there were.
     pub fn baseline(&self, rule_id: &str, spec: &WatchSpec) -> usize {
         let files = files_in(spec).unwrap_or_default();
+        self.baseline_files(rule_id, &files);
+        files.len()
+    }
+
+    /// Mark `files` in the rule's record as they are now, so they're left
+    /// alone.
+    pub fn baseline_files(&self, rule_id: &str, files: &[PathBuf]) {
         let runs = lock(&self.shared.runs);
         match runs.get(rule_id) {
             Some(run) => {
                 let mut record = lock(&run.shared.record);
-                record.baseline(&files);
+                record.baseline(files);
                 let _ = record.save();
             }
             None => {
                 let mut record = Record::open(&record_path(&self.shared.deps.data, rule_id));
-                record.baseline(&files);
+                record.baseline(files);
                 let _ = record.save();
             }
         }
-        files.len()
     }
 
     /// Look at the rule's folder again now.
@@ -1309,5 +1315,29 @@ mod tests {
         wait("watching", || r.last_state() == Some(WatchState::Watching));
         settle_down();
         assert_eq!(r.engine.tries("old.png"), 0, "old.png converted");
+    }
+
+    /// Editing a rule (here: matching JPEGs too) leaves the files it now
+    /// matches alone, as a new rule does; files that arrive after convert.
+    #[test]
+    fn an_edited_rule_leaves_the_files_it_newly_matches_alone() {
+        let r = rig("edit-scope");
+        let mut rule = r.rule();
+        rule.patterns = "*.png".into();
+        r.put("x.jpg", &persimmon_corpus::PNG_1X1);
+        let w = r.runner();
+        let old = r.running(&rule);
+        w.apply(vec![old.clone()]);
+        rule.patterns = "*.png,*.jpg".into();
+        let new = r.running(&rule);
+        w.baseline_files(
+            "r1",
+            &crate::watch::rule::newly_matched(&old.spec, &new.spec),
+        );
+        w.apply(vec![new]);
+        settle_down();
+        assert_eq!(r.engine.tries("x.jpg"), 0, "x.jpg converted after the edit");
+        r.put("y.jpg", &persimmon_corpus::PNG_1X1);
+        wait("y converted", || r.results() == ["y.webp"]);
     }
 }

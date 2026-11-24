@@ -157,6 +157,21 @@ pub fn spec(rule: &Rule, presets: &Presets, reg: &Registry) -> (WatchSpec, Optio
     (spec, preset.map(|p| p.name.clone()))
 }
 
+/// The files `new` matches in its folder that `old` didn't: what editing a
+/// rule brings into it, to be left alone as a new rule leaves the files
+/// already there (D2). A folder that can't be listed contributes nothing.
+pub fn newly_matched(old: &WatchSpec, new: &WatchSpec) -> Vec<PathBuf> {
+    let before: std::collections::HashSet<PathBuf> = persimmon_core::watch::files_in(old)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    persimmon_core::watch::files_in(new)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| !before.contains(f))
+        .collect()
+}
+
 pub(crate) const CANT_READ: &str = "Persimmon can't read this folder";
 pub(crate) const ALLOW: &str =
     "Allow Persimmon in System Settings → Privacy & Security → Files and Folders";
@@ -639,5 +654,41 @@ mod tests {
         rules.put(a.clone()).unwrap();
         assert_eq!(rules.using_preset("small-web").map(|r| &r.id), Some(&a.id));
         assert!(rules.using_preset("other").is_none());
+    }
+
+    #[test]
+    fn newly_matched_lists_only_files_the_old_rule_left_out() {
+        let d = Dir::new("newly");
+        let ps = presets(&d);
+        let folder = d.folder("in");
+        let other = d.folder("other");
+        for (dir, n) in [
+            (&folder, "a.png"),
+            (&folder, "b.jpg"),
+            (&folder, "sub/c.png"),
+            (&other, "d.png"),
+        ] {
+            let p = dir.join(n);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let canon = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+        let mut old = draft(&reg(), folder.clone(), FormatId::Webp);
+        old.patterns = "*.png".into();
+        let mut new = old.clone();
+        new.patterns = "*.png,*.jpg".into();
+        new.recursive = true;
+        let (o, _) = spec(&old, &ps, &reg());
+        let (n, _) = spec(&new, &ps, &reg());
+        assert_eq!(
+            newly_matched(&o, &n),
+            vec![canon(folder.join("b.jpg")), canon(folder.join("sub/c.png"))]
+        );
+        let mut moved = old.clone();
+        moved.folder = other.clone();
+        moved.results = other.join("converted");
+        let (m, _) = spec(&moved, &ps, &reg());
+        assert_eq!(newly_matched(&o, &m), vec![canon(other.join("d.png"))]);
+        assert!(newly_matched(&o, &o).is_empty());
     }
 }
