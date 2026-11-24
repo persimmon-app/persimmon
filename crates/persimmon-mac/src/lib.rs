@@ -9,7 +9,11 @@
 
 #![cfg(target_os = "macos")]
 
-use objc2_app_kit::NSRunningApplication;
+use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSRunningApplication};
+use objc2_foundation::NSString;
+
+pub mod login;
+pub mod notes;
 
 /// Whether this process is the active app: the one whose window is in
 /// front and takes the keyboard.
@@ -17,9 +21,26 @@ pub fn app_is_active() -> bool {
     NSRunningApplication::currentApplication().isActive()
 }
 
+/// Put `text` on the clipboard, as plain text.
+pub fn copy_text(text: &str) -> bool {
+    let board = NSPasteboard::generalPasteboard();
+    board.clearContents();
+    #[allow(unsafe_code)]
+    // SAFETY: NSPasteboardTypeString is an immutable string constant that
+    // AppKit defines for the process's whole life.
+    let kind = unsafe { NSPasteboardTypeString };
+    board.setString_forType(&NSString::from_str(text), kind)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_text_has_a_safe_signature() {
+        // Not run against the real pasteboard: that's the person's clipboard.
+        let _: fn(&str) -> bool = copy_text;
+    }
 
     #[test]
     fn app_is_active_is_false_in_a_test_process() {
