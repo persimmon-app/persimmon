@@ -53,6 +53,13 @@ export interface SettingsView {
   fallbackLabel: string;
   /** Read from macOS's Login Items each time (not stored). */
   startAtLogin: boolean;
+  /** The format wheel (spec D4), and its formats, most recent first. */
+  wheel: boolean;
+  wheelRecent: FormatId[];
+  firstRunSeen: boolean;
+  wheelTipSeen: boolean;
+  /** No settings before this launch: the first-run card, not the tip. */
+  newInstall: boolean;
 }
 
 export interface SetTarget {

@@ -59,7 +59,8 @@
     {:else if pane === "engines"}
       <EnginesPane {engines} />
     {:else if pane === "finder"}
-      <FinderPane onShortcuts={() => ipc.openKeyboardShortcuts()} />
+      <FinderPane onShortcuts={() => ipc.openKeyboardShortcuts()} wheel={settings?.wheel ?? false}
+        onWheel={(on) => ipc.setWheel(on).then((s) => (settings = s))} />
     {:else if pane === "privacy"}
       <PrivacyPane />
     {:else if pane === "about"}

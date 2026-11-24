@@ -19,6 +19,7 @@
     "allow-set-drop-window-at-launch",
     "allow-set-output-beside",
     "allow-set-start-at-login",
+    "allow-set-wheel",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

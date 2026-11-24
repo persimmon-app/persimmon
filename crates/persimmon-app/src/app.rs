@@ -72,9 +72,13 @@ impl AppState {
 
 /// The settings as the windows see them, with start at login read from
 /// macOS.
+/// No settings file before this launch (set once, at startup).
+static NEW_INSTALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn settings_view(settings: &Settings) -> SettingsView {
     let mut v = view(settings);
     v.start_at_login = persimmon_mac::login::enabled();
+    v.new_install = NEW_INSTALL.load(std::sync::atomic::Ordering::Relaxed);
     v
 }
 
@@ -730,6 +734,25 @@ fn engines_view(
     }
 }
 
+/// The wheel's switch (Settings → Finder & menus, the first-run card's
+/// Show me, the tip's Turn on).
+#[tauri::command]
+fn set_wheel(app: AppHandle, state: State<'_, AppState>, on: bool) -> SettingsView {
+    let view = change_settings(&app, &state, |s| s.wheel = on);
+    wheel::apply(&app, on);
+    view
+}
+
+/// A card was answered, so it doesn't come back.
+#[tauri::command]
+fn dismiss_card(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    card: crate::settings::Card,
+) -> SettingsView {
+    change_settings(&app, &state, |s| crate::settings::dismiss(s, card))
+}
+
 #[tauri::command]
 fn set_drop_window_at_launch(app: AppHandle, state: State<'_, AppState>, on: bool) -> SettingsView {
     let view = change_settings(&app, &state, |s| s.drop_window = on);
@@ -913,6 +936,7 @@ pub fn run() {
         .manage(Pending::default())
         .setup(|app| {
             let file = settings_file(app.handle());
+            NEW_INSTALL.store(!file.exists(), std::sync::atomic::Ordering::Relaxed);
             let settings = load(&file);
             let queue = Arc::new(Mutex::new(Queue::new(
                 Registry::builtin(),
@@ -1023,6 +1047,8 @@ pub fn run() {
             drop_paths,
             wheel::wheel_drop,
             wheel::wheel_pick,
+            set_wheel,
+            dismiss_card,
             pick_files,
             set_target,
             targets,
@@ -1247,6 +1273,7 @@ mod tests {
                 "allow-cancel-row",
                 "allow-clear-history",
                 "allow-copy-command",
+                "allow-dismiss-card",
                 "allow-engine-version",
                 "allow-get-settings",
                 "allow-history",
@@ -1273,6 +1300,7 @@ mod tests {
                 "allow-set-mode",
                 "allow-set-start-at-login",
                 "allow-set-target",
+                "allow-set-wheel",
                 "allow-start",
                 "allow-targets",
                 "allow-toggle-drop-window",
@@ -1342,6 +1370,7 @@ mod tests {
                 "allow-set-drop-window-at-launch",
                 "allow-set-output-beside",
                 "allow-set-start-at-login",
+                "allow-set-wheel",
                 "core:event:allow-listen",
                 "core:event:allow-unlisten"
             ])

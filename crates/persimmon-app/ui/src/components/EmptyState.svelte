@@ -2,10 +2,23 @@
 <!-- The empty queue (canvas "First run"): no wizard, just ways in. -->
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  let { onAdd }: { onAdd: () => void } = $props();
+  let { onAdd, showTip = false, onTurnOn = () => {}, onDismissTip = () => {} }: {
+    onAdd: () => void;
+    /** The wheel tip, once, for someone who had Persimmon before it. */
+    showTip?: boolean;
+    onTurnOn?: () => void;
+    onDismissTip?: () => void;
+  } = $props();
 </script>
 
 <div class="empty">
+  {#if showTip}
+    <div class="tip" role="note">
+      <p>New: hold ⇧ while dragging files to pick a format at the pointer</p>
+      <button onclick={onTurnOn}>Turn on</button>
+      <button onclick={onDismissTip}>Dismiss</button>
+    </div>
+  {/if}
   <div class="zone">
     <Icon name="add" size={24} />
     <p class="title">Drop files here, or folders to combine</p>
@@ -17,6 +30,10 @@
     <div class="card">
       <p class="card-title">Drop window <span class="key">⌥⌘D</span></p>
       <p>A small target that stays on top.</p>
+    </div>
+    <div class="card">
+      <p class="card-title">Finder</p>
+      <p>Right-click → Services → Convert with Persimmon</p>
     </div>
     <div class="card">
       <p class="card-title">Terminal</p>
@@ -43,7 +60,13 @@
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .key { font-family: var(--font-data); font-size: var(--text-label); color: var(--faint); margin-left: var(--space-1); }
   .label { margin: var(--space-6) 0 var(--space-3); font-size: var(--text-label); font-weight: 500; letter-spacing: 0.14em; color: var(--faint); }
-  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+  .cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-3); }
+  .tip {
+    display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-4);
+    padding: var(--space-3) var(--space-4); border: 1px solid var(--accent); border-radius: var(--radius-card);
+    background: var(--accent-tint); color: var(--text);
+  }
+  .tip p { margin: 0; flex: 1; }
   .card { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--surface); color: var(--muted); }
   .card p { margin: 0 0 var(--space-1); }
   .card-title { color: var(--text); font-weight: 600; }

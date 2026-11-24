@@ -65,6 +65,24 @@ impl Default for Settings {
     }
 }
 
+/// A card the empty queue shows once (spec D4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Card {
+    /// A new install's first window: the wheel and the ways in.
+    FirstRun,
+    /// An upgrade's tip about the wheel.
+    WheelTip,
+}
+
+/// `card` was answered: it doesn't come back.
+pub fn dismiss(settings: &mut Settings, card: Card) {
+    match card {
+        Card::FirstRun => settings.first_run_seen = true,
+        Card::WheelTip => settings.wheel_tip_seen = true,
+    }
+}
+
 /// `data_dir` is `~/Library/Application Support`.
 pub fn settings_path(data_dir: &Path) -> PathBuf {
     data_dir.join("Persimmon").join("settings.json")
@@ -130,6 +148,9 @@ pub struct SettingsView {
     pub fallback_label: String,
     /// Whether Persimmon opens at login: read from macOS, never stored.
     pub start_at_login: bool,
+    /// There were no settings before this launch: a new install, which
+    /// gets the first-run card rather than the upgrade's tip.
+    pub new_install: bool,
 }
 
 pub fn view(settings: &Settings) -> SettingsView {
@@ -140,12 +161,39 @@ pub fn view(settings: &Settings) -> SettingsView {
         },
         fallback_label: crate::queue::tilde(&settings.fallback),
         start_at_login: false,
+        new_install: false,
         settings: settings.clone(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn dismissing_a_card_remembers_it() {
+        let mut s = Settings::default();
+        dismiss(&mut s, Card::FirstRun);
+        assert!(s.first_run_seen && !s.wheel_tip_seen);
+        dismiss(&mut s, Card::WheelTip);
+        assert!(s.wheel_tip_seen);
+        let card: Card = serde_json::from_str("\"wheelTip\"").unwrap();
+        assert_eq!(card, Card::WheelTip);
+    }
+
+    #[test]
+    fn the_view_carries_the_wheel_and_the_cards() {
+        let v = serde_json::to_value(view(&Settings::default())).unwrap();
+        for key in [
+            "wheel",
+            "wheelRecent",
+            "firstRunSeen",
+            "wheelTipSeen",
+            "newInstall",
+        ] {
+            assert!(v.get(key).is_some(), "{key}: {v}");
+        }
+        assert_eq!(v["newInstall"], false);
+    }
 
     #[test]
     fn old_settings_load_with_the_wheel_off() {

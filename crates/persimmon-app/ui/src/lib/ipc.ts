@@ -61,6 +61,8 @@ export const retryItem = (batch: string, index: number) => invoke<RowView[]>("re
 export const revealPath = (path: string) => invoke<string | null>("reveal_path", { path });
 export const engines = () => invoke<EnginesView>("engines");
 export const setDropWindowAtLaunch = (on: boolean) => invoke<SettingsView>("set_drop_window_at_launch", { on });
+export const setWheel = (on: boolean) => invoke<SettingsView>("set_wheel", { on });
+export const dismissCard = (card: "firstRun" | "wheelTip") => invoke<SettingsView>("dismiss_card", { card });
 export const openSources = () => invoke<boolean>("open_sources");
 export const openLicences = () => invoke<boolean>("open_licences");
 export const onHistory = (f: (b: BatchView) => void): Promise<UnlistenFn> => listen<BatchView>("history", (e) => f(e.payload));

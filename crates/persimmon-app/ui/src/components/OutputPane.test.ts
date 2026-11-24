@@ -6,7 +6,7 @@ import type { SettingsView } from "../lib/types";
 
 const beside: SettingsView = {
   output: { mode: "beside" }, fallback: "/Users/me/Downloads/Persimmon", mode: "convert", dropWindow: false, preset: null,
-  outputLabel: "beside original", fallbackLabel: "~/Downloads/Persimmon", startAtLogin: false,
+  outputLabel: "beside original", fallbackLabel: "~/Downloads/Persimmon", startAtLogin: false, wheel: false, wheelRecent: [], firstRunSeen: false, wheelTipSeen: false, newInstall: false,
 };
 
 function show(settings: SettingsView) {

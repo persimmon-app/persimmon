@@ -30,6 +30,8 @@ fn main() {
             "drop_paths",
             "wheel_drop",
             "wheel_pick",
+            "set_wheel",
+            "dismiss_card",
             "open_settings",
             "presets",
             "use_preset",

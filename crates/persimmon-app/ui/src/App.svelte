@@ -8,6 +8,7 @@
   import CombineRow from "./components/CombineRow.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import EmptyState from "./components/EmptyState.svelte";
+  import FirstRun from "./components/FirstRun.svelte";
   import { rowToCancel, upsert as merge, without } from "./lib/rows";
   import StatusBar from "./components/StatusBar.svelte";
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
@@ -33,6 +34,11 @@
   // A notification's batch is shown once: leaving History forgets it.
   $effect(() => { if (view !== "history") focusBatch = null; });
   let settings = $state<SettingsView | null>(null);
+  /** The first-run card, decided once when the settings first arrive, so
+   * its confirmation stays after it's been answered. */
+  let firstRun = $state(false);
+  /** The wheel tip, for someone who had Persimmon before the wheel. */
+  const showTip = $derived(!!settings && !settings.newInstall && !settings.wheelTipSeen && !settings.wheel);
   const mode: QueueMode = $derived(settings?.mode ?? "convert");
   let picking = false;
   let presets: PresetView[] = $state([]);
@@ -211,7 +217,7 @@
 
   onMount(() => {
     ipc.queueRows().then((r) => r.forEach(upsert));
-    ipc.getSettings().then((s) => (settings = s));
+    ipc.getSettings().then((s) => { settings = s; firstRun = s.newInstall && !s.firstRunSeen; });
     ipc.presets().then((p) => (presets = p));
     refreshHistory();
     refreshWatch();
@@ -262,7 +268,15 @@
         onClear={async () => { await ipc.clearHistory(); report = null; refreshHistory(); }}
         onDismissReport={() => (report = null)} />
     {:else if rows.length === 0}
-      <div class="queue"><EmptyState onAdd={pick} /></div>
+      <div class="queue">
+        {#if firstRun}
+          <FirstRun onWheel={(on) => ipc.setWheel(on).then((s) => (settings = s))}
+            onDismiss={() => ipc.dismissCard("firstRun").then((s) => (settings = s))} />
+        {/if}
+        <EmptyState onAdd={pick} showTip={showTip && !firstRun}
+          onTurnOn={async () => { settings = await ipc.setWheel(true); settings = await ipc.dismissCard("wheelTip"); }}
+          onDismissTip={() => ipc.dismissCard("wheelTip").then((s) => (settings = s))} />
+      </div>
     {:else}
       <!-- A click on the queue's empty space clears the selection, so the
            Output menu acts on every row again (spec D1). -->

@@ -70,7 +70,7 @@ describe("the Settings panes", () => {
 
   it("General starts Persimmon at login", async () => {
     const onStartAtLogin = vi.fn();
-    const settings: SettingsView = { output: { mode: "beside" }, fallback: "", mode: "convert", dropWindow: false, preset: null, outputLabel: "", fallbackLabel: "", startAtLogin: false };
+    const settings: SettingsView = { output: { mode: "beside" }, fallback: "", mode: "convert", dropWindow: false, preset: null, outputLabel: "", fallbackLabel: "", startAtLogin: false, wheel: false, wheelRecent: [], firstRunSeen: false, wheelTipSeen: false, newInstall: false };
     render(GeneralPane, { settings, onDropWindow: vi.fn(), onStartAtLogin, loginError: "Persimmon couldn't be added to Login Items" });
     await fireEvent.click(screen.getByLabelText("Start at login"));
     expect(onStartAtLogin).toHaveBeenCalledWith(true);
