@@ -4,5 +4,6 @@
 //! Watch folders in the app (spec D2): the rules, each rule's record of
 //! the files it handled, the batches its files make, and the runner.
 
+pub mod burst;
 pub mod record;
 pub mod rule;
