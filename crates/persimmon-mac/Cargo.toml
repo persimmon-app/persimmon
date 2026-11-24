@@ -22,3 +22,7 @@ objc2-user-notifications = { version = "0.3.2", default-features = false, featur
 # that needs it can carry #[allow(unsafe_code)] and a // SAFETY: comment.
 [lints.rust]
 unsafe_code = "deny"
+
+[[test]]
+name = "keyable_panel"
+harness = false

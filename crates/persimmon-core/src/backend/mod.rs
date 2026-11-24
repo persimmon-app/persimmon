@@ -249,7 +249,13 @@ mod tests {
         );
         dir.script("ffprobe", VERSION_7);
         let info = Backends::new().with_ffmpeg(&ff).ffmpeg_info().unwrap();
-        assert_eq!(info.hardware, ["H.264", "HEVC"]);
+        // Listed only where prsm can drive them: Apple silicon.
+        let want: &[&str] = if cfg!(target_arch = "aarch64") {
+            &["H.264", "HEVC"]
+        } else {
+            &[]
+        };
+        assert_eq!(info.hardware, want);
         let plain = Scratch::new("hw-none");
         let ff = plain.script("ffmpeg", VERSION_7);
         plain.script("ffprobe", VERSION_7);

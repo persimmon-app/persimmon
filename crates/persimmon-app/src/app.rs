@@ -738,7 +738,11 @@ fn engines_view(
 /// Show me, the tip's Turn on).
 #[tauri::command]
 fn set_wheel(app: AppHandle, state: State<'_, AppState>, on: bool) -> SettingsView {
-    let view = change_settings(&app, &state, |s| s.wheel = on);
+    let mut ask = false;
+    let view = change_settings(&app, &state, |s| ask = wheel::switch(s, on));
+    if ask {
+        persimmon_mac::notes::ask();
+    }
     wheel::apply(&app, on);
     view
 }
@@ -1315,6 +1319,21 @@ mod tests {
                 "core:event:allow-unlisten"
             ])
         );
+    }
+
+    /// The wheel Convert with Persimmon shows waits for a click: the first
+    /// one must reach the page, not just bring the panel forward.
+    #[test]
+    fn the_wheel_takes_the_first_click() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let wheel = conf["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["label"] == "wheel")
+            .unwrap();
+        assert_eq!(wheel["acceptFirstMouse"], true);
     }
 
     #[test]

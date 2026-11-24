@@ -47,7 +47,7 @@ fn count(n: usize) -> String {
 }
 
 /// The offer for `paths`: each file detected, a folder counted by the
-/// files a drop would take from it. A file nothing can read leaves the
+/// files a drop would add from it, subfolders too. A file nothing can read leaves the
 /// files nothing in common.
 pub fn offer(reg: &Registry, paths: &[PathBuf], recent: &[FormatId]) -> Offer {
     let detect = |p: &Path| {
@@ -58,7 +58,7 @@ pub fn offer(reg: &Registry, paths: &[PathBuf], recent: &[FormatId]) -> Offer {
     let mut found: Vec<Option<FormatId>> = Vec::new();
     for p in paths {
         if p.is_dir() && !is_package(p) {
-            if let Ok(folder) = expand_folder(reg, Operation::Convert, None, p, false) {
+            if let Ok(folder) = expand_folder(reg, Operation::Convert, None, p, true) {
                 found.extend(folder.files.iter().map(|f| detect(f)));
             }
         } else {
@@ -89,6 +89,16 @@ pub fn promised(reg: &Registry, n: usize, recent: &[FormatId]) -> Offer {
     }
 }
 
+/// What shows while the files are still being read: their count, no
+/// formats. Opens nothing, so it can run inside the event monitor.
+pub fn placeholder(paths: &[PathBuf]) -> Offer {
+    Offer {
+        files: paths.to_vec(),
+        formats: Vec::new(),
+        hub: count(paths.len()),
+    }
+}
+
 /// What landing at `hit` means for `offer`.
 pub fn decide(offer: &Offer, hit: Hit) -> Choice {
     match hit {
@@ -113,6 +123,18 @@ pub fn pick_hit(index: Option<i64>) -> Hit {
 /// `t` was picked on the wheel: it leads the wheel next time.
 pub fn chosen(settings: &mut Settings, t: FormatId) {
     geometry::remember(&mut settings.wheel_recent, t);
+}
+
+/// The wheel's switch: `true` when turning it on should ask for
+/// notifications now (spec D9: once, at the first watch rule or the
+/// wheel, whichever comes first).
+pub fn switch(settings: &mut Settings, on: bool) -> bool {
+    settings.wheel = on;
+    let ask = on && !settings.notifications_asked;
+    if ask {
+        settings.notifications_asked = true;
+    }
+    ask
 }
 
 /// The wheel between showing and a drop or a click.
@@ -158,6 +180,36 @@ fn show(app: &AppHandle, at: (f64, f64), offer: Offer, click: bool) -> bool {
     if click {
         let _ = persimmon_mac::panel::focus_panel("wheel");
     }
+    let shown = SHOWN.load(Ordering::SeqCst);
+    let pending = !offer.files.is_empty();
+    let files = offer.files.clone();
+    put(
+        app,
+        if pending { placeholder(&files) } else { offer },
+        click,
+    );
+    if pending {
+        // Reading the files (and listing folders) can take a while, or
+        // start an iCloud download: never in the event monitor.
+        let app = app.clone();
+        let recent = recent(&app);
+        std::thread::spawn(move || {
+            let real = self::offer(&Registry::builtin(), &files, &recent);
+            // Only while this showing still waits: a drop or a click
+            // before the files were read decided on what was drawn.
+            let waiting = app
+                .try_state::<AppState>()
+                .is_some_and(|s| lock(&s.wheel).offer.is_some());
+            if SHOWN.load(Ordering::SeqCst) == shown && waiting {
+                put(&app, real, click);
+            }
+        });
+    }
+    true
+}
+
+/// Draw `offer` and keep it for the drop or the click.
+fn put(app: &AppHandle, offer: Offer, click: bool) {
     let shown = WheelShow {
         formats: &offer.formats,
         labels: offer.formats.iter().map(|&f| geometry::label(f)).collect(),
@@ -170,7 +222,6 @@ fn show(app: &AppHandle, at: (f64, f64), offer: Offer, click: bool) -> bool {
             click,
         };
     }
-    true
 }
 
 /// A ⇧-drag seen anywhere. On the main thread, inside the event monitor:
@@ -188,7 +239,8 @@ fn on_gesture(app: &AppHandle, gesture: Gesture) {
             let reg = Registry::builtin();
             let recent = recent(app);
             let offer = if !files.is_empty() {
-                offer(&reg, &files, &recent)
+                // Read off the main thread once it shows (see `show`).
+                placeholder(&files)
             } else if promises > 0 {
                 promised(&reg, promises, &recent)
             } else {
@@ -296,28 +348,44 @@ pub(super) fn wheel_drop(app: AppHandle, paths: Vec<PathBuf>, x: f64, y: f64) {
     hide(&app);
 }
 
-/// A click on the wheel Convert with Persimmon showed: a segment's index,
-/// `None` for the hub, `-1` to cancel. Ignored when the wheel isn't
-/// waiting for one.
+/// What a click from the wheel's window does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pick {
+    /// The wheel waited for a click: carry it out, then close.
+    Act(Offer, Choice),
+    /// A drag's wheel, and a stray `-1`: leave it for the drop.
+    Keep(Offer),
+    /// Close the wheel.
+    Close,
+}
+
+/// What a click `index` means for the wheel's state `taken` (its offer,
+/// and whether it waits for a click). A drag's wheel gets no real click
+/// while the drag goes on, so one means the drag ended unseen.
+pub fn on_pick(taken: Option<(Offer, bool)>, index: Option<i64>) -> Pick {
+    match taken {
+        Some((offer, true)) => {
+            let choice = decide(&offer, pick_hit(index));
+            Pick::Act(offer, choice)
+        }
+        Some((offer, false)) if index == Some(-1) => Pick::Keep(offer),
+        _ => Pick::Close,
+    }
+}
+
+/// A click on the wheel: a segment's index, `None` for the hub, `-1` to
+/// cancel. Carried out for the wheel Convert with Persimmon showed.
 #[tauri::command]
 pub(super) fn wheel_pick(app: AppHandle, index: Option<i64>) {
-    match take(&app) {
-        Some((offer, true)) => {
-            act(
-                &app,
-                &offer.files,
-                decide(&offer, pick_hit(index)),
-                Source::Finder,
-            );
-        }
-        Some((offer, false)) => {
-            // A drag's wheel: put it back for the drop.
+    match on_pick(take(&app), index) {
+        Pick::Act(offer, choice) => act(&app, &offer.files, choice, Source::Finder),
+        Pick::Keep(offer) => {
             if let Some(state) = app.try_state::<AppState>() {
                 lock(&state.wheel).offer = Some(offer);
             }
             return;
         }
-        None => {}
+        Pick::Close => {}
     }
     hide(&app);
 }
@@ -375,8 +443,12 @@ pub(super) fn on_promise_started(
 /// it waits for a click. `false` when there's no wheel to show. Main
 /// thread only.
 pub(super) fn show_for(app: &AppHandle, paths: &[PathBuf]) -> bool {
-    let offer = offer(&Registry::builtin(), paths, &recent(app));
-    show(app, persimmon_mac::gesture::pointer(), offer, true)
+    show(
+        app,
+        persimmon_mac::gesture::pointer(),
+        placeholder(paths),
+        true,
+    )
 }
 
 #[cfg(test)]
@@ -433,6 +505,18 @@ mod tests {
         assert_eq!(offer.formats[0], Webp);
     }
 
+    /// The offer counts what a drop would add: subfolders too, so the
+    /// formats fit every file that will be converted.
+    #[test]
+    fn a_folder_offer_counts_its_subfolders_as_a_drop_does() {
+        let d = Dir::new("nested");
+        d.put("shots/a.png", &persimmon_corpus::PNG_1X1);
+        d.put("shots/sub/clip.mov", MOV);
+        let offer = offer(&Registry::builtin(), &[d.0.join("shots")], &[]);
+        assert_eq!(offer.hub, "MIXED · 2 FILES");
+        assert!(offer.formats.is_empty(), "{:?}", offer.formats);
+    }
+
     #[test]
     fn an_unknown_file_leaves_nothing_in_common() {
         let d = Dir::new("unknown");
@@ -450,6 +534,45 @@ mod tests {
         assert_eq!(offer.formats[0], Webp, "a photo can't become MP4");
         assert!(offer.formats.contains(&Jpeg));
         assert!(offer.files.is_empty());
+    }
+
+    /// What shows at once, inside the event monitor: no file is opened
+    /// (a missing one, here, would read as MIXED).
+    #[test]
+    fn a_placeholder_reads_no_file() {
+        let gone = PathBuf::from("/nonexistent/a.mov");
+        let p = placeholder(std::slice::from_ref(&gone));
+        assert_eq!(p.hub, "1 FILE");
+        assert!(p.formats.is_empty());
+        assert_eq!(p.files, [gone]);
+        assert_eq!(
+            placeholder(&[PathBuf::new(), PathBuf::new()]).hub,
+            "2 FILES"
+        );
+    }
+
+    /// A real click on a drag's wheel means the drag is over (Esc ended
+    /// it, and the button came up over the wheel, unseen by the monitor):
+    /// it closes. A `-1` (a click wheel losing the keyboard late) leaves a
+    /// drag's wheel alone.
+    #[test]
+    fn picks_on_each_kind_of_wheel() {
+        let o = Offer {
+            files: vec![PathBuf::from("/x/a.mov")],
+            formats: vec![Mp4],
+            hub: "MOV · 1 FILE".into(),
+        };
+        assert_eq!(
+            on_pick(Some((o.clone(), true)), Some(0)),
+            Pick::Act(o.clone(), Choice::Convert(Mp4))
+        );
+        assert_eq!(
+            on_pick(Some((o.clone(), false)), Some(-1)),
+            Pick::Keep(o.clone())
+        );
+        assert_eq!(on_pick(Some((o.clone(), false)), Some(0)), Pick::Close);
+        assert_eq!(on_pick(Some((o, false)), None), Pick::Close);
+        assert_eq!(on_pick(None, Some(-1)), Pick::Close);
     }
 
     #[test]
@@ -470,6 +593,18 @@ mod tests {
         assert_eq!(pick_hit(None), Hit::Hub);
         assert_eq!(pick_hit(Some(-1)), Hit::Outside);
         assert_eq!(pick_hit(Some(4)), Hit::Format(4));
+    }
+
+    /// Spec D9: notifications are asked for when the first watch rule is
+    /// saved or the wheel is turned on, once.
+    #[test]
+    fn turning_the_wheel_on_asks_for_notifications_once() {
+        let mut s = crate::settings::Settings::default();
+        assert!(!switch(&mut s, false), "turning it off asks nothing");
+        assert!(switch(&mut s, true));
+        assert!(s.wheel && s.notifications_asked);
+        assert!(!switch(&mut s, false));
+        assert!(!switch(&mut s, true), "asked already");
     }
 
     #[test]

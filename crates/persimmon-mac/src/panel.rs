@@ -12,12 +12,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBackingStoreType, NSPanel, NSScreen, NSStatusWindowLevel, NSView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSBackingStoreType, NSPanel, NSResponder, NSScreen, NSStatusWindowLevel, NSView, NSWindow,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 thread_local! {
@@ -25,6 +25,24 @@ thread_local! {
     /// thread.
     static PANELS: RefCell<HashMap<String, Retained<NSPanel>>> = RefCell::new(HashMap::new());
 }
+
+define_class!(
+    // SAFETY: NSPanel has no subclassing requirements beyond NSWindow's;
+    // this class adds no instance variables and overrides one getter.
+    #[unsafe(super(NSPanel, NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PersimmonKeyablePanel"]
+    struct KeyablePanel;
+
+    impl KeyablePanel {
+        /// A borderless window can't take the keyboard unless it says so:
+        /// the wheel needs it for Esc when it waits for a click.
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+    }
+);
 
 /// Every Space, over full-screen apps, and not moved by Exposé.
 pub fn panel_behaviour() -> NSWindowCollectionBehavior {
@@ -37,10 +55,15 @@ pub fn panel_behaviour() -> NSWindowCollectionBehavior {
 /// floating panel of the same size and place, and keep the window hidden
 /// from then on: the panel floats over full-screen apps on every Space,
 /// and clicking or dropping on it never takes focus from the app in front.
-/// Show and hide it with [`set_panel_visible`], by `name`. Add anything
-/// that belongs over the webview (the promise overlay) before this. Main
-/// thread only.
-pub fn adopt_as_panel(window: &impl HasWindowHandle, name: &str) -> Result<(), String> {
+/// Show and hide it with [`set_panel_visible`], by `name`. `takes_keys`
+/// lets it take the keyboard when asked ([`focus_panel`]), still without
+/// activating the app. Add anything that belongs over the webview (the
+/// promise overlay) before this. Main thread only.
+pub fn adopt_as_panel(
+    window: &impl HasWindowHandle,
+    name: &str,
+    takes_keys: bool,
+) -> Result<(), String> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err("not on the main thread".into());
     };
@@ -60,15 +83,28 @@ pub fn adopt_as_panel(window: &impl HasWindowHandle, name: &str) -> Result<(), S
         return Err("the window has no content view".into());
     };
     let frame = window.frame();
-    let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
-        NSPanel::alloc(mtm),
-        frame,
-        NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-        NSBackingStoreType::Buffered,
-        false,
-    );
+    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+    let panel: Retained<NSPanel> = if takes_keys {
+        let this = KeyablePanel::alloc(mtm).set_ivars(());
+        #[allow(unsafe_code)]
+        // SAFETY: initWithContentRect:styleMask:backing:defer: is NSWindow's
+        // designated initialiser, with these argument types; the subclass
+        // has no instance variables of its own to set first.
+        let keyable: Retained<KeyablePanel> = unsafe {
+            msg_send![super(this), initWithContentRect: frame, styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
+        };
+        Retained::into_super(keyable)
+    } else {
+        NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            frame,
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
     #[allow(unsafe_code)]
-    // SAFETY: the panel is kept in PANEL for the app's life, so closing it
+    // SAFETY: the panel is kept in PANELS for the app's life, so closing it
     // must not release it as well.
     unsafe {
         panel.setReleasedWhenClosed(false);
@@ -119,6 +155,12 @@ pub fn set_panel_visible(name: &str, show: bool) -> Result<bool, String> {
         }
     })
     .map(|done| done.is_some())
+}
+
+/// Whether the panel called `name` can take the keyboard; `Ok(false)`
+/// when there's none. Main thread only.
+pub fn takes_keys(name: &str) -> Result<bool, String> {
+    with_panel(name, |panel| panel.canBecomeKeyWindow()).map(|k| k.unwrap_or(false))
 }
 
 /// Give the panel called `name` the keyboard (for Esc), without
@@ -206,7 +248,7 @@ mod tests {
     fn off_the_main_thread_it_refuses() {
         let refused = Err("not on the main thread".to_string());
         assert_eq!(
-            adopt_as_panel(&Untouched, "drop"),
+            adopt_as_panel(&Untouched, "drop", false),
             Err("not on the main thread".to_string())
         );
         assert_eq!(set_panel_visible("drop", true), refused);

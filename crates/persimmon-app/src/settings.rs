@@ -78,7 +78,12 @@ pub enum Card {
 /// `card` was answered: it doesn't come back.
 pub fn dismiss(settings: &mut Settings, card: Card) {
     match card {
-        Card::FirstRun => settings.first_run_seen = true,
+        // The tip is for people who had Persimmon before the wheel; whoever
+        // saw the first-run card already met the wheel there.
+        Card::FirstRun => {
+            settings.first_run_seen = true;
+            settings.wheel_tip_seen = true;
+        }
         Card::WheelTip => settings.wheel_tip_seen = true,
     }
 }
@@ -169,11 +174,22 @@ pub fn view(settings: &Settings) -> SettingsView {
 #[cfg(test)]
 mod tests {
 
+    /// Someone who saw the first-run card never gets the upgrade's tip:
+    /// their next launch has settings, so it isn't a new install then.
+    #[test]
+    fn the_first_run_card_retires_the_tip() {
+        let mut s = Settings::default();
+        dismiss(&mut s, Card::FirstRun);
+        assert!(s.first_run_seen && s.wheel_tip_seen);
+    }
+
     #[test]
     fn dismissing_a_card_remembers_it() {
         let mut s = Settings::default();
+        dismiss(&mut s, Card::WheelTip);
+        assert!(s.wheel_tip_seen && !s.first_run_seen);
         dismiss(&mut s, Card::FirstRun);
-        assert!(s.first_run_seen && !s.wheel_tip_seen);
+        assert!(s.first_run_seen);
         dismiss(&mut s, Card::WheelTip);
         assert!(s.wheel_tip_seen);
         let card: Card = serde_json::from_str("\"wheelTip\"").unwrap();

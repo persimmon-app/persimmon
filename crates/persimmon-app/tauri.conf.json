@@ -41,6 +41,7 @@
         "decorations": false,
         "transparent": true,
         "shadow": false,
+        "acceptFirstMouse": true,
         "alwaysOnTop": true,
         "focus": false,
         "visibleOnAllWorkspaces": true,

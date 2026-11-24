@@ -98,7 +98,8 @@ impl Ffmpeg {
                     .with_fix_as(FixKind::InstallFfmpeg, install),
             );
         }
-        let encoders = parse_encoders(&run(&["-encoders"])?);
+        let mut encoders = parse_encoders(&run(&["-encoders"])?);
+        keep_usable_hardware(&mut encoders, std::env::consts::ARCH);
         let mut pix_fmts = HashMap::new();
         if encoders.contains("hevc_videotoolbox") {
             let help = run(&["-h", "encoder=hevc_videotoolbox"]).unwrap_or_default();
@@ -147,6 +148,23 @@ impl Ffmpeg {
     pub(crate) fn with_encoder(mut self, name: &str) -> Ffmpeg {
         self.encoders.insert(name.to_string());
         self
+    }
+}
+
+/// Whether FFmpeg's VideoToolbox encoders work as prsm drives them on
+/// this architecture: they take quality as `-q:v` only on Apple silicon,
+/// and refuse it elsewhere.
+fn videotoolbox_usable(arch: &str) -> bool {
+    arch == "aarch64"
+}
+
+/// Leave out the hardware encoders prsm can't drive on `arch`, so asking
+/// for them there reads "unavailable" rather than failing every video.
+fn keep_usable_hardware(encoders: &mut HashSet<String>, arch: &str) {
+    if !videotoolbox_usable(arch) {
+        for (enc, _) in HARDWARE {
+            encoders.remove(enc);
+        }
     }
 }
 
@@ -244,6 +262,21 @@ mod tests {
         assert!(enc.contains("aac"));
         assert!(!enc.contains("="));
         assert_eq!(enc.len(), 2);
+    }
+
+    /// FFmpeg's VideoToolbox encoders take `-q:v` only on Apple silicon;
+    /// elsewhere every hardware encode would fail and be redone.
+    #[test]
+    fn videotoolbox_needs_apple_silicon() {
+        assert!(videotoolbox_usable("aarch64"));
+        assert!(!videotoolbox_usable("x86_64"));
+        let mut enc: HashSet<String> = ["libx264", "h264_videotoolbox", "hevc_videotoolbox"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        keep_usable_hardware(&mut enc, "x86_64");
+        assert_eq!(enc.len(), 1);
+        assert!(enc.contains("libx264"));
     }
 
     #[test]

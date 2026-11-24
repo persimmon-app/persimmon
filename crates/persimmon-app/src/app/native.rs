@@ -203,7 +203,10 @@ pub(super) fn install(app: &AppHandle, staging: &Path) {
     // its webview.
     for (label, what) in [("drop", "the drop panel"), ("wheel", "the wheel")] {
         if let Some(window) = app.get_webview_window(label) {
-            report(what, persimmon_mac::panel::adopt_as_panel(&window, label));
+            report(
+                what,
+                persimmon_mac::panel::adopt_as_panel(&window, label, label == "wheel"),
+            );
         }
     }
     let on = app
