@@ -59,4 +59,15 @@ describe("HistoryView", () => {
     expect(screen.getAllByText("hero.png → hero.webp")).toHaveLength(1);
     expect(scrolled).toHaveBeenCalled();
   });
+
+  it("brings the asked-for batch into view once, not on every update", async () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    const h = { onSearch: vi.fn(), onFilter: vi.fn(), onUndo: vi.fn(), onReveal: vi.fn(), onClear: vi.fn(), onDismissReport: vi.fn() };
+    const first = [batch({ id: "today" }), batch({ id: "older", finished: NOW - 3 * 86_400 })];
+    const { rerender } = render(HistoryView, { batches: first, text: "", filter: "all", report: null, now: NOW, focus: "older", ...h });
+    expect(scrolled).toHaveBeenCalledTimes(1);
+    await rerender({ batches: [batch({ id: "newer" }), ...first], text: "", filter: "all", report: null, now: NOW, focus: "older", ...h });
+    expect(scrolled).toHaveBeenCalledTimes(1);
+  });
 });

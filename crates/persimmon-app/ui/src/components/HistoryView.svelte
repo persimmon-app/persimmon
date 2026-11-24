@@ -15,8 +15,13 @@
   } = $props();
 
   let confirming = $state(false);
+  // Brought into view once per request, not again on each new batch.
+  let shown: string | null = null;
   $effect(() => {
-    if (focus && batches.some((b) => b.id === focus)) document.getElementById(`batch-${focus}`)?.scrollIntoView({ block: "center" });
+    if (focus && focus !== shown && batches.some((b) => b.id === focus)) {
+      shown = focus;
+      document.getElementById(`batch-${focus}`)?.scrollIntoView({ block: "center" });
+    }
   });
   const files = $derived(batches.reduce((n, b) => n + b.items.length, 0));
   const day = (t: number) => { const d = new Date(t * 1000); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };

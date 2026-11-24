@@ -30,6 +30,8 @@
   let confirmQuit = $state(false);
   let quitRules = $state(0);
   let focusBatch: string | null = $state(null);
+  // A notification's batch is shown once: leaving History forgets it.
+  $effect(() => { if (view !== "history") focusBatch = null; });
   let settings = $state<SettingsView | null>(null);
   const mode: QueueMode = $derived(settings?.mode ?? "convert");
   let picking = false;
