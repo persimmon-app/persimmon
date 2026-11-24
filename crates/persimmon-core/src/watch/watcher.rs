@@ -716,17 +716,21 @@ mod tests {
         s.patterns = Patterns::parse("*").unwrap();
         s.recursive = true;
         let mut w = Watcher::start(&s).unwrap();
-        for name in [
+        let mut names = vec![
             ".DS_Store",
             "._a.png",
             ".prsm-1-0.part",
-            "Icon\r",
             "a.tmp",
             "b.png.part",
             "c.png.download",
             ".hidden/d.png",
             "Some.app/e.png",
-        ] {
+        ];
+        // Windows forbids a carriage return in a name; Finder makes this file only on a Mac.
+        if cfg!(not(windows)) {
+            names.push("Icon\r");
+        }
+        for name in names {
             d.put(name, b"x");
         }
         assert!(collect(&mut w, SOON).is_empty());
