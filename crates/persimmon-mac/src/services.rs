@@ -29,46 +29,24 @@ pub struct ServiceRequest {
     pub paths: Vec<PathBuf>,
 }
 
-/// `file://` URLs as paths, percent-decoded, in order, each once; anything
-/// that isn't a file URL is left out.
-pub fn service_paths(urls: &[String]) -> Vec<PathBuf> {
+/// A file URL's path, including for a file reference URL
+/// (`file:///.file/id=…`), which Finder often hands over: macOS resolves it
+/// to where the file is now. `None` for anything that isn't a file.
+pub fn url_path(url: &NSURL) -> Option<PathBuf> {
+    url.filePathURL()
+        .and_then(|u| u.path())
+        .map(|p| PathBuf::from(p.to_string()))
+}
+
+/// Paths in order, each once.
+pub fn unique_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    for url in urls {
-        let Some(rest) = url.strip_prefix("file://") else {
-            continue;
-        };
-        // `file://localhost/…` names the same file as `file:///…`.
-        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-        let mut path = percent_decode(rest);
-        while path.len() > 1 && path.ends_with('/') {
-            path.pop();
-        }
-        let path = PathBuf::from(path);
+    for path in paths {
         if !out.contains(&path) {
             out.push(path);
         }
     }
     out
-}
-
-/// `%XX` escapes as the bytes they stand for, read as UTF-8.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |at: usize| bytes.get(at).and_then(|b| (*b as char).to_digit(16));
-        if bytes[i] == b'%'
-            && let (Some(h), Some(l)) = (hex(i + 1), hex(i + 2))
-        {
-            out.push((h * 16 + l) as u8);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 type Sink = Arc<dyn Fn(ServiceRequest) + Send + Sync>;
@@ -109,15 +87,16 @@ impl Provider {
         // SAFETY: the classes array holds a class object, which is what the
         // call reads; no options are passed.
         let objects = unsafe { pasteboard.readObjectsForClasses_options(&classes, None) };
-        let urls: Vec<String> = objects
-            .map(|a| {
-                a.iter()
-                    .filter_map(|o| o.downcast::<NSURL>().ok())
-                    .filter_map(|u| u.absoluteString().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let paths = service_paths(&urls);
+        let paths = unique_paths(
+            objects
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|o| o.downcast::<NSURL>().ok())
+                        .filter_map(|u| url_path(&u))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
         if !paths.is_empty() {
             (self.ivars().sink)(ServiceRequest { service, paths });
         }
@@ -154,25 +133,37 @@ mod tests {
 
     #[test]
     fn service_paths_take_files_and_folders() {
-        let urls = [
-            "file:///Users/me/a%20b.png".to_string(),
-            "file:///Users/me/Folder/".to_string(),
-            "file:///Users/me/a%20b.png".to_string(),
-            "https://example.com/x.png".to_string(),
-            "file:///Users/me/caf%C3%A9.jpg".to_string(),
-            "file:///Users/me/odd%".to_string(),
-            "file:///Users/me/odd%4".to_string(),
-        ];
+        let a = PathBuf::from("/Users/me/a b.png");
+        let folder = PathBuf::from("/Users/me/Folder");
         assert_eq!(
-            service_paths(&urls),
-            vec![
-                PathBuf::from("/Users/me/a b.png"),
-                PathBuf::from("/Users/me/Folder"),
-                PathBuf::from("/Users/me/café.jpg"),
-                PathBuf::from("/Users/me/odd%"),
-                PathBuf::from("/Users/me/odd%4"),
-            ]
+            unique_paths([a.clone(), folder.clone(), a.clone()]),
+            vec![a, folder]
         );
+        let folder_url = NSURL::fileURLWithPath(&NSString::from_str("/Users/me/Folder/"));
+        assert_eq!(
+            url_path(&folder_url),
+            Some(PathBuf::from("/Users/me/Folder"))
+        );
+    }
+
+    /// Finder often hands over file reference URLs (`file:///.file/id=…`),
+    /// whose text is no path at all: the path comes from the URL itself.
+    #[test]
+    fn a_file_reference_url_gives_the_files_path() {
+        let dir = std::env::temp_dir().join(format!("prsm-mac-ref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.png");
+        std::fs::write(&file, b"x").unwrap();
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));
+        let reference = url.fileReferenceURL().expect("a reference URL");
+        let text = reference.absoluteString().unwrap().to_string();
+        assert!(text.starts_with("file:///.file/id="), "{text}");
+        assert_eq!(
+            url_path(&reference).map(|p| std::fs::canonicalize(p).unwrap()),
+            Some(std::fs::canonicalize(&file).unwrap())
+        );
+        assert_eq!(url_path(&url), Some(file.clone()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
