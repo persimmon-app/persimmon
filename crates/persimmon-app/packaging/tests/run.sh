@@ -15,8 +15,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/prsm-packaging-tests.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 failed=0
 
-BUILDCONF="--enable-gpl --disable-network --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame --enable-libdav1d --enable-libaom"
-ENCODERS="libx264 libx265 libvpx-vp9 libopus libmp3lame libaom-av1 aac"
+BUILDCONF="--enable-gpl --disable-network --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame --enable-libdav1d --enable-libaom --enable-videotoolbox"
+ENCODERS="libx264 libx265 libvpx-vp9 libopus libmp3lame libaom-av1 aac h264_videotoolbox hevc_videotoolbox"
 PROTOCOLS="file pipe"
 X265="yuv420p yuv422p yuv444p gbrp yuv420p10le yuv422p10le yuv444p10le gbrp10le gray gray10le"
 
@@ -116,6 +116,14 @@ expect network 1 "--disable-network" "$d/Persimmon.app"
 d=$(case_dir encoder); make_app "$d"
 stand_in "$d/Persimmon.app/Contents/MacOS/ffmpeg" "$BUILDCONF" "${ENCODERS/libx265 /}" "$PROTOCOLS"; sign_app "$d/Persimmon.app"
 expect encoder 1 "libx265" "$d/Persimmon.app"
+
+d=$(case_dir videotoolbox); make_app "$d"
+stand_in "$d/Persimmon.app/Contents/MacOS/ffmpeg" "$BUILDCONF" "${ENCODERS/ h264_videotoolbox hevc_videotoolbox/}" "$PROTOCOLS"; sign_app "$d/Persimmon.app"
+expect videotoolbox 1 "ffmpeg has no h264_videotoolbox encoder" "$d/Persimmon.app"
+
+d=$(case_dir videotoolbox-flag); make_app "$d"
+stand_in "$d/Persimmon.app/Contents/MacOS/ffmpeg" "${BUILDCONF/ --enable-videotoolbox/}" "$ENCODERS" "$PROTOCOLS"; sign_app "$d/Persimmon.app"
+expect videotoolbox-flag 1 "--enable-videotoolbox" "$d/Persimmon.app"
 
 d=$(case_dir protocols); make_app "$d"
 stand_in "$d/Persimmon.app/Contents/MacOS/ffmpeg" "$BUILDCONF" "$ENCODERS" "file pipe https"; sign_app "$d/Persimmon.app"

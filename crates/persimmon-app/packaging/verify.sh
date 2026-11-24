@@ -17,8 +17,8 @@
 # forces the Developer ID checks (the tests' fake bundles can't carry one).
 set -euo pipefail
 ID=io.github.persimmon-app.Persimmon
-FLAGS="--enable-gpl --disable-network --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame --enable-libdav1d --enable-libaom"
-ENCODERS="libx264 libx265 libvpx-vp9 libopus libmp3lame libaom-av1"
+FLAGS="--enable-gpl --disable-network --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame --enable-libdav1d --enable-libaom --enable-videotoolbox"
+ENCODERS="libx264 libx265 libvpx-vp9 libopus libmp3lame libaom-av1 h264_videotoolbox hevc_videotoolbox"
 NETWORK="tcp http https udp rtmp"
 
 before=0

@@ -76,6 +76,7 @@ if [ ! -f "$P/.done-ffmpeg-$(version_of ffmpeg)" ]; then
     --enable-gpl --disable-network --disable-autodetect --enable-zlib \
     --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libmp3lame \
     --enable-libdav1d --enable-libaom --disable-decoder=libaom_av1 \
+    --enable-videotoolbox \
     --disable-ffplay --disable-doc --disable-debug \
     --pkg-config-flags=--static \
     --extra-cflags="-mmacosx-version-min=14.0 -I$FP/include" \
