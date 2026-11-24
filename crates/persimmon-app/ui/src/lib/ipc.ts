@@ -61,3 +61,28 @@ export const onHistoryCleared = (f: () => void): Promise<UnlistenFn> => listen("
 export const onUndoReport = (f: (r: UndoReport) => void): Promise<UnlistenFn> => listen<UndoReport>("undo-report", (e) => f(e.payload));
 export const onQueueNote = (f: (note: AddNote) => void): Promise<UnlistenFn> => listen<AddNote>("queue-note", (e) => f(e.payload));
 export const onPresets = (f: (p: PresetView[]) => void): Promise<UnlistenFn> => listen<PresetView[]>("presets", (e) => f(e.payload));
+
+// Watch folders (spec D2, D9; app.rs's watch commands).
+import type { NotificationsState, Rule, RuleDraftView, RuleView } from "./types";
+
+/** Every rule as the view shows it; `since` is local midnight, for "today". */
+export const watchRules = (since: number) => invoke<RuleView[]>("watch_rules", { since });
+export const watchTargets = () => invoke<FormatId[]>("watch_targets");
+export const watchPatterns = (target: FormatId) => invoke<string>("watch_patterns", { target });
+/** The open panel for a folder; null if cancelled. */
+export const pickWatchFolder = () => invoke<string | null>("pick_watch_folder");
+export const newRule = (folder: string, target: FormatId) => invoke<RuleDraftView>("new_rule", { folder, target });
+export const ruleCommand = (rule: Rule) => invoke<string>("rule_command", { rule });
+/** Rejects with a Shown when the rule is refused. */
+export const saveRule = (rule: Rule, existing: boolean) => invoke<RuleView[]>("save_rule", { rule, existing });
+export const toggleRule = (id: string, on: boolean) => invoke<RuleView[]>("toggle_rule", { id, on });
+export const removeRule = (id: string) => invoke<RuleView[]>("remove_rule", { id });
+export const scanRule = (id: string) => invoke<void>("scan_rule", { id });
+export const copyCommand = (id: string) => invoke<boolean>("copy_command", { id });
+/** Rejects with the reason when macOS refuses. */
+export const setStartAtLogin = (on: boolean) => invoke<SettingsView>("set_start_at_login", { on });
+export const notifications = () => invoke<NotificationsState>("notifications");
+export const openNotificationSettings = () => invoke<boolean>("open_notification_settings");
+export const onWatch = (f: () => void): Promise<UnlistenFn> => listen("watch", () => f());
+/** A notification's Undo: show this batch in History. */
+export const onShowBatch = (f: (id: string) => void): Promise<UnlistenFn> => listen<string>("show-batch", (e) => f(e.payload));

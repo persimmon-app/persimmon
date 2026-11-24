@@ -19,7 +19,7 @@ const rows: RowView[] = [
 
 const settings: SettingsView = {
   output: { mode: "beside" }, fallback: "/Users/me/Downloads/Persimmon", mode: "convert", dropWindow: false, preset: null,
-  outputLabel: "beside original", fallbackLabel: "~/Downloads/Persimmon",
+  outputLabel: "beside original", fallbackLabel: "~/Downloads/Persimmon", startAtLogin: false,
 };
 
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {

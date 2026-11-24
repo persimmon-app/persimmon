@@ -5,6 +5,8 @@ import EnginesPane from "./EnginesPane.svelte";
 import PrivacyPane from "./PrivacyPane.svelte";
 import AboutPane from "./AboutPane.svelte";
 import StatusBar from "./StatusBar.svelte";
+import GeneralPane from "./GeneralPane.svelte";
+import type { SettingsView } from "../lib/types";
 
 describe("the Settings panes", () => {
   it("Engines names the FFmpeg in use", () => {
@@ -50,5 +52,14 @@ describe("the Settings panes", () => {
     await rerender({ rows: [], message: null, output: "beside original", onOutput: () => {}, undoable: true, onUndoLast });
     await fireEvent.click(screen.getByRole("button", { name: /Undo last batch/ }));
     expect(onUndoLast).toHaveBeenCalled();
+  });
+
+  it("General starts Persimmon at login", async () => {
+    const onStartAtLogin = vi.fn();
+    const settings: SettingsView = { output: { mode: "beside" }, fallback: "", mode: "convert", dropWindow: false, preset: null, outputLabel: "", fallbackLabel: "", startAtLogin: false };
+    render(GeneralPane, { settings, onDropWindow: vi.fn(), onStartAtLogin, loginError: "Persimmon couldn't be added to Login Items" });
+    await fireEvent.click(screen.getByLabelText("Start at login"));
+    expect(onStartAtLogin).toHaveBeenCalledWith(true);
+    expect(screen.getByText("Persimmon couldn't be added to Login Items")).toBeTruthy();
   });
 });

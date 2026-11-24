@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Shared test data in the app's JSON shapes.
-import type { BatchView, PresetView } from "../lib/types";
+import type { RuleView, BatchView, PresetView } from "../lib/types";
 
 const none = { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false } as const;
 
@@ -27,5 +27,17 @@ export function batch(over: Partial<BatchView> & { id: string }): BatchView {
         error: { code: "CORRUPT_INPUT", file: "/x/scan.png", reason: "it's damaged", fix: null } },
     ],
     ...over,
+  };
+}
+
+/** A watch rule as the view gets it, watching with nothing today. */
+export function view(over: Partial<RuleView> = {}, status: Partial<RuleView["status"]> = {}): RuleView {
+  return {
+    id: "r1", folder: "/Users/me/Inbox", target: "webp", preset: null, patterns: "*.jpg,*.png",
+    results: "/Users/me/Inbox/converted", done: null, recursive: false, settle: true, notifyEach: false, enabled: true,
+    command: "prsm watch ~/Inbox --to webp --match \"*.jpg,*.png\" --out ~/Inbox/converted",
+    today: 0, folderLabel: "~/Inbox", resultsLabel: "~/Inbox/converted", doneLabel: null,
+    ...over,
+    status: { id: "r1", state: "watching", burstDone: 0, lastFailed: null, note: null, ...status } as RuleView["status"],
   };
 }

@@ -12,12 +12,15 @@
   import StatusBar from "./components/StatusBar.svelte";
   import ConfirmQuit from "./components/ConfirmQuit.svelte";
   import HistoryView from "./components/HistoryView.svelte";
+  import WatchView from "./components/WatchView.svelte";
+  import RuleEditor from "./components/RuleEditor.svelte";
+  import { midnight } from "./lib/watch";
   import * as ipc from "./lib/ipc";
   import { badge, noteMessage, plural } from "./lib/format";
   import { lastUndoable as newestUndoable, undoMessage } from "./lib/undo";
   import { clicked, moved } from "./lib/selection";
   import { queueOwnsKey } from "./lib/keys";
-  import type { BatchView, FormatId, HistoryFilter, PresetView, QueueMode, RowId, RowView, SettingsView, UndoReport } from "./lib/types";
+  import type { BatchView, FormatId, HistoryFilter, NotificationsState, PresetView, QueueMode, Rule, RowId, RowView, RuleDraftView, RuleView, SettingsView, Shown, UndoReport } from "./lib/types";
 
   let rows: RowView[] = $state([]);
   let selected: RowId[] = $state([]);
@@ -29,7 +32,13 @@
   const mode: QueueMode = $derived(settings?.mode ?? "convert");
   let picking = false;
   let presets: PresetView[] = $state([]);
-  let view: "queue" | "history" = $state("queue");
+  let view: "queue" | "history" | "watch" = $state("queue");
+  let rules: RuleView[] = $state([]);
+  let notifications: NotificationsState = $state("allowed");
+  let editor: { draft: RuleDraftView; isNew: boolean } | null = $state(null);
+  let watchTargets: FormatId[] = $state([]);
+  let loginError: string | null = $state(null);
+  const activeRules = $derived(rules.filter((r) => r.enabled).length);
   let batches: BatchView[] = $state([]);
   let historyText = $state("");
   let historyFilter: HistoryFilter = $state("all");
@@ -75,6 +84,37 @@
     const misfits = changed.filter((r) => r.state === "failed").length;
     const name = presets.find((p) => p.id === id)?.name ?? "";
     message = misfits ? `${plural(misfits, "file")} ${misfits === 1 ? "doesn't" : "don't"} fit ${name}` : null;
+  }
+
+  async function refreshWatch() {
+    rules = await ipc.watchRules(midnight(new Date()));
+    notifications = await ipc.notifications();
+  }
+
+  /** A new rule: pick its folder, then edit it before it's saved. */
+  async function newRule() {
+    const folder = await ipc.pickWatchFolder();
+    if (!folder) return;
+    watchTargets = await ipc.watchTargets();
+    const target = watchTargets.includes("webp") ? "webp" : (watchTargets[0] ?? "webp");
+    editor = { draft: await ipc.newRule(folder, target), isNew: true };
+  }
+
+  async function editRule(id: string) {
+    const v = rules.find((r) => r.id === id);
+    if (!v) return;
+    watchTargets = await ipc.watchTargets();
+    const rule: Rule = { id: v.id, folder: v.folder, target: v.target, preset: v.preset, patterns: v.patterns, results: v.results,
+      done: v.done, recursive: v.recursive, settle: v.settle, notifyEach: v.notifyEach, enabled: v.enabled };
+    editor = { draft: { rule, command: v.command, existing: 0 }, isNew: false };
+  }
+
+  async function saveRule(rule: Rule, existing: boolean): Promise<Shown | null> {
+    try { rules = await ipc.saveRule(rule, existing); editor = null; return null; } catch (e) { return e as Shown; }
+  }
+
+  async function startAtLogin(on: boolean) {
+    try { settings = await ipc.setStartAtLogin(on); loginError = null; } catch (e) { loginError = String(e); }
   }
 
   async function refreshHistory() {
@@ -152,7 +192,7 @@
       const p = presets.find((x) => x.shortcut === Number(e.key));
       if (p) { e.preventDefault(); choosePreset(p.id); }
     }
-    else if (view === "history" && e.key === "Escape") { view = "queue"; }
+    else if (view !== "queue" && e.key === "Escape" && !editor) { view = "queue"; }
     else if (cmd && e.key === "o") { e.preventDefault(); if (!e.repeat) pick(); }
     else if (cmd && e.key === "Enter") { e.preventDefault(); if (canStart) ipc.start(); }
     else if (cmd && e.key === "a") { e.preventDefault(); selected = rows.map((r) => r.id); }
@@ -170,7 +210,9 @@
     ipc.getSettings().then((s) => (settings = s));
     ipc.presets().then((p) => (presets = p));
     refreshHistory();
+    refreshWatch();
     const off = [
+      ipc.onWatch(() => refreshWatch()),
       ipc.onHistory(() => refreshHistory()),
       ipc.onHistoryCleared(() => refreshHistory()),
       ipc.onPresets((p) => (presets = p)),
@@ -192,11 +234,20 @@
 
 <div class="window">
   <Sidebar {mode} onMode={chooseMode} preset={settings?.preset ?? null} {presets} onPreset={choosePreset}
-    {view} onHistory={() => { view = view === "history" ? "queue" : "history"; refreshHistory(); }} />
+    {view} onHistory={() => { view = view === "history" ? "queue" : "history"; refreshHistory(); }}
+    onWatch={() => { view = view === "watch" ? "queue" : "watch"; refreshWatch(); }} watchBadge={activeRules} />
   <div class="main">
     <Toolbar count={rows.length} {totalBytes} {targets} {current} {canStart}
       onAdd={pick} onPick={pickTarget} onStart={() => ipc.start()} />
-    {#if view === "history"}
+    {#if view === "watch"}
+      <WatchView views={rules} {notifications} startAtLogin={settings?.startAtLogin ?? false} {loginError}
+        onNew={newRule} onEdit={editRule}
+        onToggle={async (id, on) => (rules = await ipc.toggleRule(id, on))}
+        onCopy={(id) => ipc.copyCommand(id).then((ok) => { message = ok ? "Command copied" : null; })}
+        onScan={(id) => ipc.scanRule(id)}
+        onRemove={async (id) => (rules = await ipc.removeRule(id))}
+        onStartAtLogin={startAtLogin} onOpenNotifications={() => ipc.openNotificationSettings()} />
+    {:else if view === "history"}
       <HistoryView {batches} text={historyText} filter={historyFilter} {report}
         onSearch={(t) => { historyText = t; refreshHistory(); }}
         onFilter={(f) => { historyFilter = f; refreshHistory(); }}
@@ -234,6 +285,11 @@
       undoable={lastUndoable} onUndoLast={() => undo(null)} />
   </div>
 </div>
+{#if editor}
+  <RuleEditor draft={editor.draft} isNew={editor.isNew} targets={watchTargets} {presets}
+    onCommand={(r) => ipc.ruleCommand(r)} onDefaults={(t) => ipc.watchPatterns(t)}
+    onChoose={() => ipc.pickWatchFolder()} onSave={saveRule} onCancel={() => (editor = null)} />
+{/if}
 <ConfirmQuit open={confirmQuit} running={rows.filter((r) => r.state === "running").length} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />
 
 <style>

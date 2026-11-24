@@ -23,4 +23,20 @@ describe("Sidebar", () => {
     expect(onMode).toHaveBeenCalledWith("compress");
     expect(document.activeElement).toBe(screen.getByRole("radio", { name: /Compress/ }));
   });
+
+  it("offers Watch folders, with the number of active rules", async () => {
+    const onWatch = vi.fn();
+    render(Sidebar, { mode: "convert", onMode: vi.fn(), view: "watch", onWatch, watchBadge: 2 });
+    const button = screen.getByRole("button", { name: /Watch folders/ });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(button.textContent).toContain("2");
+    expect(screen.getByRole("button", { name: /History/ }).getAttribute("aria-pressed")).toBe("false");
+    await fireEvent.click(button);
+    expect(onWatch).toHaveBeenCalled();
+  });
+
+  it("shows no badge without active rules", () => {
+    render(Sidebar, { mode: "convert", onMode: vi.fn(), watchBadge: 0 });
+    expect(screen.getByRole("button", { name: /Watch folders/ }).querySelector(".badge")).toBeNull();
+  });
 });

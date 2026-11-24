@@ -6,10 +6,12 @@
   import { nextRadio } from "../lib/radio";
   import type { PresetView, QueueMode } from "../lib/types";
 
-  let { mode, onMode, preset = null, presets = [], onPreset = () => {}, view = "queue", onHistory = () => {} }: {
+  let { mode, onMode, preset = null, presets = [], onPreset = () => {}, view = "queue", onHistory = () => {}, onWatch = () => {}, watchBadge = 0 }: {
     mode: QueueMode; onMode: (m: QueueMode) => void;
     preset?: string | null; presets?: PresetView[]; onPreset?: (id: string) => void;
-    view?: "queue" | "history"; onHistory?: () => void;
+    view?: "queue" | "history" | "watch"; onHistory?: () => void;
+    /** Watch folders (spec D2), badged with the number of active rules. */
+    onWatch?: () => void; watchBadge?: number;
   } = $props();
   const modes: { id: QueueMode; label: string; key: string; icon: "arrow" | "compress" | "folder" | "add" }[] = [
     { id: "convert", label: "Convert", key: "⌃⌘1", icon: "arrow" },
@@ -42,6 +44,10 @@
   </div>
   {#if presets.length}<PresetList {presets} active={preset} {onPreset} />{/if}
   <p class="label">AUTOMATION</p>
+  <button aria-pressed={view === "watch"} class:current={view === "watch"} onclick={onWatch}>
+    <Icon name="folder" size={16} /> <span>Watch folders</span>
+    {#if watchBadge > 0}<span class="badge" aria-label="{watchBadge} active">{watchBadge}</span>{/if}
+  </button>
   <button aria-pressed={view === "history"} class:current={view === "history"} onclick={onHistory}>
     <Icon name="queued" size={16} /> <span>History</span>
   </button>
@@ -58,5 +64,6 @@
   button.current { background: var(--accent-tint); color: var(--accent-text); }
   .key { margin-left: auto; font-family: var(--font-data); font-size: var(--text-label); color: var(--faint); }
   button.current .key { color: inherit; }
+  .badge { margin-left: auto; font-family: var(--font-data); font-size: var(--text-label); color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius-badge); padding: 0 6px; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>

@@ -48,6 +48,8 @@ export interface SettingsView {
   preset: string | null;
   outputLabel: string;
   fallbackLabel: string;
+  /** Read from macOS's Login Items each time (not stored). */
+  startAtLogin: boolean;
 }
 
 export interface SetTarget {
@@ -121,3 +123,52 @@ export interface EnginesView {
   rar: boolean;
   version: string;
 }
+
+/** A watch rule (watch/rule.rs, Rule). */
+export interface Rule {
+  id: string;
+  folder: string;
+  target: FormatId;
+  preset: string | null;
+  patterns: string;
+  results: string;
+  done: string | null;
+  recursive: boolean;
+  settle: boolean;
+  notifyEach: boolean;
+  enabled: boolean;
+}
+
+export type WatchState =
+  | { state: "watching" }
+  | { state: "converting"; done: number; total: number }
+  | { state: "missing" }
+  | { state: "unreadable"; error: Shown }
+  | { state: "paused" };
+
+/** What a rule is doing (watch/runner.rs, RuleStatus). */
+export type RuleStatus = {
+  id: string;
+  burstDone: number;
+  lastFailed: { name: string; reason: string } | null;
+  note: string | null;
+} & WatchState;
+
+/** A rule as the Watch folders view shows it (app.rs, RuleView). */
+export type RuleView = Rule & {
+  command: string;
+  status: RuleStatus;
+  today: number;
+  folderLabel: string;
+  resultsLabel: string;
+  doneLabel: string | null;
+};
+
+/** A rule being made or edited (app.rs, RuleDraftView). */
+export interface RuleDraftView {
+  rule: Rule;
+  command: string;
+  existing: number;
+}
+
+export type NotificationsState = "allowed" | "off" | "notAsked";

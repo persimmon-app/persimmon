@@ -20,6 +20,7 @@
   let settings: SettingsView | null = $state(null);
   let presets: PresetView[] = $state([]);
   let engines: EnginesView | null = $state(null);
+  let loginError: string | null = $state(null);
 
   onMount(() => {
     ipc.getSettings().then((s) => (settings = s));
@@ -45,7 +46,8 @@
   </nav>
   <main>
     {#if pane === "general" && settings}
-      <GeneralPane {settings} onDropWindow={(on) => ipc.setDropWindowAtLaunch(on).then((s) => (settings = s))} />
+      <GeneralPane {settings} {loginError} onDropWindow={(on) => ipc.setDropWindowAtLaunch(on).then((s) => (settings = s))}
+        onStartAtLogin={(on) => ipc.setStartAtLogin(on).then((s) => { settings = s; loginError = null; }, (e) => (loginError = String(e)))} />
     {:else if pane === "output" && settings}
       <OutputPane {settings}
         onBeside={() => ipc.setOutputBeside().then((s) => (settings = s))}
