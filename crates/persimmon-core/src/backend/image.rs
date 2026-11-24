@@ -341,6 +341,18 @@ fn gated<T>(f: impl Fn() -> Result<T, Error>) -> Result<T, Error> {
     }
 }
 
+/// Run test code that calls libvips itself through the [`Gate`], so what it
+/// leaves in the shared error buffer can't reach another test's task: even
+/// a successful HEIF open leaves a line there.
+#[cfg(test)]
+pub(crate) fn with_vips<T>(f: impl FnOnce() -> T) -> T {
+    let f = std::cell::Cell::new(Some(f));
+    match gated(|| Ok(f.take().expect("runs once")())) {
+        Ok(v) => v,
+        Err(_) => unreachable!("never fails"),
+    }
+}
+
 /// Set libvips's worker threads, once it has started.
 pub(crate) fn set_threads(n: i32) {
     if init().is_ok() {
@@ -696,24 +708,34 @@ mod tests {
         run_with(&ImageBackend::new(), id, to, opts)
     }
 
+    /// Only call inside [`with_vips`], with everything that reads the image.
     fn open(p: &Path) -> VipsImage {
         let src = rs_vips::VipsSource::new_from_file(p).unwrap();
         VipsImage::new_from_source(&src, "").unwrap()
     }
 
     fn dims(p: &Path) -> (i32, i32) {
-        let img = open(p);
-        (img.get_width(), img.get_height())
+        with_vips(|| {
+            let img = open(p);
+            (img.get_width(), img.get_height())
+        })
+    }
+
+    /// Whether the image at `p` carries the metadata field `name`.
+    fn has_field(p: &Path, name: &str) -> bool {
+        with_vips(|| open(p).get_typeof(name).unwrap_or(0) != 0)
     }
 
     /// A pixel in 8-bit sRGB (plus alpha), whatever the file stores:
     /// a CMYK JPEG or a 16-bit PNG is converted first.
     fn pixel(p: &Path, x: i32, y: i32) -> Vec<f64> {
-        open(p)
-            .colourspace(rs_vips::enums::Interpretation::Srgb)
-            .unwrap()
-            .getpoint(x, y)
-            .unwrap()
+        with_vips(|| {
+            open(p)
+                .colourspace(rs_vips::enums::Interpretation::Srgb)
+                .unwrap()
+                .getpoint(x, y)
+                .unwrap()
+        })
     }
 
     fn near(px: &[f64], target: [f64; 3], tol: f64) -> bool {
@@ -783,13 +805,13 @@ mod tests {
         let (_, temp) = run_to("img-p3", Some(FormatId::Webp), &opts);
         let p = pixel(&temp, 20, 20);
         assert!(near(&p, [220.0, 30.0, 30.0], 12.0), "red patch {p:?}");
-        assert_eq!(open(&temp).get_typeof("icc-profile-data").unwrap_or(0), 0);
+        assert!(!has_field(&temp, "icc-profile-data"));
     }
 
     #[test]
     fn p3_profile_kept_by_default() {
         let (_, temp) = run_to("img-p3", Some(FormatId::Png), &JobOptions::default());
-        assert_ne!(open(&temp).get_typeof("icc-profile-data").unwrap_or(0), 0);
+        assert!(has_field(&temp, "icc-profile-data"));
     }
 
     #[test]
@@ -799,7 +821,7 @@ mod tests {
             ..Default::default()
         };
         let (_, temp) = run_to("img-orient-6", Some(FormatId::Jpeg), &opts);
-        assert_eq!(open(&temp).get_typeof("exif-data").unwrap_or(0), 0);
+        assert!(!has_field(&temp, "exif-data"));
     }
 
     #[test]
@@ -918,8 +940,10 @@ mod tests {
     /// Write `img` as PNG into the test output folder and return the path.
     fn save_png(img: &VipsImage, name: &str) -> PathBuf {
         let p = out_dir().join(name);
-        img.pngsave_with_opts(p.to_str().unwrap(), rs_vips::voption::VOption::new())
-            .unwrap();
+        with_vips(|| {
+            img.pngsave_with_opts(p.to_str().unwrap(), rs_vips::voption::VOption::new())
+                .unwrap()
+        });
         p
     }
 

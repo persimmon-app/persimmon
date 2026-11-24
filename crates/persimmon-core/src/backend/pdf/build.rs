@@ -329,14 +329,16 @@ mod tests {
             use rs_vips::voption::{Setter, VOption};
             let dir = scratch("tiff-pages");
             crate::backend::image::ImageBackend::new();
-            let mut img = VipsImage::black(64, 192).unwrap();
-            img.set_int("page-height", 64).unwrap();
             let p = dir.join("fax.tif");
-            img.tiffsave_with_opts(
-                p.to_str().unwrap(),
-                VOption::new().set("compression", "lzw"),
-            )
-            .unwrap();
+            crate::backend::image::with_vips(|| {
+                let mut img = VipsImage::black(64, 192).unwrap();
+                img.set_int("page-height", 64).unwrap();
+                img.tiffsave_with_opts(
+                    p.to_str().unwrap(),
+                    VOption::new().set("compression", "lzw"),
+                )
+                .unwrap()
+            });
             let doc = Document::load(convert(&dir, p).unwrap()).unwrap();
             assert_eq!(doc.get_pages().len(), 3);
             for n in 1..=3 {
