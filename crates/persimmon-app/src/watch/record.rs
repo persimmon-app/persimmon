@@ -129,9 +129,17 @@ impl Record {
         }
     }
 
-    /// Forget files that are gone.
-    pub fn prune(&mut self) {
-        self.files.retain(|path, _| path.exists());
+    /// Forget files under `root` that are known to be gone. A file that
+    /// can't be checked (a folder that can't be read) is kept.
+    pub fn prune(&mut self, root: &Path) {
+        self.files
+            .retain(|path, _| !(path.starts_with(root) && path.try_exists().is_ok_and(|e| !e)));
+    }
+
+    /// Whether the record was damaged, once: the caller leaves the files
+    /// there alone then.
+    pub fn take_damaged(&mut self) -> bool {
+        std::mem::take(&mut self.damaged)
     }
 
     /// Write through a temporary file renamed into place.
@@ -253,7 +261,10 @@ mod tests {
         let mut r = Record::open(&record_path(&d.0, "r1"));
         r.mark(&here, stamp(1));
         r.mark(&gone, stamp(1));
-        r.prune();
+        let elsewhere = PathBuf::from("/nowhere/else.png");
+        r.mark(&elsewhere, stamp(1));
+        r.prune(&d.0);
+        assert!(r.handled(&elsewhere, stamp(1)), "outside the root: kept");
         assert!(r.handled(&here, stamp(1)));
         assert!(!r.handled(&gone, stamp(1)));
     }

@@ -338,13 +338,11 @@ impl Shared {
 
     fn start_run(self: &Arc<Self>, running: Running) -> RuleRun {
         let id = running.rule.id.clone();
-        let mut record = Record::open(&record_path(&self.deps.data, &id));
-        record.prune();
+        // Pruned and, when damaged, baselined only once the folder can be
+        // read (in the watcher thread): a folder that's away must not
+        // empty the record.
+        let record = Record::open(&record_path(&self.deps.data, &id));
         let damaged = record.damaged();
-        if damaged {
-            record.baseline(&files_in(&running.spec).unwrap_or_default());
-        }
-        let _ = record.save();
         let rs = Arc::new(RuleShared {
             bursts: Mutex::new(Bursts::new(
                 id.clone(),
@@ -450,6 +448,17 @@ impl Shared {
                 }
             };
             *lock(&rs.root) = Some(watcher.root().to_path_buf());
+            {
+                // The folder is there and readable: now the record can be
+                // tidied, and a damaged one leave the files here alone,
+                // before anything is handed out.
+                let mut record = lock(&rs.record);
+                if record.take_damaged() {
+                    record.baseline(&files_in(spec).unwrap_or_default());
+                }
+                record.prune(watcher.root());
+                let _ = record.save();
+            }
             self.update(rs, |s| {
                 if !matches!(s.state, WatchState::Converting { .. }) {
                     s.state = WatchState::Watching;
@@ -1219,5 +1228,86 @@ mod tests {
             done.is_ok(),
             "mark_restored waited on a runner lock held while delivering"
         );
+    }
+
+    /// A rule started while its folder is away (a drive unplugged) keeps
+    /// what it had converted: nothing converts again when it's back.
+    #[test]
+    fn a_restart_while_the_folder_is_away_converts_nothing_twice() {
+        let r = rig("away");
+        let rule = r.rule();
+        {
+            let w = r.runner();
+            w.apply(vec![r.running(&rule)]);
+            r.png("a.png");
+            wait("a converted", || r.results() == ["a.webp"]);
+            w.shutdown();
+        }
+        let away = r.dir.join("away");
+        std::fs::rename(r.input(), &away).unwrap();
+        let w = r.runner();
+        w.apply(vec![r.running(&rule)]);
+        wait("missing", || r.last_state() == Some(WatchState::Missing));
+        std::thread::sleep(Duration::from_millis(400));
+        std::fs::rename(&away, r.input()).unwrap();
+        wait("watching", || r.last_state() == Some(WatchState::Watching));
+        settle_down();
+        assert_eq!(r.engine.tries("a.png"), 1, "a.png converted again");
+        assert_eq!(r.results(), ["a.webp"]);
+    }
+
+    /// The same when the folder can't be read at start (D10: access reset
+    /// after an update), until it's allowed again.
+    #[test]
+    fn a_restart_while_the_folder_is_unreadable_converts_nothing_twice() {
+        use std::os::unix::fs::PermissionsExt;
+        let r = rig("unreadable-restart");
+        let set = |mode| {
+            std::fs::set_permissions(r.input(), std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let rule = r.rule();
+        {
+            let w = r.runner();
+            w.apply(vec![r.running(&rule)]);
+            r.png("a.png");
+            wait("a converted", || r.results() == ["a.webp"]);
+            w.shutdown();
+        }
+        set(0o000);
+        if std::fs::read_dir(r.input()).is_ok() {
+            set(0o755);
+            return; // root reads anything
+        }
+        let w = r.runner();
+        w.apply(vec![r.running(&rule)]);
+        wait("unreadable", || {
+            matches!(r.last_state(), Some(WatchState::Unreadable { .. }))
+        });
+        std::thread::sleep(Duration::from_millis(400));
+        set(0o755);
+        wait("watching", || r.last_state() == Some(WatchState::Watching));
+        settle_down();
+        assert_eq!(r.engine.tries("a.png"), 1, "a.png converted again");
+    }
+
+    /// A damaged record found while the folder is away still leaves the
+    /// files there alone once it's back.
+    #[test]
+    fn a_damaged_record_while_the_folder_is_away_leaves_files_alone() {
+        let r = rig("damaged-away");
+        r.png("old.png");
+        let away = r.dir.join("away");
+        std::fs::rename(r.input(), &away).unwrap();
+        let path = crate::watch::record::record_path(&r.dir.join("data"), "r1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ damaged").unwrap();
+        let rule = r.rule();
+        let w = r.runner();
+        w.apply(vec![r.running(&rule)]);
+        wait("missing", || r.last_state() == Some(WatchState::Missing));
+        std::fs::rename(&away, r.input()).unwrap();
+        wait("watching", || r.last_state() == Some(WatchState::Watching));
+        settle_down();
+        assert_eq!(r.engine.tries("old.png"), 0, "old.png converted");
     }
 }
