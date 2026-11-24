@@ -16,4 +16,13 @@ describe("ConfirmQuit", () => {
     render(ConfirmQuit, { open: true, running: 1, onCancel: vi.fn(), onQuit: vi.fn() });
     expect(screen.getByText("A conversion is running. Quit and cancel it?")).toBeTruthy();
   });
+
+  it("says watch folders stop, with nothing running", () => {
+    render(ConfirmQuit, { open: true, running: 0, rules: 1, onCancel: vi.fn(), onQuit: vi.fn() });
+    expect(screen.getByText("Watch folders stop while Persimmon is closed. Quit anyway?")).toBeTruthy();
+  });
+  it("adds it to the running sentence", () => {
+    render(ConfirmQuit, { open: true, running: 2, rules: 1, onCancel: vi.fn(), onQuit: vi.fn() });
+    expect(screen.getByText("2 conversions are running. Quit and cancel them? Watch folders stop too.")).toBeTruthy();
+  });
 });

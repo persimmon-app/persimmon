@@ -4,12 +4,16 @@
   import { size, plural } from "../lib/format";
   import type { BatchView } from "../lib/types";
 
-  let { batch, onUndo, onReveal, onRetry = () => {} }: {
+  let { batch, onUndo, onReveal, onRetry = () => {}, open: opened = false }: {
     batch: BatchView; onUndo: (id: string) => void; onReveal: (path: string) => void;
     /** Retry from History (spec D1): the batch and the item's index. */
     onRetry?: (batch: string, index: number) => void;
+    /** Start with its files shown (a notification's Undo). */
+    open?: boolean;
   } = $props();
-  let open = $state(false);
+  // svelte-ignore state_referenced_locally
+  let open = $state(opened);
+  const parent = (p: string) => base(p.split("/").slice(0, -1).join("/"));
 
   const base = (p: string | null) => (p ? (p.split("/").pop() ?? p) : "");
   const time = $derived(new Date(batch.finished * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
@@ -20,7 +24,7 @@
     const dot = name.indexOf(".");
     return dot > 0 ? name.slice(dot + 1).toUpperCase() : "FOLDER";
   });
-  const source = $derived({ window: "WINDOW", drop: "DROP", opened: "OPEN WITH" }[batch.source]);
+  const source = $derived({ window: "WINDOW", drop: "DROP", opened: "OPEN WITH", watch: "WATCH" }[batch.source]);
   const inBytes = $derived(batch.items.reduce((n, i) => n + i.size, 0));
   const outBytes = $derived(batch.items.reduce((n, i) => n + (i.outputSize ?? 0), 0));
   const done = $derived(batch.items.filter((i) => i.outcome === "done").length);
@@ -31,12 +35,12 @@
   });
 </script>
 
-<article class="batch" class:undone={batch.undone}>
+<article class="batch" class:undone={batch.undone} id="batch-{batch.id}">
   <div class="head">
     <button class="disclose" aria-expanded={open} aria-label="Show the {batch.items.length} files in this batch"
       onclick={() => (open = !open)}><span class="chev" class:open>›</span></button>
     <span class="time">{time}</span>
-    <span class="what">{plural(batch.items.length, "file")} → {target}</span>
+    <span class="what">{plural(batch.items.length, "file")} → {target}{batch.folderLabel ? ` · ${batch.folderLabel}` : ""}</span>
     <span class="tag">{source}</span>
     {#if batch.preset}<span class="preset">{batch.preset}</span>{/if}
     <span class="spacer"></span>
@@ -58,6 +62,7 @@
           {#if item.outcome === "failed" || item.outcome === "cancelled"}
             <button class="text" aria-label="Retry {base(item.inputs[0])}" onclick={() => onRetry(batch.id, i)}>Retry</button>
           {/if}
+          {#if item.moved}<span class="state">{item.restored ? "Original put back" : `Original moved to ${parent(item.moved.to)}`}</span>{/if}
           {#if item.undone}<span class="state">In the Trash</span>
           {:else if item.output && item.outcome === "done"}
             <button class="text" aria-label="Reveal {base(item.output)} in Finder" onclick={() => onReveal(item.output!)}>Reveal</button>

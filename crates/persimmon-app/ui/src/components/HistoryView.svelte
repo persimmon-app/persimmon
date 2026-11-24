@@ -5,14 +5,19 @@
   import { plural } from "../lib/format";
   import type { BatchView, HistoryFilter, UndoReport } from "../lib/types";
 
-  let { batches, text, filter, report, now = Date.now() / 1000, onSearch, onFilter, onUndo, onReveal, onRetry = () => {}, onClear, onDismissReport }: {
+  let { batches, text, filter, report, now = Date.now() / 1000, focus = null, onSearch, onFilter, onUndo, onReveal, onRetry = () => {}, onClear, onDismissReport }: {
     batches: BatchView[]; text: string; filter: HistoryFilter; report: UndoReport | null; now?: number;
+    /** A batch to open and bring into view (a notification's Undo). */
+    focus?: string | null;
     onSearch: (t: string) => void; onFilter: (f: HistoryFilter) => void; onUndo: (id: string) => void;
     onReveal: (path: string) => void; onRetry?: (batch: string, index: number) => void;
     onClear: () => void; onDismissReport: () => void;
   } = $props();
 
   let confirming = $state(false);
+  $effect(() => {
+    if (focus && batches.some((b) => b.id === focus)) document.getElementById(`batch-${focus}`)?.scrollIntoView({ block: "center" });
+  });
   const files = $derived(batches.reduce((n, b) => n + b.items.length, 0));
   const day = (t: number) => { const d = new Date(t * 1000); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
   const groups = $derived.by(() => {
@@ -51,7 +56,7 @@
   <div class="list">
     {#each groups as g (g.label)}
       <h3>{g.label}</h3>
-      {#each g.batches as b (b.id)}<HistoryBatch batch={b} {onUndo} {onReveal} {onRetry} />{/each}
+      {#each g.batches as b (b.id)}<HistoryBatch batch={b} {onUndo} {onReveal} {onRetry} open={b.id === focus} />{/each}
     {:else}
       <p class="empty">No batches{text || filter !== "all" ? " match" : " yet"}.</p>
     {/each}

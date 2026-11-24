@@ -48,7 +48,15 @@ describe("HistoryView", () => {
   });
 
   it("lists what undo left alone", () => {
-    show({ report: { trashed: 1, skipped: ["hero.webp was changed or moved since it was converted, so it was left alone"] } });
+    show({ report: { trashed: 1, restored: 0, skipped: ["hero.webp was changed or moved since it was converted, so it was left alone"] } });
     expect(screen.getByText(/hero\.webp was changed or moved/)).toBeTruthy();
+  });
+
+  it("opens the batch a notification asked for", () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    show({ focus: "older" });
+    expect(screen.getAllByText("hero.png → hero.webp")).toHaveLength(1);
+    expect(scrolled).toHaveBeenCalled();
   });
 });

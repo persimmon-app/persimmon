@@ -19,8 +19,9 @@ export const quitNow = () => invoke<void>("quit_now");
 
 export const onRow = (f: (row: RowView) => void): Promise<UnlistenFn> =>
   listen<RowView>("row", (e) => f(e.payload));
-export const onConfirmQuit = (f: () => void): Promise<UnlistenFn> =>
-  listen("confirm-quit", () => f());
+/** Quitting asks first: how many rows are running and rules are active. */
+export const onConfirmQuit = (f: (p: { running: number; rules: number } | null) => void): Promise<UnlistenFn> =>
+  listen<{ running: number; rules: number } | null>("confirm-quit", (e) => f(e.payload));
 
 import type { QueueMode, SettingsView } from "./types";
 

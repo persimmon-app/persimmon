@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  let { open, running, onCancel, onQuit }: { open: boolean; running: number; onCancel: () => void; onQuit: () => void } = $props();
+  let { open, running, rules = 0, onCancel, onQuit }: {
+    open: boolean; running: number;
+    /** Active watch rules, which stop while Persimmon is closed (spec D2). */
+    rules?: number; onCancel: () => void; onQuit: () => void;
+  } = $props();
+  const question = $derived(
+    running > 1 ? `${running} conversions are running. Quit and cancel them?${rules ? " Watch folders stop too." : ""}`
+    : running === 1 ? `A conversion is running. Quit and cancel it?${rules ? " Watch folders stop too." : ""}`
+    : "Watch folders stop while Persimmon is closed. Quit anyway?");
   let dialog: HTMLDialogElement | undefined = $state();
   $effect(() => {
     if (!dialog) return;
@@ -10,7 +18,7 @@
 </script>
 
 <dialog bind:this={dialog} oncancel={(e) => { e.preventDefault(); onCancel(); }} aria-labelledby="quit-title">
-  <p id="quit-title">{running > 1 ? `${running} conversions are running. Quit and cancel them?` : "A conversion is running. Quit and cancel it?"}</p>
+  <p id="quit-title">{question}</p>
   <div class="buttons">
     <button onclick={onCancel}>Cancel</button>
     <button class="quit" onclick={onQuit}>Quit</button>

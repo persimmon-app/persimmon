@@ -28,6 +28,8 @@
   let targets: FormatId[] = $state([]);
   let message: string | null = $state(null);
   let confirmQuit = $state(false);
+  let quitRules = $state(0);
+  let focusBatch: string | null = $state(null);
   let settings = $state<SettingsView | null>(null);
   const mode: QueueMode = $derived(settings?.mode ?? "convert");
   let picking = false;
@@ -220,7 +222,9 @@
       // ⌥⌘Z is the Edit menu's (Undo Last Batch), from any window.
       ipc.onUndoReport((r) => { showReport(r); refreshHistory(); }),
       ipc.onRow(upsert),
-      ipc.onConfirmQuit(() => (confirmQuit = true)),
+      ipc.onConfirmQuit((p) => { quitRules = p?.rules ?? 0; confirmQuit = true; }),
+      // A notification's Undo opens History at that batch (spec D9).
+      ipc.onShowBatch((id) => { historyText = ""; historyFilter = "all"; focusBatch = id; view = "history"; refreshHistory(); }),
       ipc.onSettings((s) => (settings = s)),
       getCurrentWebview().onDragDropEvent((e) => {
         if (e.payload.type === "drop") add(e.payload.paths);
@@ -248,7 +252,7 @@
         onRemove={async (id) => (rules = await ipc.removeRule(id))}
         onStartAtLogin={startAtLogin} onOpenNotifications={() => ipc.openNotificationSettings()} />
     {:else if view === "history"}
-      <HistoryView {batches} text={historyText} filter={historyFilter} {report}
+      <HistoryView {batches} text={historyText} filter={historyFilter} {report} focus={focusBatch}
         onSearch={(t) => { historyText = t; refreshHistory(); }}
         onFilter={(f) => { historyFilter = f; refreshHistory(); }}
         onUndo={(id) => undo(id)} onReveal={(p) => reveal(ipc.revealPath(p))}
@@ -290,7 +294,7 @@
     onCommand={(r) => ipc.ruleCommand(r)} onDefaults={(t) => ipc.watchPatterns(t)}
     onChoose={() => ipc.pickWatchFolder()} onSave={saveRule} onCancel={() => (editor = null)} />
 {/if}
-<ConfirmQuit open={confirmQuit} running={rows.filter((r) => r.state === "running").length} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />
+<ConfirmQuit open={confirmQuit} running={rows.filter((r) => r.state === "running").length} rules={quitRules} onCancel={() => (confirmQuit = false)} onQuit={() => ipc.quitNow()} />
 
 <style>
   .window { height: 100vh; display: flex; }

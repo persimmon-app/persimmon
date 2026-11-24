@@ -94,6 +94,10 @@ export type Item = {
   to?: FormatId | null;
   mode?: QueueMode | null;
   undone: boolean;
+  /** The original a watch rule moved after converting it (history.rs, MovedOriginal). */
+  moved?: { from: string; to: string; stamp: { size: number; secs: number; nanos: number } } | null;
+  /** Whether undo put that original back. */
+  restored?: boolean;
 } & ItemOutcome;
 
 export type HistoryFilter = "all" | "undoable" | "failed";
@@ -103,7 +107,11 @@ export interface BatchView {
   id: string;
   started: number;
   finished: number;
-  source: "window" | "drop" | "opened";
+  source: "window" | "drop" | "opened" | "watch";
+  /** A watch batch's rule and folder, and the folder as shown (~/Inbox). */
+  rule?: string | null;
+  folder?: string | null;
+  folderLabel?: string | null;
   preset: string | null;
   mode: QueueMode;
   items: Item[];
@@ -113,6 +121,8 @@ export interface BatchView {
 
 export interface UndoReport {
   trashed: number;
+  /** Originals a watch rule had moved, put back where they were. */
+  restored: number;
   skipped: string[];
 }
 

@@ -33,4 +33,27 @@ describe("HistoryBatch", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Retry late.mov" }));
     expect(onRetry).toHaveBeenCalledWith("a", 2);
   });
+
+  it("shows a watch batch with its folder", () => {
+    const b = batch({ id: "w", source: "watch", rule: "r1", folder: "/Users/me/Inbox", folderLabel: "~/Inbox" });
+    render(HistoryBatch, { batch: b, onReveal: vi.fn(), onUndo: vi.fn() });
+    expect(screen.getByText("WATCH")).toBeTruthy();
+    expect(screen.getByText("2 files → WEBP · ~/Inbox")).toBeTruthy();
+  });
+
+  it("says where a moved original is", async () => {
+    const b = batch({ id: "w", source: "watch", folderLabel: "~/Inbox" });
+    const moved = { from: "/x/hero.png", to: "/x/done/hero.png", stamp: { size: 1, secs: 1, nanos: 0 } };
+    b.items[0] = { ...b.items[0], moved, restored: false };
+    b.items.push({ ...b.items[0], inputs: ["/x/back.png"], moved: { ...moved, from: "/x/back.png" }, restored: true });
+    render(HistoryBatch, { batch: b, onReveal: vi.fn(), onUndo: vi.fn() });
+    await fireEvent.click(screen.getByRole("button", { name: /Show the 3 files/ }));
+    expect(screen.getByText("Original moved to done")).toBeTruthy();
+    expect(screen.getByText("Original put back")).toBeTruthy();
+  });
+
+  it("opens by itself when asked to", () => {
+    render(HistoryBatch, { batch: batch({ id: "a" }), onReveal: vi.fn(), onUndo: vi.fn(), open: true });
+    expect(screen.getByText("hero.png → hero.webp")).toBeTruthy();
+  });
 });
