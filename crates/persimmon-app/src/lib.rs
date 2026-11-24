@@ -30,3 +30,5 @@ pub(crate) static FFMPEG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(())
 pub mod reveal;
 #[cfg(target_os = "macos")]
 pub mod settings;
+#[cfg(target_os = "macos")]
+pub mod watch;

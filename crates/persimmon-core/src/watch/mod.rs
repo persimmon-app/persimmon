@@ -10,4 +10,4 @@ mod watcher;
 
 pub use patterns::Patterns;
 pub use tracker::Stamp;
-pub use watcher::{Change, Timing, WatchSpec, Watcher};
+pub use watcher::{Change, Timing, WatchSpec, Watcher, files_in};

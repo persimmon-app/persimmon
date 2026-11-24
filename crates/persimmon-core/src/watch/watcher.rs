@@ -128,10 +128,7 @@ pub enum Change {
 
 /// A folder being watched.
 pub struct Watcher {
-    root: PathBuf,
-    excluded: Vec<PathBuf>,
-    patterns: Patterns,
-    recursive: bool,
+    scope: Scope,
     timing: Timing,
     tracker: Tracker,
     tx: Sender<notify::Result<notify::Event>>,
@@ -146,6 +143,211 @@ impl Watcher {
     /// Start watching. Fails when the folder is missing or unreadable, or
     /// when the results or done folder is the watched folder itself.
     pub fn start(spec: &WatchSpec) -> Result<Watcher, Error> {
+        let mut scope = Scope::new(spec)?;
+        let mut excluded = Vec::new();
+        for dir in std::iter::once(&spec.results).chain(spec.done.as_ref()) {
+            std::fs::create_dir_all(dir).map_err(|e| {
+                Error::new(
+                    ErrorCode::OutputNotWritable,
+                    format!("can't create this folder ({e})"),
+                )
+                .with_file(dir)
+            })?;
+            excluded.push(std::fs::canonicalize(dir).map_err(|e| unreadable(dir, &e))?);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        scope.excluded = excluded;
+        let mut w = Watcher {
+            scope,
+            timing: spec.timing,
+            tracker: Tracker::new(spec.settle.then_some(spec.timing.settle)),
+            tx,
+            rx,
+            events: None,
+            last_scan: Instant::now(),
+            missing: false,
+            queue: VecDeque::new(),
+        };
+        w.arm();
+        let now = Instant::now();
+        let root = w.scope.root.clone();
+        for (path, stamp) in w.scope.files_in(&root) {
+            if spec.existing {
+                w.tracker.observe(&path, stamp, now);
+            } else {
+                w.tracker.baseline(path, stamp);
+            }
+        }
+        Ok(w)
+    }
+
+    /// The watched folder, resolved.
+    pub fn root(&self) -> &Path {
+        &self.scope.root
+    }
+
+    /// Wait for the next change; `None` once `cancel` fires.
+    pub fn next(&mut self, cancel: &CancelToken) -> Option<Change> {
+        loop {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            if let Some(change) = self.queue.pop_front() {
+                if let Change::Ready(path) = &change
+                    && !self.still_ready(path)
+                {
+                    continue;
+                }
+                return Some(change);
+            }
+            if let Ok(event) = self.rx.recv_timeout(self.timing.tick) {
+                self.on_event(event);
+                // A bounded drain, so a flood of events can't keep a stop
+                // or a tick from coming round.
+                for _ in 0..MAX_EVENTS_PER_TICK {
+                    if cancel.is_cancelled() {
+                        return None;
+                    }
+                    let Ok(event) = self.rx.try_recv() else { break };
+                    self.on_event(event);
+                }
+            }
+            self.step(Instant::now());
+        }
+    }
+
+    /// Whether a file handed out as ready is still as it was then. A file
+    /// that went is forgotten; one that changed settles again, so it
+    /// converts once, in its final state.
+    fn still_ready(&mut self, path: &Path) -> bool {
+        let now = std::fs::metadata(path)
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| Stamp::of(&m));
+        match now {
+            Some(stamp) if Some(stamp) == self.tracker.known(path) => true,
+            Some(stamp) => {
+                self.tracker.observe(path, stamp, Instant::now());
+                false
+            }
+            None => {
+                self.tracker.gone(path);
+                false
+            }
+        }
+    }
+
+    /// Start (or restart) file events; without them, rescans do the work.
+    fn arm(&mut self) {
+        let mode = if self.scope.recursive {
+            notify::RecursiveMode::Recursive
+        } else {
+            notify::RecursiveMode::NonRecursive
+        };
+        self.events = notify::recommended_watcher(self.tx.clone())
+            .and_then(|mut w| w.watch(&self.scope.root, mode).map(|()| w))
+            .ok();
+    }
+
+    fn on_event(&mut self, event: notify::Result<notify::Event>) {
+        if self.missing {
+            return;
+        }
+        let Ok(event) = event else { return };
+        if !relevant(&event.kind) {
+            return;
+        }
+        let now = Instant::now();
+        for path in event.paths {
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_dir() => {
+                    if self.scope.recursive && self.scope.considered_dir(&path) {
+                        for (file, stamp) in self.scope.files_in(&path) {
+                            self.tracker.observe(&file, stamp, now);
+                        }
+                    }
+                }
+                Ok(m) => {
+                    if let Some(stamp) = Stamp::of(&m).filter(|_| m.is_file())
+                        && self.scope.considered(&path)
+                    {
+                        self.tracker.observe(&path, stamp, now);
+                    }
+                }
+                Err(_) => self.tracker.gone(&path),
+            }
+        }
+    }
+
+    /// One tick: the folder's presence, files still settling, the rescan,
+    /// and what's now ready.
+    fn step(&mut self, now: Instant) {
+        if !self.scope.root.is_dir() {
+            if !self.missing {
+                self.missing = true;
+                self.events = None;
+                self.queue.push_back(Change::Missing);
+            }
+            return;
+        }
+        if self.missing {
+            self.missing = false;
+            self.arm();
+            self.rescan(now);
+            self.queue.push_back(Change::Back);
+        }
+        for path in self.tracker.pending() {
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_file() => match Stamp::of(&m) {
+                    Some(stamp) => self.tracker.observe(&path, stamp, now),
+                    None => self.tracker.gone(&path),
+                },
+                _ => self.tracker.gone(&path),
+            }
+        }
+        if now.saturating_duration_since(self.last_scan) >= self.timing.rescan {
+            self.rescan(now);
+        }
+        for path in self.tracker.ready(now) {
+            self.queue.push_back(Change::Ready(path));
+        }
+    }
+
+    fn rescan(&mut self, now: Instant) {
+        self.last_scan = now;
+        let root = self.scope.root.clone();
+        for (path, stamp) in self.scope.files_in(&root) {
+            self.tracker.observe(&path, stamp, now);
+        }
+    }
+}
+
+/// The files a rescan would hand out now: matched, not ignored, outside
+/// the results and done folders, below the folder when recursive, as
+/// resolved paths in name order. Refuses what [`Watcher::start`] refuses,
+/// and creates nothing.
+pub fn files_in(spec: &WatchSpec) -> Result<Vec<PathBuf>, Error> {
+    let scope = Scope::new(spec)?;
+    Ok(scope
+        .files_in(&scope.root)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
+}
+
+/// What a watch looks at: the resolved folder, the folders it never looks
+/// in, and which files count.
+struct Scope {
+    root: PathBuf,
+    excluded: Vec<PathBuf>,
+    patterns: Patterns,
+    recursive: bool,
+}
+
+impl Scope {
+    /// Check the folder (there, a folder, readable) and the results and
+    /// done folders, creating nothing.
+    fn new(spec: &WatchSpec) -> Result<Scope, Error> {
         let folder = &spec.folder;
         match std::fs::metadata(folder) {
             Ok(m) if m.is_dir() => {}
@@ -208,183 +410,16 @@ impl Watcher {
                     ),
             );
         }
-        let mut excluded = Vec::new();
-        for dir in std::iter::once(&spec.results).chain(spec.done.as_ref()) {
-            std::fs::create_dir_all(dir).map_err(|e| {
-                Error::new(
-                    ErrorCode::OutputNotWritable,
-                    format!("can't create this folder ({e})"),
-                )
-                .with_file(dir)
-            })?;
-            excluded.push(std::fs::canonicalize(dir).map_err(|e| unreadable(dir, &e))?);
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut w = Watcher {
+        let excluded = std::iter::once(&spec.results)
+            .chain(spec.done.as_ref())
+            .map(|p| resolve(p))
+            .collect();
+        Ok(Scope {
             root,
             excluded,
             patterns: spec.patterns.clone(),
             recursive: spec.recursive,
-            timing: spec.timing,
-            tracker: Tracker::new(spec.settle.then_some(spec.timing.settle)),
-            tx,
-            rx,
-            events: None,
-            last_scan: Instant::now(),
-            missing: false,
-            queue: VecDeque::new(),
-        };
-        w.arm();
-        let now = Instant::now();
-        let root = w.root.clone();
-        for (path, stamp) in w.files_in(&root) {
-            if spec.existing {
-                w.tracker.observe(&path, stamp, now);
-            } else {
-                w.tracker.baseline(path, stamp);
-            }
-        }
-        Ok(w)
-    }
-
-    /// The watched folder, resolved.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    /// Wait for the next change; `None` once `cancel` fires.
-    pub fn next(&mut self, cancel: &CancelToken) -> Option<Change> {
-        loop {
-            if cancel.is_cancelled() {
-                return None;
-            }
-            if let Some(change) = self.queue.pop_front() {
-                if let Change::Ready(path) = &change
-                    && !self.still_ready(path)
-                {
-                    continue;
-                }
-                return Some(change);
-            }
-            if let Ok(event) = self.rx.recv_timeout(self.timing.tick) {
-                self.on_event(event);
-                // A bounded drain, so a flood of events can't keep a stop
-                // or a tick from coming round.
-                for _ in 0..MAX_EVENTS_PER_TICK {
-                    if cancel.is_cancelled() {
-                        return None;
-                    }
-                    let Ok(event) = self.rx.try_recv() else { break };
-                    self.on_event(event);
-                }
-            }
-            self.step(Instant::now());
-        }
-    }
-
-    /// Whether a file handed out as ready is still as it was then. A file
-    /// that went is forgotten; one that changed settles again, so it
-    /// converts once, in its final state.
-    fn still_ready(&mut self, path: &Path) -> bool {
-        let now = std::fs::metadata(path)
-            .ok()
-            .filter(|m| m.is_file())
-            .and_then(|m| Stamp::of(&m));
-        match now {
-            Some(stamp) if Some(stamp) == self.tracker.known(path) => true,
-            Some(stamp) => {
-                self.tracker.observe(path, stamp, Instant::now());
-                false
-            }
-            None => {
-                self.tracker.gone(path);
-                false
-            }
-        }
-    }
-
-    /// Start (or restart) file events; without them, rescans do the work.
-    fn arm(&mut self) {
-        let mode = if self.recursive {
-            notify::RecursiveMode::Recursive
-        } else {
-            notify::RecursiveMode::NonRecursive
-        };
-        self.events = notify::recommended_watcher(self.tx.clone())
-            .and_then(|mut w| w.watch(&self.root, mode).map(|()| w))
-            .ok();
-    }
-
-    fn on_event(&mut self, event: notify::Result<notify::Event>) {
-        if self.missing {
-            return;
-        }
-        let Ok(event) = event else { return };
-        if !relevant(&event.kind) {
-            return;
-        }
-        let now = Instant::now();
-        for path in event.paths {
-            match std::fs::metadata(&path) {
-                Ok(m) if m.is_dir() => {
-                    if self.recursive && self.considered_dir(&path) {
-                        for (file, stamp) in self.files_in(&path) {
-                            self.tracker.observe(&file, stamp, now);
-                        }
-                    }
-                }
-                Ok(m) => {
-                    if let Some(stamp) = Stamp::of(&m).filter(|_| m.is_file())
-                        && self.considered(&path)
-                    {
-                        self.tracker.observe(&path, stamp, now);
-                    }
-                }
-                Err(_) => self.tracker.gone(&path),
-            }
-        }
-    }
-
-    /// One tick: the folder's presence, files still settling, the rescan,
-    /// and what's now ready.
-    fn step(&mut self, now: Instant) {
-        if !self.root.is_dir() {
-            if !self.missing {
-                self.missing = true;
-                self.events = None;
-                self.queue.push_back(Change::Missing);
-            }
-            return;
-        }
-        if self.missing {
-            self.missing = false;
-            self.arm();
-            self.rescan(now);
-            self.queue.push_back(Change::Back);
-        }
-        for path in self.tracker.pending() {
-            match std::fs::metadata(&path) {
-                Ok(m) if m.is_file() => match Stamp::of(&m) {
-                    Some(stamp) => self.tracker.observe(&path, stamp, now),
-                    None => self.tracker.gone(&path),
-                },
-                _ => self.tracker.gone(&path),
-            }
-        }
-        if now.saturating_duration_since(self.last_scan) >= self.timing.rescan {
-            self.rescan(now);
-        }
-        for path in self.tracker.ready(now) {
-            self.queue.push_back(Change::Ready(path));
-        }
-    }
-
-    fn rescan(&mut self, now: Instant) {
-        self.last_scan = now;
-        let root = self.root.clone();
-        for (path, stamp) in self.files_in(&root) {
-            self.tracker.observe(&path, stamp, now);
-        }
+        })
     }
 
     /// The considered files in `dir` (and below it, when recursive), in
@@ -607,6 +642,47 @@ mod tests {
     }
 
     const SOON: Duration = Duration::from_millis(1_500);
+
+    #[test]
+    fn files_in_lists_what_the_watcher_would_hand_out() {
+        let d = Dir::new("files-in");
+        for name in [
+            "a.png",
+            ".DS_Store",
+            "b.png.part",
+            "converted/c.png",
+            "sub/d.png",
+            "x.txt",
+        ] {
+            d.put(name, b"x");
+        }
+        let mut s = spec(&d);
+        s.patterns = Patterns::parse("*.png").unwrap();
+        let root = std::fs::canonicalize(d.input()).unwrap();
+        assert_eq!(files_in(&s).unwrap(), vec![root.join("a.png")]);
+        s.recursive = true;
+        assert_eq!(
+            files_in(&s).unwrap(),
+            vec![root.join("a.png"), root.join("sub/d.png")]
+        );
+        s.done = Some(d.0.join("done"));
+        files_in(&s).unwrap();
+        assert!(
+            !d.0.join("done").exists(),
+            "listing created the done folder"
+        );
+    }
+
+    #[test]
+    fn files_in_refuses_what_start_refuses() {
+        let d = Dir::new("files-in-refuse");
+        let mut s = spec(&d);
+        s.results = d.input();
+        assert_eq!(files_in(&s).unwrap_err().code, ErrorCode::Usage);
+        let mut gone = spec(&d);
+        gone.folder = d.0.join("nowhere");
+        assert_eq!(files_in(&gone).unwrap_err().code, ErrorCode::InputNotFound);
+    }
 
     #[test]
     fn reads_are_not_changes() {
