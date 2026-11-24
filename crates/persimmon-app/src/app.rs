@@ -351,7 +351,7 @@ fn set_drop_window(app: &AppHandle, show: bool) {
     // window itself is shown only if the panel couldn't be made.
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if persimmon_mac::panel::set_panel_visible(show) != Ok(true)
+        if persimmon_mac::panel::set_panel_visible("drop", show) != Ok(true)
             && let Some(window) = handle.get_webview_window("drop")
         {
             let _ = if show { window.show() } else { window.hide() };

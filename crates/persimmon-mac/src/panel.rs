@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Persimmon contributors
 
-//! The drop window as a non-activating floating panel (spec D5): on every
+//! Windows as non-activating floating panels (spec D4, D5): on every
 //! Space, over full-screen apps, and never taking focus from the app you
-//! drag out of. The window's contents move into a native `NSPanel`; the
-//! window's own class is never changed, since Tauri's window class carries
-//! state of its own.
+//! drag out of. The drop window and the wheel each become one, kept by
+//! name. The window's contents move into a native `NSPanel`; the window's
+//! own class is never changed, since Tauri's window class carries state of
+//! its own.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSPanel, NSStatusWindowLevel, NSView, NSWindowCollectionBehavior,
+    NSBackingStoreType, NSPanel, NSScreen, NSStatusWindowLevel, NSView, NSWindowCollectionBehavior,
     NSWindowStyleMask,
 };
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 thread_local! {
-    /// The drop panel, once made: only ever touched on the main thread.
-    static PANEL: RefCell<Option<Retained<NSPanel>>> = const { RefCell::new(None) };
+    /// The panels made so far, by name: only ever touched on the main
+    /// thread.
+    static PANELS: RefCell<HashMap<String, Retained<NSPanel>>> = RefCell::new(HashMap::new());
 }
 
 /// Every Space, over full-screen apps, and not moved by Exposé.
@@ -33,9 +37,10 @@ pub fn panel_behaviour() -> NSWindowCollectionBehavior {
 /// floating panel of the same size and place, and keep the window hidden
 /// from then on: the panel floats over full-screen apps on every Space,
 /// and clicking or dropping on it never takes focus from the app in front.
-/// Show and hide it with [`set_panel_visible`]. Add anything that belongs
-/// over the webview (the promise overlay) before this. Main thread only.
-pub fn adopt_as_panel(window: &impl HasWindowHandle) -> Result<(), String> {
+/// Show and hide it with [`set_panel_visible`], by `name`. Add anything
+/// that belongs over the webview (the promise overlay) before this. Main
+/// thread only.
+pub fn adopt_as_panel(window: &impl HasWindowHandle, name: &str) -> Result<(), String> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err("not on the main thread".into());
     };
@@ -91,27 +96,83 @@ pub fn adopt_as_panel(window: &impl HasWindowHandle) -> Result<(), String> {
     panel.setLevel(NSStatusWindowLevel);
     panel.setCollectionBehavior(panel_behaviour());
     window.orderOut(None);
-    PANEL.with(|p| *p.borrow_mut() = Some(panel));
+    PANELS.with(|p| p.borrow_mut().insert(name.to_string(), panel));
     Ok(())
 }
 
-/// Show or hide the drop panel; `Ok(false)` when there's none (so the
-/// window itself is shown instead). Main thread only.
-pub fn set_panel_visible(show: bool) -> Result<bool, String> {
+/// Run `f` on the panel called `name`, if there is one. Main thread only.
+fn with_panel<R>(name: &str, f: impl FnOnce(&NSPanel) -> R) -> Result<Option<R>, String> {
     if MainThreadMarker::new().is_none() {
         return Err("not on the main thread".into());
     }
-    Ok(PANEL.with(|p| match p.borrow().as_ref() {
-        Some(panel) => {
-            if show {
-                panel.orderFrontRegardless();
-            } else {
-                panel.orderOut(None);
-            }
-            true
+    Ok(PANELS.with(|p| p.borrow().get(name).map(|panel| f(panel))))
+}
+
+/// Show or hide the panel called `name`; `Ok(false)` when there's none (so
+/// the window itself is shown instead). Main thread only.
+pub fn set_panel_visible(name: &str, show: bool) -> Result<bool, String> {
+    with_panel(name, |panel| {
+        if show {
+            panel.orderFrontRegardless();
+        } else {
+            panel.orderOut(None);
         }
-        None => false,
-    }))
+    })
+    .map(|done| done.is_some())
+}
+
+/// Centre the panel called `name` on `centre`, a point in AppKit's screen
+/// coordinates (origin at the bottom left of the main screen), kept whole
+/// on the screen that point is on; `Ok(false)` when there's no such
+/// panel. Main thread only.
+pub fn place_panel(name: &str, centre: (f64, f64)) -> Result<bool, String> {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Err("not on the main thread".into());
+    };
+    let point = NSPoint::new(centre.0, centre.1);
+    let screens = NSScreen::screens(mtm);
+    let screen = screens
+        .iter()
+        .map(|s| s.frame())
+        .find(|f| contains(*f, point))
+        .or_else(|| screens.iter().next().map(|s| s.frame()));
+    with_panel(name, |panel| {
+        let size = panel.frame().size;
+        let origin = match screen {
+            Some(frame) => placed(size, centre, frame),
+            None => NSPoint::new(centre.0 - size.width / 2.0, centre.1 - size.height / 2.0),
+        };
+        panel.setFrameOrigin(origin);
+    })
+    .map(|done| done.is_some())
+}
+
+/// Whether `rect` holds `p`, its left and bottom edges included.
+fn contains(rect: NSRect, p: NSPoint) -> bool {
+    p.x >= rect.origin.x
+        && p.x < rect.origin.x + rect.size.width
+        && p.y >= rect.origin.y
+        && p.y < rect.origin.y + rect.size.height
+}
+
+/// The origin that centres a `size` window on `centre`, moved the least
+/// needed to keep it whole inside `screen`.
+fn placed(size: NSSize, centre: (f64, f64), screen: NSRect) -> NSPoint {
+    let clamp = |v: f64, lo: f64, span: f64, len: f64| v.max(lo).min(lo + span - len);
+    NSPoint::new(
+        clamp(
+            centre.0 - size.width / 2.0,
+            screen.origin.x,
+            screen.size.width,
+            size.width,
+        ),
+        clamp(
+            centre.1 - size.height / 2.0,
+            screen.origin.y,
+            screen.size.height,
+            size.height,
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -137,13 +198,41 @@ mod tests {
 
     #[test]
     fn off_the_main_thread_it_refuses() {
+        let refused = Err("not on the main thread".to_string());
         assert_eq!(
-            adopt_as_panel(&Untouched),
+            adopt_as_panel(&Untouched, "drop"),
             Err("not on the main thread".to_string())
         );
+        assert_eq!(set_panel_visible("drop", true), refused);
+        assert_eq!(place_panel("drop", (100.0, 100.0)), refused);
+    }
+
+    #[test]
+    fn panels_are_kept_by_name() {
+        let refused = Err("not on the main thread".to_string());
+        for name in ["drop", "wheel", "unknown"] {
+            assert_eq!(set_panel_visible(name, false), refused, "{name}");
+            assert_eq!(place_panel(name, (0.0, 0.0)), refused, "{name}");
+        }
+        // No panel by that name: nothing to show, and the caller shows the
+        // window itself.
+        assert!(!PANELS.with(|p| p.borrow().contains_key("unknown")));
+    }
+
+    #[test]
+    fn a_panel_is_centred_on_the_point_and_kept_on_its_screen() {
+        let screen = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0));
+        let size = NSSize::new(320.0, 360.0);
+        let at = |x, y| placed(size, (x, y), screen);
+        assert_eq!(at(720.0, 450.0), NSPoint::new(560.0, 270.0));
+        // Pushed back inside near every edge.
+        assert_eq!(at(10.0, 10.0), NSPoint::new(0.0, 0.0));
+        assert_eq!(at(1435.0, 895.0), NSPoint::new(1120.0, 540.0));
+        // A second display to the left, at negative x.
+        let left = NSRect::new(NSPoint::new(-1920.0, 0.0), NSSize::new(1920.0, 1080.0));
         assert_eq!(
-            set_panel_visible(true),
-            Err("not on the main thread".to_string())
+            placed(size, (-1900.0, 500.0), left),
+            NSPoint::new(-1920.0, 320.0)
         );
     }
 }

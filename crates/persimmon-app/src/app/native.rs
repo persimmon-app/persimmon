@@ -167,7 +167,7 @@ pub(super) fn install(app: &AppHandle, staging: &Path) {
     if let Some(drop) = app.get_webview_window("drop") {
         report(
             "the drop panel",
-            persimmon_mac::panel::adopt_as_panel(&drop),
+            persimmon_mac::panel::adopt_as_panel(&drop, "drop"),
         );
     }
     let app = app.clone();

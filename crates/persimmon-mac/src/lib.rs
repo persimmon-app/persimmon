@@ -12,6 +12,7 @@
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSRunningApplication};
 use objc2_foundation::NSString;
 
+pub mod gesture;
 pub mod login;
 pub mod notes;
 pub mod panel;
