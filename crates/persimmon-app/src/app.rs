@@ -1284,6 +1284,22 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_may_only_drop_and_pick() {
+        let file = include_str!("../capabilities/wheel.json");
+        let cap: serde_json::Value = serde_json::from_str(file).unwrap();
+        assert_eq!(cap["windows"], serde_json::json!(["wheel"]));
+        assert_eq!(
+            permissions(file),
+            serde_json::json!([
+                "allow-wheel-drop",
+                "allow-wheel-pick",
+                "core:event:allow-listen",
+                "core:event:allow-unlisten"
+            ])
+        );
+    }
+
+    #[test]
     fn the_drop_window_may_only_drop_and_watch() {
         let file = include_str!("../capabilities/drop.json");
         let cap: serde_json::Value = serde_json::from_str(file).unwrap();

@@ -23,9 +23,15 @@ export const onRow = (f: (row: RowView) => void): Promise<UnlistenFn> =>
 export const onConfirmQuit = (f: (p: { running: number; rules: number } | null) => void): Promise<UnlistenFn> =>
   listen<{ running: number; rules: number } | null>("confirm-quit", (e) => f(e.payload));
 
-import type { QueueMode, SettingsView } from "./types";
+import type { QueueMode, SettingsView, WheelShow } from "./types";
 
 export const dropPaths = (paths: string[]) => invoke<RowView[]>("drop_paths", { paths });
+/** The wheel: a drop with its point, in the wheel window's points. */
+export const wheelDrop = (paths: string[], x: number, y: number) => invoke<void>("wheel_drop", { paths, x, y });
+/** The wheel: a click on a segment's index, the hub (null), or -1 to cancel. */
+export const wheelPick = (index: number | null) => invoke<void>("wheel_pick", { index });
+export const onWheelShow = (f: (w: WheelShow) => void): Promise<UnlistenFn> =>
+  listen<WheelShow>("wheel-show", (e) => f(e.payload));
 export const reorderInput = (id: RowId, from: number, to: number) => invoke<RowView | null>("reorder_input", { id, from, to });
 export const removeInput = (id: RowId, index: number) => invoke<RowView | null>("remove_input", { id, index });
 export const getSettings = () => invoke<SettingsView>("get_settings");

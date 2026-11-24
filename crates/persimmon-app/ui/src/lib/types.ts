@@ -188,3 +188,11 @@ export interface RuleDraftView {
 }
 
 export type NotificationsState = "allowed" | "off" | "notAsked";
+
+/** What the wheel shows (app/wheel.rs): its formats, their hover labels,
+ * and the hub's text. */
+export interface WheelShow {
+  formats: FormatId[];
+  labels: string[];
+  hub: string;
+}

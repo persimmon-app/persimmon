@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "wheel",
+  "description": "The wheel may hand the app a drop or a pick, and hear what to show, and nothing else.",
+  "windows": [
+    "wheel"
+  ],
+  "permissions": [
+    "allow-wheel-drop",
+    "allow-wheel-pick",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

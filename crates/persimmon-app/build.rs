@@ -28,6 +28,8 @@ fn main() {
             "choose_fallback_folder",
             "toggle_drop_window",
             "drop_paths",
+            "wheel_drop",
+            "wheel_pick",
             "open_settings",
             "presets",
             "use_preset",

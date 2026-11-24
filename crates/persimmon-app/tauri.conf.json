@@ -33,6 +33,21 @@
         "visible": false
       },
       {
+        "label": "wheel",
+        "title": "Wheel",
+        "url": "wheel.html",
+        "width": 320,
+        "height": 360,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "focus": false,
+        "visibleOnAllWorkspaces": true,
+        "resizable": false,
+        "visible": false
+      },
+      {
         "label": "settings",
         "title": "Settings",
         "url": "settings.html",
@@ -42,6 +57,7 @@
         "visible": false
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost",
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost ws://localhost:5173"

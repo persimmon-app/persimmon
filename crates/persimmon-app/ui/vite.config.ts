@@ -13,8 +13,8 @@ export default defineConfig(({ mode }) => ({
   // the production CSP (font-src 'self') would block.
   build: {
     target: "safari17", outDir: "dist", emptyOutDir: true, assetsInlineLimit: 0,
-    // Three windows, three pages: the queue, the drop window, Settings.
-    rollupOptions: { input: { main: "index.html", drop: "drop.html", settings: "settings.html" } },
+    // Four windows, four pages: the queue, the drop window, Settings, the wheel.
+    rollupOptions: { input: { main: "index.html", drop: "drop.html", settings: "settings.html", wheel: "wheel.html" } },
   },
   // Svelte 5 components need its browser build under Vitest.
   resolve: mode === "test" ? { conditions: ["browser"] } : undefined,
