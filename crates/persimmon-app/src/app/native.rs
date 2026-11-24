@@ -90,12 +90,9 @@ pub(super) fn on_promise(app: &AppHandle, event: PromiseEvent, from_panel: bool)
                         state.runner.start_from(Source::Drop);
                     }
                 }
-                // Cancelled meanwhile, or not ours: the file isn't wanted.
-                _ => {
-                    if let Some(folder) = path.parent() {
-                        let _ = std::fs::remove_dir_all(folder);
-                    }
-                }
+                // Cancelled meanwhile, or an extra file from one promise:
+                // not wanted.
+                _ => discard(&path),
             }
         }
         PromiseEvent::Failed { item, .. } => {
@@ -105,6 +102,16 @@ pub(super) fn on_promise(app: &AppHandle, event: PromiseEvent, from_panel: bool)
                 emit_rows(app, &[view]);
             }
         }
+    }
+}
+
+/// Remove an unwanted promised file, and its staging folder once that's
+/// empty: one promise can bring several files, and the others may be rows.
+pub(super) fn discard(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    if let Some(folder) = path.parent() {
+        // Fails, and so does nothing, while the folder still holds a file.
+        let _ = std::fs::remove_dir(folder);
     }
 }
 
@@ -176,6 +183,26 @@ mod tests {
     use persimmon_core::output::OutputPolicy;
     use persimmon_core::registry::Registry;
     use std::path::PathBuf;
+
+    /// One promise can bring several files into its folder (a Live Photo,
+    /// RAW and JPEG): an unwanted one goes alone, never the folder with a
+    /// file another row still needs.
+    #[test]
+    fn an_unwanted_file_goes_alone() {
+        let d =
+            std::env::temp_dir().join(format!("prsm-app-native-discard-{}", std::process::id()));
+        let folder = d.join("1-1");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (kept, unwanted) = (folder.join("IMG.HEIC"), folder.join("IMG.MOV"));
+        std::fs::write(&kept, b"photo").unwrap();
+        std::fs::write(&unwanted, b"video").unwrap();
+        discard(&unwanted);
+        assert!(!unwanted.exists());
+        assert!(kept.exists(), "another file in the folder was removed");
+        discard(&kept);
+        assert!(!folder.exists(), "an emptied folder stays behind");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn staging_lives_in_caches() {
