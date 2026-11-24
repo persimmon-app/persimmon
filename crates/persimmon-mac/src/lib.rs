@@ -16,6 +16,7 @@ pub mod login;
 pub mod notes;
 pub mod panel;
 pub mod promises;
+pub mod services;
 
 /// Whether this process is the active app: the one whose window is in
 /// front and takes the keyboard.

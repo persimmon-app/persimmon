@@ -13,7 +13,7 @@ publish = false
 block2 = "0.6.2"
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", features = ["objc2-core-services", "NSAppleEventDescriptor", "NSAppleEventManager", "NSBundle", "NSError", "NSSet", "NSString", "NSDictionary", "NSArray", "NSOperation", "NSURL", "NSGeometry", "NSObject", "block2"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication", "NSPasteboard", "NSPanel", "NSWindow", "NSResponder", "NSView", "NSGraphics", "NSDragging", "NSFilePromiseReceiver", "block2"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication", "NSPasteboard", "NSPanel", "NSWindow", "NSResponder", "NSView", "NSGraphics", "NSDragging", "NSFilePromiseReceiver", "NSApplication", "block2"] }
 raw-window-handle = "0.6"
 objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }

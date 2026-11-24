@@ -1060,6 +1060,22 @@ mod tests {
 
     /// ⌘Q (the app's own Quit item) asks first while a row runs, and
     /// quits at once otherwise.
+    /// Finder's two Services (spec D3), for any file or folder.
+    #[test]
+    fn info_plist_declares_both_services() {
+        let plist = include_str!("../Info.plist");
+        for one in [
+            "<string>Convert with Persimmon</string>",
+            "<string>Open in Persimmon</string>",
+            "<string>convertFiles</string>",
+            "<string>openFiles</string>",
+        ] {
+            assert_eq!(plist.matches(one).count(), 1, "{one}");
+        }
+        assert_eq!(plist.matches("<string>public.item</string>").count(), 2);
+        assert!(plist.contains("<key>NSServices</key>"));
+    }
+
     /// Closing any window hides it: the main window comes back from the
     /// Dock, and conversions keep running.
     #[test]
