@@ -99,7 +99,24 @@ pub enum RowState {
         error: Shown,
     },
     Cancelled,
+    /// A file still coming from Photos (spec D5): no input yet. `slow`
+    /// once it has taken a while, which means an iCloud download.
+    Receiving {
+        slow: bool,
+    },
 }
+
+/// What became of a promised file that arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Received {
+    /// Its row now holds it; `start` when the row should run at once.
+    Queued { view: Box<RowView>, start: bool },
+    /// Its row was cancelled or removed meanwhile: the file isn't wanted.
+    Dropped,
+}
+
+/// A receiving row's name when Photos gave none.
+const PHOTO_NAME: &str = "Photo from Photos";
 
 /// A row as the window shows it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -168,6 +185,14 @@ struct Row {
     note: Option<String>,
     state: RowState,
     rev: u64,
+    /// A promised file's staging folder (spec D5): its output never goes
+    /// there, and the folder goes when the row does.
+    staged: Option<PathBuf>,
+    /// Run as soon as the file arrives (a drop on the drop panel, or Start
+    /// while it was still coming).
+    start_when_ready: bool,
+    /// The name shown while the file is still coming.
+    waiting: Option<String>,
 }
 
 /// The rows, the output policy, and the target last picked for each kind
@@ -181,6 +206,8 @@ pub struct Queue {
     last: HashMap<MediaKind, FormatId>,
     /// What the last add has to say: already queued, and left out.
     note: AddNote,
+    /// Staging folders of rows removed since last asked.
+    staged_removed: Vec<PathBuf>,
 }
 
 impl Queue {
@@ -193,6 +220,7 @@ impl Queue {
             next_rev: 1,
             last: HashMap::new(),
             note: AddNote::default(),
+            staged_removed: Vec::new(),
         }
     }
 
@@ -449,14 +477,124 @@ impl Queue {
     /// Remove rows that aren't running; returns the ids removed.
     pub fn remove(&mut self, ids: &[RowId]) -> Vec<RowId> {
         let mut removed = Vec::new();
+        let mut staged = Vec::new();
         self.rows.retain(|r| {
             let go = ids.contains(&r.id) && !matches!(r.state, RowState::Running { .. });
             if go {
                 removed.push(r.id);
+                staged.extend(r.staged.clone());
             }
             !go
         });
+        self.staged_removed.extend(staged);
         removed
+    }
+
+    /// The staging folders of rows removed since last asked, to delete.
+    pub fn take_staged_removed(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.staged_removed)
+    }
+
+    /// A row for a file still coming from Photos, added the way `recipe`
+    /// says once it arrives.
+    pub fn add_receiving(
+        &mut self,
+        name: &str,
+        recipe: &Recipe,
+        start_when_ready: bool,
+    ) -> RowView {
+        let mut row = self.blank_row(false, recipe);
+        let name = name.trim();
+        row.waiting = Some(if name.is_empty() {
+            PHOTO_NAME.into()
+        } else {
+            name.into()
+        });
+        row.start_when_ready = start_when_ready;
+        row.state = RowState::Receiving { slow: false };
+        row.rev = self.bump();
+        let v = view(&row);
+        self.rows.push(row);
+        v
+    }
+
+    /// A receiving row that has taken a while: it's downloading.
+    pub fn slow(&mut self, id: RowId) -> Option<RowView> {
+        let rev = self.bump();
+        let row = self.rows.iter_mut().find(|r| r.id == id)?;
+        if !matches!(row.state, RowState::Receiving { .. }) {
+            return None;
+        }
+        row.state = RowState::Receiving { slow: true };
+        row.rev = rev;
+        Some(view(row))
+    }
+
+    /// The promised file for row `id` is at `path`.
+    pub fn received(&mut self, id: RowId, path: &Path) -> Received {
+        let Some(i) = self
+            .rows
+            .iter()
+            .position(|r| r.id == id && matches!(r.state, RowState::Receiving { .. }))
+        else {
+            return Received::Dropped;
+        };
+        let row = &mut self.rows[i];
+        row.inputs = vec![path.to_path_buf()];
+        row.keys = vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())];
+        row.staged = path.parent().map(Path::to_path_buf);
+        row.waiting = None;
+        let start = row.start_when_ready;
+        let target = row.preset.as_ref().and_then(|p| p.target);
+        let view = Box::new(self.refresh_at(i, target));
+        Received::Queued { view, start }
+    }
+
+    /// The promised file for row `id` never came.
+    pub fn receive_failed(&mut self, id: RowId) -> Option<RowView> {
+        let rev = self.bump();
+        let row = self.rows.iter_mut().find(|r| r.id == id)?;
+        if !matches!(row.state, RowState::Receiving { .. }) {
+            return None;
+        }
+        let name = row.waiting.clone().unwrap_or_else(|| PHOTO_NAME.into());
+        row.state = RowState::Failed {
+            error: app_error(
+                ErrorCode::InputNotFound,
+                Path::new(&name),
+                "The original couldn't be downloaded from iCloud",
+                Some("Open it in Photos to download it, then try again"),
+            ),
+        };
+        row.rev = rev;
+        Some(view(row))
+    }
+
+    /// Stop waiting for a file still coming: the row is cancelled, and the
+    /// file is dropped if it arrives.
+    pub fn cancel_receiving(&mut self, id: RowId) -> Option<RowView> {
+        let rev = self.bump();
+        let row = self.rows.iter_mut().find(|r| r.id == id)?;
+        if !matches!(row.state, RowState::Receiving { .. }) {
+            return None;
+        }
+        row.state = RowState::Cancelled;
+        row.rev = rev;
+        Some(view(row))
+    }
+
+    /// Start was asked for: files still coming run when they arrive.
+    pub fn start_requested(&mut self) {
+        for row in &mut self.rows {
+            if matches!(row.state, RowState::Receiving { .. }) {
+                row.start_when_ready = true;
+            }
+        }
+    }
+
+    /// A row's staging folder, if its file came from Photos.
+    pub fn staged(&self, id: RowId) -> Option<PathBuf> {
+        self.rows.iter().find(|r| r.id == id)?.staged.clone()
     }
 
     pub fn rows(&self) -> Vec<RowView> {
@@ -516,6 +654,10 @@ impl Queue {
     /// Put a failed or cancelled row back in the queue, previewing it again.
     pub fn requeue(&mut self, id: RowId) -> Option<RowView> {
         let i = self.rows.iter().position(|r| r.id == id)?;
+        // A row whose file never came has nothing to run again.
+        if self.rows[i].inputs.is_empty() {
+            return None;
+        }
         if !matches!(
             self.rows[i].state,
             RowState::Failed { .. } | RowState::Cancelled
@@ -554,12 +696,19 @@ impl Queue {
             note: None,
             state: RowState::Queued,
             rev: 0,
+            staged: None,
+            start_when_ready: false,
+            waiting: None,
         }
     }
 
     /// Detect, choose the job (with `target` if given), preview, and bump
     /// the row's revision. Returns its view.
     fn refresh_at(&mut self, i: usize, target: Option<FormatId>) -> RowView {
+        // A row whose file hasn't come (or never will) has nothing to plan.
+        if !self.rows[i].combine && self.rows[i].inputs.is_empty() {
+            return view(&self.rows[i]);
+        }
         let rev = self.bump();
         let mut row = std::mem::replace(&mut self.rows[i], placeholder());
         if row.combine {
@@ -585,6 +734,15 @@ impl Queue {
         row.from = None;
         row.job.inputs = vec![path.clone()];
         row.job.output = self.policy.clone();
+        // A file from Photos sits in the cache: its output goes to the
+        // output folder, or else the fallback folder (spec D5).
+        if row.staged.is_some() {
+            row.job.output.dir = self
+                .policy
+                .dir
+                .clone()
+                .or_else(|| self.policy.fallback.clone());
+        }
         if let Some(refused) = refusal(&path) {
             row.state = RowState::Failed { error: refused };
             return;
@@ -758,6 +916,11 @@ impl Queue {
         let row = self.rows.iter().find(|r| r.id == id)?;
         let policy = &row.job.output;
         let fallback = policy.fallback.as_deref()?;
+        if row.staged.is_some() {
+            let out_dir = output.parent()?;
+            return (self.policy.dir.is_none() && out_dir == fallback)
+                .then(|| format!("Saved to {} — the original is in Photos", tilde(out_dir)));
+        }
         let source_dir = row.inputs.first()?.parent()?;
         let out_dir = output.parent()?;
         (policy.dir.is_none() && out_dir == fallback && out_dir != source_dir).then(|| {
@@ -877,6 +1040,9 @@ fn placeholder() -> Row {
         note: None,
         state: RowState::Queued,
         rev: 0,
+        staged: None,
+        start_when_ready: false,
+        waiting: None,
     }
 }
 
@@ -892,7 +1058,11 @@ fn view(row: &Row) -> RowView {
             .map(file_name)
             .unwrap_or_else(|| "Combined".into())
     } else {
-        row.inputs.first().map(|p| file_name(p)).unwrap_or_default()
+        row.inputs
+            .first()
+            .map(|p| file_name(p))
+            .or_else(|| row.waiting.clone())
+            .unwrap_or_default()
     };
     RowView {
         id: row.id,
@@ -948,6 +1118,242 @@ mod tests {
 
     fn queue() -> Queue {
         Queue::new(Registry::builtin(), OutputPolicy::default())
+    }
+
+    /// A queue writing beside originals, falling back to `fallback`.
+    fn photos_queue(fallback: &Path) -> Queue {
+        Queue::new(
+            Registry::builtin(),
+            OutputPolicy {
+                dir: None,
+                overwrite: false,
+                fallback: Some(fallback.to_path_buf()),
+            },
+        )
+    }
+
+    /// A promised file landing in its own staging folder.
+    fn land(d: &Dir, folder: &str, name: &str) -> PathBuf {
+        let dir = d.0.join("promised").join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, PNG_1X1).unwrap();
+        p
+    }
+
+    fn convert() -> Recipe {
+        Recipe::Mode(QueueMode::Convert)
+    }
+
+    #[test]
+    fn promised_files_are_rows_of_their_own() {
+        let d = Dir::new("promised-rows");
+        let mut q = photos_queue(&d.0.join("out"));
+        let a = q.add_receiving("IMG_0001.HEIC", &convert(), false);
+        let b = q.add_receiving("IMG_0002.HEIC", &convert(), false);
+        let c = q.add_receiving("", &convert(), false);
+        assert_eq!(a.state, RowState::Receiving { slow: false });
+        assert_eq!(a.name, "IMG_0001.HEIC");
+        assert_eq!(c.name, "Photo from Photos");
+        let Received::Queued { view, start } = q.received(a.id, &land(&d, "1-1", "IMG_0001.png"))
+        else {
+            panic!("a was dropped")
+        };
+        assert_eq!(view.state, RowState::Queued);
+        assert!(!start);
+        let failed = q.receive_failed(b.id).unwrap();
+        let RowState::Failed { error } = &failed.state else {
+            panic!("{failed:?}")
+        };
+        assert_eq!(
+            error.reason,
+            "The original couldn't be downloaded from iCloud"
+        );
+        assert_eq!(
+            error.fix.as_deref(),
+            Some("Open it in Photos to download it, then try again")
+        );
+        assert_eq!(
+            q.get(c.id).unwrap().state,
+            RowState::Receiving { slow: false }
+        );
+        assert!(!q.any_queued() || q.get(a.id).unwrap().state == RowState::Queued);
+        assert_eq!(
+            q.next_queued().map(|(id, _)| id),
+            Some(a.id),
+            "only the arrived row runs"
+        );
+        assert!(q.next_queued().is_none());
+    }
+
+    #[test]
+    fn a_receiving_row_turns_slow() {
+        let d = Dir::new("slow");
+        let mut q = photos_queue(&d.0.join("out"));
+        let a = q.add_receiving("IMG.HEIC", &convert(), false);
+        assert_eq!(
+            q.slow(a.id).unwrap().state,
+            RowState::Receiving { slow: true }
+        );
+        q.received(a.id, &land(&d, "1-1", "IMG.png"));
+        assert!(q.slow(a.id).is_none());
+    }
+
+    #[test]
+    fn an_arrived_original_goes_to_the_fallback_folder() {
+        let d = Dir::new("promised-out");
+        let fallback = d.0.join("out");
+        let mut q = photos_queue(&fallback);
+        let a = q.add_receiving("IMG.HEIC", &convert(), false);
+        let Received::Queued { view, .. } = q.received(a.id, &land(&d, "1-1", "IMG.png")) else {
+            panic!()
+        };
+        let planned = view.output.unwrap();
+        assert!(planned.starts_with(&fallback), "{}", planned.display());
+        let done = q
+            .update(
+                a.id,
+                RowState::Done {
+                    output: fallback.join("IMG.webp"),
+                    output_size: Some(1),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            done.note.as_deref(),
+            Some(format!("Saved to {} — the original is in Photos", tilde(&fallback)).as_str())
+        );
+        // An output folder in Settings wins, with no note.
+        let chosen = d.0.join("chosen");
+        let mut q = Queue::new(
+            Registry::builtin(),
+            OutputPolicy {
+                dir: Some(chosen.clone()),
+                overwrite: false,
+                fallback: Some(fallback.clone()),
+            },
+        );
+        let b = q.add_receiving("IMG.HEIC", &convert(), false);
+        let Received::Queued { view, .. } = q.received(b.id, &land(&d, "1-2", "IMG.png")) else {
+            panic!()
+        };
+        assert!(view.output.unwrap().starts_with(&chosen));
+        let done = q
+            .update(
+                b.id,
+                RowState::Done {
+                    output: chosen.join("IMG.webp"),
+                    output_size: Some(1),
+                },
+            )
+            .unwrap();
+        assert_eq!(done.note, None);
+    }
+
+    #[test]
+    fn a_file_arriving_after_cancel_is_dropped() {
+        let d = Dir::new("promised-cancel");
+        let mut q = photos_queue(&d.0.join("out"));
+        let a = q.add_receiving("IMG.HEIC", &convert(), false);
+        assert_eq!(q.cancel_receiving(a.id).unwrap().state, RowState::Cancelled);
+        assert_eq!(
+            q.received(a.id, &land(&d, "1-1", "IMG.png")),
+            Received::Dropped
+        );
+        assert_eq!(q.get(a.id).unwrap().state, RowState::Cancelled);
+        assert!(q.next_queued().is_none());
+        assert_eq!(
+            q.received(999, &land(&d, "1-2", "IMG.png")),
+            Received::Dropped
+        );
+    }
+
+    #[test]
+    fn two_promised_files_with_one_name_keep_both_outputs() {
+        let d = Dir::new("promised-same");
+        let fallback = d.0.join("out");
+        std::fs::create_dir_all(&fallback).unwrap();
+        std::fs::write(fallback.join("IMG_0001.webp"), b"earlier").unwrap();
+        let mut q = photos_queue(&fallback);
+        let a = q.add_receiving("IMG_0001.png", &convert(), false);
+        let b = q.add_receiving("IMG_0001.png", &convert(), false);
+        q.received(a.id, &land(&d, "1-1", "IMG_0001.png"));
+        q.received(b.id, &land(&d, "1-2", "IMG_0001.png"));
+        let (oa, ob) = (
+            q.get(a.id).unwrap().output.unwrap(),
+            q.get(b.id).unwrap().output.unwrap(),
+        );
+        assert_eq!(q.get(a.id).unwrap().state, RowState::Queued);
+        assert_eq!(q.get(b.id).unwrap().state, RowState::Queued);
+        assert!(oa.starts_with(&fallback) && ob.starts_with(&fallback));
+        assert_ne!(
+            oa,
+            fallback.join("IMG_0001.webp"),
+            "an earlier file isn't overwritten"
+        );
+        assert_ne!(ob, fallback.join("IMG_0001.webp"));
+    }
+
+    #[test]
+    fn start_when_ready_and_start_requested() {
+        let d = Dir::new("promised-start");
+        let mut q = photos_queue(&d.0.join("out"));
+        let panel = q.add_receiving("A.HEIC", &convert(), true);
+        let window = q.add_receiving("B.HEIC", &convert(), false);
+        let later = q.add_receiving("C.HEIC", &convert(), false);
+        assert!(matches!(
+            q.received(panel.id, &land(&d, "1-1", "A.png")),
+            Received::Queued { start: true, .. }
+        ));
+        assert!(matches!(
+            q.received(window.id, &land(&d, "1-2", "B.png")),
+            Received::Queued { start: false, .. }
+        ));
+        q.start_requested();
+        assert!(matches!(
+            q.received(later.id, &land(&d, "1-3", "C.png")),
+            Received::Queued { start: true, .. }
+        ));
+    }
+
+    #[test]
+    fn removing_a_staged_row_hands_back_its_folder() {
+        let d = Dir::new("promised-remove");
+        let mut q = photos_queue(&d.0.join("out"));
+        let a = q.add_receiving("A.HEIC", &convert(), false);
+        let file = land(&d, "1-1", "A.png");
+        q.received(a.id, &file);
+        assert_eq!(q.staged(a.id), Some(file.parent().unwrap().to_path_buf()));
+        assert_eq!(q.remove(&[a.id]), vec![a.id]);
+        assert_eq!(
+            q.take_staged_removed(),
+            vec![file.parent().unwrap().to_path_buf()]
+        );
+        assert!(q.take_staged_removed().is_empty());
+    }
+
+    #[test]
+    fn rows_without_a_file_yet_ignore_retargeting_and_retry() {
+        let d = Dir::new("promised-nofile");
+        let mut q = photos_queue(&d.0.join("out"));
+        let waiting = q.add_receiving("A.HEIC", &convert(), false);
+        let failed = q.add_receiving("B.HEIC", &convert(), false);
+        q.receive_failed(failed.id);
+        let cancelled = q.add_receiving("C.HEIC", &convert(), false);
+        q.cancel_receiving(cancelled.id);
+        for id in [waiting.id, failed.id, cancelled.id] {
+            q.set_target(&[id], FormatId::Png);
+            assert!(q.requeue(id).is_none(), "row {id} came back without a file");
+        }
+        assert_eq!(
+            q.get(waiting.id).unwrap().state,
+            RowState::Receiving { slow: false }
+        );
+        assert!(matches!(
+            q.get(failed.id).unwrap().state,
+            RowState::Failed { .. }
+        ));
+        assert_eq!(q.get(cancelled.id).unwrap().state, RowState::Cancelled);
     }
 
     #[test]
