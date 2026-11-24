@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Persimmon contributors
 
-//! Notifications for unattended work (spec D9, spike S4): a burst's
+//! Notifications for unattended work (spec D9): a burst's
 //! summary with Show files and Undo, or one file's note with Show file.
 //! The setting is read before each one, never trusted from the first ask.
 
@@ -62,8 +62,8 @@ fn center() -> Option<Retained<UNUserNotificationCenter>> {
     available().then(UNUserNotificationCenter::currentNotificationCenter)
 }
 
-/// The current setting, read from System Settings each time (spike S4:
-/// the first answer can't be trusted). Waits up to 2 s.
+/// The current setting, read from System Settings each time: an ad-hoc
+/// signed app's first answer can't be trusted. Waits up to 2 s.
 pub fn permission() -> Permission {
     let Some(center) = center() else {
         return Permission::Off;

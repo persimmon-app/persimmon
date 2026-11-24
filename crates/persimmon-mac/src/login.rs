@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Persimmon contributors
 
-//! Start at login (spec D2, spike S2): `SMAppService.mainApp`, which works
-//! for an ad-hoc signed app.
+//! Start at login (spec D2): `SMAppService.mainApp`, which works for an
+//! ad-hoc signed app.
 
 use objc2_foundation::NSAppleEventManager;
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
