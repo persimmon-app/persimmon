@@ -18,8 +18,13 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - Quitting with active watch rules asks first: "Watch folders stop while Persimmon is closed. Quit anyway?"
 - The drop window floats over full-screen apps and on every Space, and dropping on it never takes focus from the app you're dragging out of.
 - A photo or video dragged from Photos gives its original, in the drop window and the main window. The row says "Getting the original from Photos…", then "Downloading from iCloud…" while an iCloud-only original comes down, with Cancel. The converted file goes to your output folder, or `~/Downloads/Persimmon`, never next to the original inside the library.
-- Convert with Persimmon and Open in Persimmon in Finder's right-click menu, under Services, for any file or folder. Open adds the files and brings the window forward; Convert converts them at once. Conversions started from Finder are tagged FINDER in History, and a notification says when one fails while Persimmon isn't in front.
+- Convert with Persimmon and Open in Persimmon in Finder's right-click menu, under Services, for any file or folder. Open adds the files and brings the window forward; Convert shows the format wheel at the pointer, for the selected files. Conversions started from Finder are tagged FINDER in History, and a notification says when one fails while Persimmon isn't in front.
 - Settings → Finder & menus says where the two Services are and how to show or hide them.
+- The format wheel: hold ⇧ while dragging files anywhere, and six formats they can all become appear round the pointer, the ones you used last first. Drop on a format to convert to it at once, or on the middle to add the files to the queue without starting. Esc, or letting go anywhere else, cancels, and the drag carries on as usual. It works for photos dragged from Photos too, and asks for no permission. It's off until you turn it on, from the first-run card's Show me or Settings → Finder & menus. Wheel conversions are tagged WHEEL in History, and a notification says when one fails while Persimmon isn't in front.
+- A new install's empty queue introduces the wheel, with Show me and Not now, and lists the ways in. Someone who had Persimmon before gets a one-time tip about the wheel instead. The empty queue also has a card for Finder's Convert with Persimmon.
+- `--hardware` on `convert`, `compress` and `watch` encodes H.264 and HEVC with the Mac's hardware encoder (VideoToolbox): much faster, with slightly larger files. Where FFmpeg has no hardware encoder, or it can't encode a video, `prsm` uses software and the result line says so, such as `clip.mov → clip.mp4 (hardware encoder unavailable — used software)`. It's never on unless you ask.
+- Presets for Convert to MP4 or MOV, and for Compress, can use the hardware encoder: "Use hardware encoder when available — faster, slightly larger files". A row that fell back to software says so. Settings → Engines shows which codecs VideoToolbox makes.
+- The app's bundled FFmpeg includes VideoToolbox.
 
 ### Added: in the engine (`persimmon-core`)
 
@@ -30,6 +35,7 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - `watch`: `WatchSpec`, `Watcher`, `Change`, `Patterns`, `Timing` and `Stamp`. The watcher turns file events into settled, matched files, each converted once.
 - `original`: `move_original`, `restore`, `Moved` and `NotRestored`, to move an original after success and move it back on undo.
 - `watch::files_in`: the files a watcher would pick up from a folder now, with the same filters.
+- `error::Note` and `NoteKind`: something a finished task says beside its result, such as `UsedSoftware` when hardware encoding fell back to software.
 
 ### Changed (engine, breaking)
 
@@ -37,6 +43,10 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - `FixKind::IncludeSubfolders` and `FixKind::ChooseDoneFolder` are new variants.
 - `Job::plan` expands folders for convert and compress.
 - `Plan::skipped` is a new field.
+- `JobOptions::hardware` is a new field.
+- `Done::Noted(Note)` is a new variant, and `Done` is no longer `Copy`.
+- `Outcome::WrittenNoted(PathBuf, Note)` is a new variant: written, with a note.
+- `FfmpegInfo::hardware` is a new field: the codecs this FFmpeg's hardware encoders make.
 
 ### Known limitations
 
