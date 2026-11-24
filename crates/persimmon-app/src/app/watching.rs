@@ -51,7 +51,9 @@ impl Notifier for MacNotifier {
 
 /// The watch runner, sharing the queue's pool and output-name claims, with
 /// its batches going to History and its rules' lines to the window.
-pub(super) fn runner(app: &AppHandle, queue: &crate::runner::Runner, data: &Path) -> WatchRunner {
+/// The app's notifier, answering Show files and Undo for every
+/// notification it posts (watch bursts and Finder failures).
+pub(super) fn notifier(app: &AppHandle) -> Arc<MacNotifier> {
     let notifier = Arc::new(MacNotifier {
         reveal: Mutex::new(HashMap::new()),
     });
@@ -70,6 +72,15 @@ pub(super) fn runner(app: &AppHandle, queue: &crate::runner::Runner, data: &Path
             }
         });
     }
+    notifier
+}
+
+pub(super) fn runner(
+    app: &AppHandle,
+    queue: &crate::runner::Runner,
+    data: &Path,
+    notifier: Arc<MacNotifier>,
+) -> WatchRunner {
     let on_batch = {
         let app = app.clone();
         move |batch: crate::history::Batch| {

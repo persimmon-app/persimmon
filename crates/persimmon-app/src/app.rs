@@ -15,6 +15,7 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
+mod native;
 mod watching;
 
 use crate::history::{Batch, Filter, History, Source, SystemTrash, UndoReport, undoable};
@@ -37,6 +38,8 @@ pub struct AppState {
     history: Mutex<History>,
     rules: Mutex<Rules>,
     watch: WatchRunner,
+    /// Promised files on their way, by item, to their rows.
+    receiving: Mutex<std::collections::HashMap<u64, RowId>>,
     /// `~/Library/Application Support/Persimmon`.
     data: PathBuf,
 }
@@ -216,7 +219,15 @@ fn targets(state: State<'_, AppState>, ids: Vec<RowId>) -> Vec<FormatId> {
 
 #[tauri::command]
 fn remove_rows(state: State<'_, AppState>, ids: Vec<RowId>) -> Vec<RowId> {
-    state.queue().remove(&ids)
+    let (removed, staged) = {
+        let mut queue = state.queue();
+        (queue.remove(&ids), queue.take_staged_removed())
+    };
+    // Files that came from Photos go with their rows.
+    for folder in staged {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+    removed
 }
 
 #[tauri::command]
@@ -252,11 +263,18 @@ fn queue_rows(state: State<'_, AppState>) -> Vec<RowView> {
 
 #[tauri::command]
 fn start(state: State<'_, AppState>) {
+    // Files still coming from Photos run when they arrive.
+    state.queue().start_requested();
     state.runner.start();
 }
 
 #[tauri::command]
-fn cancel_row(state: State<'_, AppState>, id: RowId) -> bool {
+fn cancel_row(app: AppHandle, state: State<'_, AppState>, id: RowId) -> bool {
+    let waiting = state.queue().cancel_receiving(id);
+    if let Some(view) = waiting {
+        emit_rows(&app, &[view]);
+        return true;
+    }
     state.runner.cancel(id)
 }
 
@@ -878,12 +896,24 @@ pub fn run() {
             let history = History::open(&data.join("history.jsonl"));
             let presets = Presets::load(&presets_dir(data.parent().unwrap_or(&data)));
             let handle = app.handle().clone();
+            let notifier = watching::notifier(app.handle());
+            let finder_notes = std::sync::Arc::clone(&notifier);
             runner.set_on_batch(move |batch| {
                 let state = handle.state::<AppState>();
                 let _ = lock(&state.history).append(batch.clone());
                 let _ = handle.emit("history", batch_view(&batch));
+                // A Finder conversion that failed, with the window not in
+                // front: the one way anyone hears of it (spec D9).
+                use crate::watch::runner::Notifier;
+                if let Some(note) = native::finder_failure_note(&batch)
+                    && !persimmon_mac::app_is_active()
+                    && finder_notes.allowed()
+                {
+                    let reveal = batch.items.iter().find_map(|i| i.output.clone());
+                    finder_notes.post(&batch.id, &note, true, reveal);
+                }
             });
-            let watch = watching::runner(app.handle(), &runner, &data);
+            let watch = watching::runner(app.handle(), &runner, &data, notifier);
             let rules = Rules::open(&rules_path(&data));
             app.manage(AppState {
                 queue,
@@ -894,10 +924,17 @@ pub fn run() {
                 history: Mutex::new(history),
                 rules: Mutex::new(rules),
                 watch,
+                receiving: Mutex::new(std::collections::HashMap::new()),
                 data,
             });
             // Rules run whether or not a window is open (D2).
             watching::apply(&app.state::<AppState>());
+            // The drop panel, Photos drops and Finder's Services (D3, D5).
+            let cache = app
+                .path()
+                .cache_dir()
+                .unwrap_or_else(|_| Path::new("/tmp").to_path_buf());
+            native::install(app.handle(), &native::staging_dir(&cache));
             // Opened at login: no window, rules running (D2). Otherwise
             // the main window, which starts hidden so this can choose.
             if !persimmon_mac::login::launched_at_login() {
