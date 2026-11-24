@@ -111,7 +111,7 @@ describe("QueueRow", () => {
   });
 
   it("shows a file still coming from Photos, with Cancel", async () => {
-    const { container, onCancel } = show(row({ state: "receiving", slow: false, name: "IMG_0001.HEIC", inputs: [], path: "", size: 0, from: null, to: null }));
+    const { container, onCancel } = show(row({ state: "receiving", slow: false, photos: true, name: "IMG_0001.HEIC", inputs: [], path: "", size: 0, from: null, to: null }));
     expect(screen.getByText("Getting the original from Photos…")).toBeTruthy();
     expect(container.querySelector("[role=progressbar]")).toBeNull();
     expect(screen.queryByText("Retry")).toBeNull();
@@ -121,8 +121,16 @@ describe("QueueRow", () => {
   });
 
   it("says when it's downloading from iCloud", () => {
-    show(row({ state: "receiving", slow: true, name: "IMG_0001.HEIC", inputs: [], path: "", size: 0, from: null, to: null }));
+    show(row({ state: "receiving", slow: true, photos: true, name: "IMG_0001.HEIC", inputs: [], path: "", size: 0, from: null, to: null }));
     expect(screen.getByText("Downloading from iCloud…")).toBeTruthy();
     expect(screen.getByLabelText("Cancel IMG_0001.HEIC")).toBeTruthy();
+  });
+
+  it("uses plain words for a file another app is handing over", () => {
+    show(row({ state: "receiving", slow: false, photos: false, name: "invoice.pdf", inputs: [], path: "", size: 0, from: null, to: null }));
+    expect(screen.getByText("Receiving the file…")).toBeTruthy();
+    show(row({ state: "receiving", slow: true, photos: false, name: "big.mov", inputs: [], path: "", size: 0, from: null, to: null }));
+    expect(screen.getByText("Still receiving the file…")).toBeTruthy();
+    expect(screen.queryByText(/Photos|iCloud/)).toBeNull();
   });
 });

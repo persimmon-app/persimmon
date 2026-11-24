@@ -31,8 +31,14 @@ const PHOTOS_ASSET: &str = "com.apple.photos.object-reference.asset";
 /// A promised file's progress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromiseEvent {
-    /// A promised file is on its way; `name` when the sender gave one.
-    Started { item: u64, name: Option<String> },
+    /// A promised file is on its way; `name` when the sender gave one,
+    /// `photos` when the sender is Photos (whose originals may download
+    /// from iCloud first).
+    Started {
+        item: u64,
+        name: Option<String>,
+        photos: bool,
+    },
     /// It's complete at `path`.
     Arrived { item: u64, path: PathBuf },
     /// It couldn't be written; the system's words.
@@ -131,12 +137,15 @@ impl Overlay {
             return false;
         }
         let ivars = self.ivars();
+        let photos = pasteboard
+            .types()
+            .is_some_and(|types| types.iter().any(|t| t.to_string() == PHOTOS_ASSET));
         let drop = DROPS.fetch_add(1, Ordering::Relaxed);
         let queue = NSOperationQueue::new();
         for receiver in receivers {
             let item = ITEMS.fetch_add(1, Ordering::Relaxed);
             let name = receiver.fileNames().iter().next().map(|n| n.to_string());
-            (ivars.sink)(PromiseEvent::Started { item, name });
+            (ivars.sink)(PromiseEvent::Started { item, name, photos });
             let folder = match staging_folder(&ivars.staging, drop, item) {
                 Ok(f) => f,
                 Err(e) => {

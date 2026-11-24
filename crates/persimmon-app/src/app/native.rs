@@ -60,12 +60,14 @@ pub(super) fn on_promise(app: &AppHandle, event: PromiseEvent, from_panel: bool)
         return;
     };
     match event {
-        PromiseEvent::Started { item, name } => {
+        PromiseEvent::Started { item, name, photos } => {
             let recipe = state.recipe();
-            let view =
-                state
-                    .queue()
-                    .add_receiving(name.as_deref().unwrap_or(""), &recipe, from_panel);
+            let view = state.queue().add_receiving(
+                name.as_deref().unwrap_or(""),
+                &recipe,
+                from_panel,
+                photos,
+            );
             let id = view.id;
             lock(&state.receiving).insert(item, id);
             emit_rows(app, &[view]);

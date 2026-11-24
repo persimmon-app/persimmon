@@ -27,7 +27,11 @@
     row.op === "merge" && row.state === "failed" && row.error.file ? `${row.error.file.split("/").pop()}: ` : "",
   );
   /** A file still coming from Photos (spec D5). */
-  const waiting = $derived(row.state === "receiving" && row.slow ? "Downloading from iCloud…" : "Getting the original from Photos…");
+  const waiting = $derived.by(() => {
+    if (row.state !== "receiving") return "";
+    if (row.photos) return row.slow ? "Downloading from iCloud…" : "Getting the original from Photos…";
+    return row.slow ? "Still receiving the file…" : "Receiving the file…";
+  });
   /** What VoiceOver reads for the row: its state and why (DD-17). */
   const label = $derived.by(() => {
     switch (row.state) {

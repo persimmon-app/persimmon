@@ -20,8 +20,9 @@ export type RowState =
   | { state: "notSmaller" }
   | { state: "failed"; error: Shown }
   | { state: "cancelled" }
-  /** A file still coming from Photos; `slow` once it's downloading from iCloud. */
-  | { state: "receiving"; slow: boolean };
+  /** A file still being handed over; `photos` when Photos is handing it
+   * over, `slow` once it has taken a while (for Photos, iCloud). */
+  | { state: "receiving"; slow: boolean; photos: boolean };
 
 export type RowView = {
   id: RowId;
