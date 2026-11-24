@@ -140,12 +140,6 @@ pub(super) fn install(app: &AppHandle, staging: &Path) {
             eprintln!("persimmon: couldn't set up {what}: {e}");
         }
     };
-    if let Some(drop) = app.get_webview_window("drop") {
-        report(
-            "the drop panel",
-            persimmon_mac::panel::make_floating_panel(&drop),
-        );
-    }
     for (label, from_panel) in [("main", false), ("drop", true)] {
         if let Some(window) = app.get_webview_window(label) {
             let app = app.clone();
@@ -158,6 +152,14 @@ pub(super) fn install(app: &AppHandle, staging: &Path) {
                 ),
             );
         }
+    }
+    // After the overlays: the drop window's overlay moves into the panel
+    // with its webview.
+    if let Some(drop) = app.get_webview_window("drop") {
+        report(
+            "the drop panel",
+            persimmon_mac::panel::adopt_as_panel(&drop),
+        );
     }
     let app = app.clone();
     report(

@@ -347,9 +347,16 @@ async fn choose_fallback_folder(
 
 /// Show or hide the drop window, remember it, and tick its menu item.
 fn set_drop_window(app: &AppHandle, show: bool) {
-    if let Some(window) = app.get_webview_window("drop") {
-        let _ = if show { window.show() } else { window.hide() };
-    }
+    // The drop window's contents live in a floating panel (spec D5); the
+    // window itself is shown only if the panel couldn't be made.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if persimmon_mac::panel::set_panel_visible(show) != Ok(true)
+            && let Some(window) = handle.get_webview_window("drop")
+        {
+            let _ = if show { window.show() } else { window.hide() };
+        }
+    });
     if let Some(menu) = app.menu()
         && let Some(item) = menu.get("drop-window")
         && let Some(check) = item.as_check_menuitem()
