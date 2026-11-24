@@ -164,6 +164,9 @@ pub struct JobOptions {
     /// `--recursive`: a folder input to convert or compress also stands for
     /// the files in its subfolders.
     pub recursive: bool,
+    /// `--hardware`: encode H.264 and HEVC with the platform's hardware
+    /// encoder (VideoToolbox) where it can, else in software with a note.
+    pub hardware: bool,
     /// `--ffmpeg`: the FFmpeg to use instead of the one on `PATH`. Never
     /// serialised: a client must not choose which program runs.
     #[cfg_attr(feature = "serde", serde(skip))]

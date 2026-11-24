@@ -565,7 +565,9 @@ impl Shared {
             None => {
                 let results = execute(&job, &plan, &*self.deps.engine, &rs.cancel, &mut |_| {});
                 match results.into_iter().next() {
-                    Some(Ok(Outcome::Written(out))) => Some((ItemOutcome::Done, Some(out))),
+                    Some(Ok(Outcome::Written(out) | Outcome::WrittenNoted(out, _))) => {
+                        Some((ItemOutcome::Done, Some(out)))
+                    }
                     Some(Ok(Outcome::NotSmaller)) => Some((ItemOutcome::NotSmaller, None)),
                     Some(Err(e)) if e.code == ErrorCode::Cancelled => None,
                     Some(Err(e)) => Some((ItemOutcome::Failed { error: shown(&e) }, None)),

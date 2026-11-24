@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::backend::{Done, Run};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Note};
 use crate::job::{Job, Plan, PlannedTask};
 use crate::output::PendingOutput;
 use crate::pool::{Lane, Pool};
@@ -46,6 +46,11 @@ impl CancelToken {
 pub enum Outcome {
     #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::path"))]
     Written(PathBuf),
+    /// Written, with something to say about how (a fallback it took).
+    WrittenNoted(
+        #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::path"))] PathBuf,
+        Note,
+    ),
     /// Compressing wouldn't make the file smaller; nothing was written.
     NotSmaller,
 }
@@ -110,6 +115,9 @@ pub fn execute(
                 &mut progress,
             ) {
                 Ok(Done::Written) => pending.commit(job.output.overwrite).map(Outcome::Written),
+                Ok(Done::Noted(note)) => pending
+                    .commit(job.output.overwrite)
+                    .map(|p| Outcome::WrittenNoted(p, note)),
                 Ok(Done::NotSmaller) => Ok(Outcome::NotSmaller),
                 // Dropping `pending` removes the temp file.
                 Err(e) => Err(e),
@@ -162,6 +170,9 @@ fn run_task(
     let pending = PendingOutput::new(task.output.clone());
     match runner.run(task, &job.options, pending.temp_path(), cancel, progress) {
         Ok(Done::Written) => pending.commit(job.output.overwrite).map(Outcome::Written),
+        Ok(Done::Noted(note)) => pending
+            .commit(job.output.overwrite)
+            .map(|p| Outcome::WrittenNoted(p, note)),
         Ok(Done::NotSmaller) => Ok(Outcome::NotSmaller),
         // Dropping `pending` removes the temp file.
         Err(e) => Err(e),

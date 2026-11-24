@@ -478,7 +478,7 @@ fn outcome_of(
     cancelled: bool,
 ) -> RowState {
     match results.into_iter().next() {
-        Some(Ok(Outcome::Written(output))) => {
+        Some(Ok(Outcome::Written(output) | Outcome::WrittenNoted(output, _))) => {
             let size = std::fs::metadata(&output)
                 .ok()
                 .filter(|m| m.is_file())

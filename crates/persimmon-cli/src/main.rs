@@ -364,6 +364,7 @@ impl TuneArgs {
             strip_metadata: self.strip_metadata,
             pages: None,
             recursive: false,
+            hardware: false,
         })
     }
 }
@@ -582,7 +583,7 @@ fn watch(reg: &Registry, spec: &WatchSpec) -> Result<(), ErrorCode> {
         progress.clear();
         for result in results {
             match result {
-                Ok(Outcome::Written(out)) => {
+                Ok(Outcome::Written(out) | Outcome::WrittenNoted(out, _)) => {
                     let mut text = format!("{name} → {}", tilde(&out));
                     let moved = spec
                         .done
@@ -690,7 +691,7 @@ fn run(
             }
             cursor += 1;
             match result {
-                Ok(Outcome::Written(path)) => {
+                Ok(Outcome::Written(path) | Outcome::WrittenNoted(path, _)) => {
                     line(format_args!("{} → {}", label(op, task), show(path)))
                 }
                 Ok(Outcome::NotSmaller) => line(format_args!(

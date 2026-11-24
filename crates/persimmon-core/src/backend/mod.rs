@@ -16,7 +16,7 @@ pub mod pdf;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::error::Error;
+use crate::error::{Error, Note};
 use crate::exec::CancelToken;
 use crate::job::{JobOptions, PlannedTask};
 use crate::registry::Backend;
@@ -31,10 +31,12 @@ pub(crate) fn set_vips_threads(n: i32) {
 }
 
 /// What a backend did with a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Done {
     /// The output is complete at the temp path.
     Written,
+    /// The output is complete, with something to say about how it was made.
+    Noted(Note),
     /// Compressing wouldn't make the file smaller; nothing was written.
     NotSmaller,
 }
@@ -64,6 +66,8 @@ pub struct FfmpegInfo {
     pub path: PathBuf,
     /// As `ffmpeg -version` prints it, e.g. `7.1.1`.
     pub version: String,
+    /// The codecs its hardware encoders make: `"H.264"` and/or `"HEVC"`.
+    pub hardware: Vec<String>,
 }
 
 /// Every backend this build has, dispatched by [`PlannedTask::backend`].
@@ -99,6 +103,7 @@ impl Backends {
         Ok(FfmpegInfo {
             path: ff.ffmpeg.clone(),
             version: ff.version.clone(),
+            hardware: ff.hardware(),
         })
     }
 
@@ -232,6 +237,24 @@ mod tests {
         let info = Backends::new().with_ffmpeg(&ff).ffmpeg_info().unwrap();
         assert_eq!(info.version, "7.1");
         assert_eq!(info.path, ff);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_info_lists_hardware_encoders() {
+        let dir = Scratch::new("hw");
+        let ff = dir.script(
+            "ffmpeg",
+            "case \"$*\" in *-encoders*) printf ' ------\\n V....D h264_videotoolbox    VideoToolbox H.264\\n V....D hevc_videotoolbox    VideoToolbox H.265\\n';; *) echo 'ffmpeg version 7.1 Copyright';; esac",
+        );
+        dir.script("ffprobe", VERSION_7);
+        let info = Backends::new().with_ffmpeg(&ff).ffmpeg_info().unwrap();
+        assert_eq!(info.hardware, ["H.264", "HEVC"]);
+        let plain = Scratch::new("hw-none");
+        let ff = plain.script("ffmpeg", VERSION_7);
+        plain.script("ffprobe", VERSION_7);
+        let info = Backends::new().with_ffmpeg(&ff).ffmpeg_info().unwrap();
+        assert!(info.hardware.is_empty());
     }
 
     #[cfg(unix)]

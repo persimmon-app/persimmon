@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use super::{MediaInfo, Stream, file_url};
-use crate::error::{Error, ErrorCode, FixKind};
+use crate::error::{Error, ErrorCode, FixKind, Note, NoteKind};
 use crate::format::FormatId;
 use crate::job::{JobOptions, PlannedTask, Preset, Quality};
 
@@ -51,6 +51,59 @@ impl Video {
     }
 }
 
+/// The result line when hardware was asked for and isn't there.
+pub(crate) const UNAVAILABLE: &str = "hardware encoder unavailable — used software";
+/// The result line when the hardware encoder failed and software redid it.
+pub(crate) const REFUSED: &str = "the hardware encoder couldn't encode this video — used software";
+
+/// A note that software encoded the video, worded `text`.
+pub(crate) fn used_software(text: &str) -> Note {
+    Note {
+        kind: NoteKind::UsedSoftware,
+        text: text.to_string(),
+    }
+}
+
+/// What became of `--hardware` for one task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hardware {
+    /// Not asked for, or nothing to encode in H.264 or HEVC: copied
+    /// streams, other codecs, GIF and audio.
+    NotAsked,
+    /// The hardware encoder is in the arguments.
+    Used,
+    /// Asked for, but this FFmpeg's hardware encoder can't: software it is.
+    Unavailable,
+}
+
+impl Hardware {
+    /// The note the task's result carries, if any.
+    pub(crate) fn note(self) -> Option<Note> {
+        (self == Hardware::Unavailable).then(|| used_software(UNAVAILABLE))
+    }
+}
+
+/// An FFmpeg command line, and what became of `--hardware` in it.
+#[derive(Debug)]
+pub(crate) struct Built {
+    pub args: Vec<OsString>,
+    pub hardware: Hardware,
+}
+
+/// The hardware (VideoToolbox) encoder's arguments for `codec`, or `None`
+/// for codecs it doesn't make. Quality maps to `-q:v`, monotonic.
+fn hardware_encoder(codec: Video, quality: Quality, ten_bit: bool) -> Option<String> {
+    let q = [45, 55, 65, 80][level(quality)];
+    match codec {
+        Video::H264 => Some(format!("-c:v h264_videotoolbox -q:v {q}")),
+        Video::Hevc if ten_bit => Some(format!(
+            "-c:v hevc_videotoolbox -q:v {q} -profile:v main10 -pix_fmt p010le -tag:v hvc1"
+        )),
+        Video::Hevc => Some(format!("-c:v hevc_videotoolbox -q:v {q} -tag:v hvc1")),
+        Video::Vp9 | Video::Av1 => None,
+    }
+}
+
 fn level(q: Quality) -> usize {
     match q {
         Quality::Low => 0,
@@ -65,6 +118,7 @@ struct Args<'a> {
     v: Vec<OsString>,
     input: &'a Path,
     has_encoder: &'a dyn Fn(&str) -> bool,
+    hardware: Hardware,
 }
 
 impl Args<'_> {
@@ -92,13 +146,16 @@ impl Args<'_> {
 
 /// The FFmpeg arguments that turn `task`'s input (probed as `info`) into
 /// its output at `temp`. Compress is `task.to == None`.
+///
+/// `has_encoder(name)` says whether FFmpeg has an encoder; asked
+/// `"<encoder>:<pix_fmt>"`, whether that encoder takes that pixel format.
 pub(crate) fn build_args(
     task: &PlannedTask,
     info: &MediaInfo,
     options: &JobOptions,
     temp: &Path,
     has_encoder: &dyn Fn(&str) -> bool,
-) -> Result<Vec<OsString>, Error> {
+) -> Result<Built, Error> {
     use FormatId::*;
     let input = task.inputs[0].as_path();
     let out = task.to.unwrap_or(task.from[0]);
@@ -106,6 +163,7 @@ pub(crate) fn build_args(
         v: Vec::new(),
         input,
         has_encoder,
+        hardware: Hardware::NotAsked,
     };
     // Local files and the progress pipe only (DD-11), whatever the input
     // asks to open.
@@ -140,7 +198,10 @@ pub(crate) fn build_args(
     a.push("-f");
     a.arg(muxer);
     a.arg(file_url(temp));
-    Ok(a.v)
+    Ok(Built {
+        args: a.v,
+        hardware: a.hardware,
+    })
 }
 
 fn no_video(input: &Path) -> Error {
@@ -223,7 +284,49 @@ fn video_target(
 }
 
 fn encode_video(a: &mut Args, v: &Stream, codec: Video, options: &JobOptions) -> Result<(), Error> {
-    let crf = codec.crf(options.quality.unwrap_or(Quality::High));
+    let quality = options.quality.unwrap_or(Quality::High);
+    let crf = codec.crf(quality);
+    let ten_bit = codec.keeps_ten_bit() && v.ten_bit();
+    let hardware = if options.hardware {
+        hardware_encoder(codec, quality, ten_bit)
+    } else {
+        None
+    };
+    if let Some(words) = hardware {
+        let encoder = words.split_whitespace().nth(1).unwrap_or_default();
+        let can =
+            (a.has_encoder)(encoder) && (!ten_bit || (a.has_encoder)(&format!("{encoder}:p010le")));
+        if can {
+            a.push(&words);
+            a.hardware = Hardware::Used;
+        } else {
+            a.hardware = Hardware::Unavailable;
+        }
+    }
+    if a.hardware != Hardware::Used {
+        software_encoder(a, codec, crf)?;
+    }
+    let mut chain = Vec::new();
+    if let Some(n) = options.max_size {
+        chain.push(format!(
+            "scale='if(gte(iw,ih),min(iw,{n}),-2)':'if(gte(iw,ih),-2,min(ih,{n}))'"
+        ));
+    }
+    // 4:2:0 needs even dimensions.
+    chain.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".into());
+    let pix = match (ten_bit, a.hardware) {
+        (true, Hardware::Used) => "p010le",
+        (true, _) => "yuv420p10le",
+        (false, _) => "yuv420p",
+    };
+    chain.push(format!("format={pix}"));
+    a.push("-vf");
+    a.arg(chain.join(","));
+    Ok(())
+}
+
+/// The software encoder's arguments for `codec` at `crf`.
+fn software_encoder(a: &mut Args, codec: Video, crf: u32) -> Result<(), Error> {
     match codec {
         Video::H264 => {
             a.need("libx264", "H.264")?;
@@ -251,22 +354,6 @@ fn encode_video(a: &mut Args, v: &Stream, codec: Video, options: &JobOptions) ->
             }
         }
     }
-    let mut chain = Vec::new();
-    if let Some(n) = options.max_size {
-        chain.push(format!(
-            "scale='if(gte(iw,ih),min(iw,{n}),-2)':'if(gte(iw,ih),-2,min(ih,{n}))'"
-        ));
-    }
-    // 4:2:0 needs even dimensions.
-    chain.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".into());
-    let pix = if codec.keeps_ten_bit() && v.ten_bit() {
-        "yuv420p10le"
-    } else {
-        "yuv420p"
-    };
-    chain.push(format!("format={pix}"));
-    a.push("-vf");
-    a.arg(chain.join(","));
     Ok(())
 }
 
@@ -390,6 +477,7 @@ mod tests {
     use super::*;
     use crate::backend::ffmpeg::{MediaInfo, Stream, StreamKind};
     use crate::error::ErrorCode;
+    use crate::error::NoteKind;
     use crate::format::FormatId::{self, *};
     use crate::job::{JobOptions, PlannedTask, Preset, Quality};
     use crate::registry::Backend;
@@ -454,8 +542,9 @@ mod tests {
         o: &JobOptions,
         has: &dyn Fn(&str) -> bool,
     ) -> Result<String, Error> {
-        build_args(t, info, o, Path::new(TEMP), has).map(|v| {
-            v.iter()
+        build_args(t, info, o, Path::new(TEMP), has).map(|b| {
+            b.args
+                .iter()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -888,6 +977,151 @@ mod tests {
                 cap.to
             );
         }
+    }
+
+    fn hw(o: JobOptions) -> JobOptions {
+        JobOptions {
+            hardware: true,
+            ..o
+        }
+    }
+
+    fn built(
+        t: &PlannedTask,
+        info: &MediaInfo,
+        o: &JobOptions,
+        has: &dyn Fn(&str) -> bool,
+    ) -> (String, Hardware) {
+        let b = build_args(t, info, o, Path::new(TEMP), has).unwrap();
+        let a = b
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        (a, b.hardware)
+    }
+
+    #[test]
+    fn hardware_maps_quality_to_q() {
+        use Quality::*;
+        for (level, v) in [(Low, 45), (Medium, 55), (High, 65), (Max, 80)] {
+            assert_eq!(
+                hardware_encoder(Video::H264, level, false),
+                Some(format!("-c:v h264_videotoolbox -q:v {v}"))
+            );
+        }
+        let h = hardware_encoder(Video::Hevc, High, true).unwrap();
+        assert!(h.starts_with("-c:v hevc_videotoolbox -q:v 65"), "{h}");
+        for w in ["-profile:v main10", "-pix_fmt p010le", "-tag:v hvc1"] {
+            assert!(h.contains(w), "{h}");
+        }
+        let h = hardware_encoder(Video::Hevc, Low, false).unwrap();
+        assert_eq!(h, "-c:v hevc_videotoolbox -q:v 45 -tag:v hvc1");
+        assert_eq!(hardware_encoder(Video::Vp9, High, false), None);
+        assert_eq!(hardware_encoder(Video::Av1, High, false), None);
+    }
+
+    #[test]
+    fn hardware_touches_only_h264_and_hevc() {
+        let cases = [
+            (Mov, Some(Webm), clip("h264", "aac"), JobOptions::default()),
+            (Mov, Some(Webm), clip("h264", "aac"), preset(Preset::Small)),
+            (Mov, Some(Webm), clip("h264", "aac"), q(Quality::Low)),
+            (Mov, Some(Gif), clip("h264", "aac"), JobOptions::default()),
+            (Mov, Some(Mp3), clip("h264", "aac"), JobOptions::default()),
+            (Wav, Some(M4a), tone("pcm_s16le"), q(Quality::High)),
+            (Webm, None, clip("vp9", "opus"), JobOptions::default()),
+        ];
+        for (from, to, info, o) in cases {
+            let t = task(from, to);
+            let (plain, _) = built(&t, &info, &o, &|_| true);
+            let (with, hardware) = built(&t, &info, &hw(o), &|_| true);
+            assert_eq!(plain, with, "{from:?} → {to:?}");
+            assert_eq!(hardware, Hardware::NotAsked, "{from:?} → {to:?}");
+            assert_eq!(hardware.note(), None);
+        }
+    }
+
+    #[test]
+    fn a_copied_stream_stays_copied_with_hardware() {
+        let (a, hardware) = built(
+            &task(Mov, Some(Mp4)),
+            &clip("h264", "aac"),
+            &hw(JobOptions::default()),
+            &|_| true,
+        );
+        assert!(a.contains("-c:v copy"), "{a}");
+        assert!(!a.contains("videotoolbox"), "{a}");
+        assert_eq!(hardware, Hardware::NotAsked);
+    }
+
+    #[test]
+    fn hardware_uses_videotoolbox_when_listed() {
+        let t = task(Mov, Some(Mp4));
+        let (a, hardware) = built(&t, &clip("h264", "aac"), &hw(q(Quality::Medium)), &|_| true);
+        assert!(a.contains("-c:v h264_videotoolbox -q:v 55 "), "{a}");
+        assert!(!a.contains("libx264"), "{a}");
+        assert!(a.contains("format=yuv420p "), "{a}");
+        assert_eq!(hardware, Hardware::Used);
+        assert_eq!(hardware.note(), None);
+        let (a, hardware) = built(
+            &t,
+            &clip("h264", "aac"),
+            &hw(preset(Preset::Small)),
+            &|_| true,
+        );
+        assert!(
+            a.contains("-c:v hevc_videotoolbox -q:v 65 -tag:v hvc1"),
+            "{a}"
+        );
+        assert_eq!(hardware, Hardware::Used);
+        // --max-size keeps its meaning.
+        let o = JobOptions {
+            max_size: Some(160),
+            ..hw(JobOptions::default())
+        };
+        let (a, _) = built(&t, &clip("h264", "aac"), &o, &|_| true);
+        assert!(a.contains("h264_videotoolbox"), "{a}");
+        assert!(a.contains("min(iw,160)"), "{a}");
+    }
+
+    #[test]
+    fn a_missing_encoder_falls_back_with_a_note() {
+        let (a, hardware) = built(
+            &task(Mov, Some(Mp4)),
+            &clip("h264", "aac"),
+            &hw(q(Quality::High)),
+            &|e| !e.contains("videotoolbox"),
+        );
+        assert!(a.contains("-c:v libx264 -crf 22"), "{a}");
+        assert_eq!(hardware, Hardware::Unavailable);
+        let note = hardware.note().unwrap();
+        assert_eq!(note.kind, NoteKind::UsedSoftware);
+        assert_eq!(note.text, "hardware encoder unavailable — used software");
+    }
+
+    #[test]
+    fn ten_bit_falls_back_to_software_when_the_encoder_cant() {
+        let mut info = clip("hevc", "aac");
+        info.streams[0].pix_fmt = Some("yuv420p10le".into());
+        let t = task(Mov, Some(Mp4));
+        let o = hw(preset(Preset::Small));
+        let (a, hardware) = built(&t, &info, &o, &|_| true);
+        assert!(a.contains("-c:v hevc_videotoolbox"), "{a}");
+        assert!(a.contains("-profile:v main10 -pix_fmt p010le"), "{a}");
+        assert_eq!(hardware, Hardware::Used);
+        let (a, hardware) = built(&t, &info, &o, &|e| e != "hevc_videotoolbox:p010le");
+        assert!(a.contains("-c:v libx265"), "{a}");
+        assert!(a.contains("format=yuv420p10le"), "{a}");
+        assert!(!a.contains("videotoolbox"), "{a}");
+        assert_eq!(hardware, Hardware::Unavailable);
+        // An 8-bit source needs no p010le.
+        let (a, hardware) = built(&t, &clip("h264", "aac"), &o, &|e| {
+            e != "hevc_videotoolbox:p010le"
+        });
+        assert!(a.contains("-c:v hevc_videotoolbox"), "{a}");
+        assert_eq!(hardware, Hardware::Used);
     }
 
     #[test]

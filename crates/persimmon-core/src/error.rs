@@ -144,6 +144,32 @@ impl fmt::Display for Fix {
     }
 }
 
+/// Something a finished task wants said beside its result, such as a
+/// fallback it took. The task still succeeded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct Note {
+    pub kind: NoteKind,
+    /// The wording `prsm` prints.
+    pub text: String,
+}
+
+/// What a note is about, so a client can say it in its own words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "SCREAMING_SNAKE_CASE"))]
+pub enum NoteKind {
+    /// Hardware encoding was asked for, and software encoded it instead.
+    UsedSoftware,
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// A failure, shaped for people and scripts alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]

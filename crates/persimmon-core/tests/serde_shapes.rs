@@ -6,7 +6,7 @@
 
 #![cfg(feature = "serde")]
 
-use persimmon_core::error::{Error, ErrorCode, FixKind};
+use persimmon_core::error::{Error, ErrorCode, FixKind, Note, NoteKind};
 use persimmon_core::exec::Outcome;
 use persimmon_core::format::FormatId;
 use persimmon_core::job::{Job, JobOptions, PageRanges, Quality};
@@ -178,4 +178,32 @@ fn output_policy_never_deserialises_overwrite() {
     let p: OutputPolicy = serde_json::from_str(r#"{"dir":"/x","overwrite":true}"#).unwrap();
     assert!(!p.overwrite);
     assert_eq!(p.dir, Some("/x".into()));
+}
+
+#[test]
+fn notes_serialise_like_fixes() {
+    assert_eq!(
+        serde_json::to_value(NoteKind::UsedSoftware).unwrap(),
+        json!("USED_SOFTWARE")
+    );
+    let note = Note {
+        kind: NoteKind::UsedSoftware,
+        text: "hardware encoder unavailable — used software".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(Outcome::WrittenNoted("/o/a.mp4".into(), note)).unwrap(),
+        json!({"writtenNoted": ["/o/a.mp4", {
+            "kind": "USED_SOFTWARE",
+            "text": "hardware encoder unavailable — used software"
+        }]})
+    );
+}
+
+#[test]
+fn hardware_defaults_off_and_round_trips() {
+    let o: JobOptions = serde_json::from_value(json!({})).unwrap();
+    assert!(!o.hardware);
+    let o: JobOptions = serde_json::from_value(json!({"hardware": true})).unwrap();
+    assert!(o.hardware);
+    assert_eq!(serde_json::to_value(&o).unwrap()["hardware"], json!(true));
 }

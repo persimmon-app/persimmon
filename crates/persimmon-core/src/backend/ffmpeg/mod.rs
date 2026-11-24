@@ -49,8 +49,35 @@ impl Run for FfmpegBackend {
     ) -> Result<Done, Error> {
         let input = &task.inputs[0];
         let info = self.ff.probe_with(input, cancel)?;
-        let args = args::build_args(task, &info, options, temp, &|e| self.ff.has_encoder(e))?;
-        child::run_ffmpeg(&self.ff, &args, info.duration, cancel, progress).map_err(|f| {
+        let has = |e: &str| match e.split_once(':') {
+            Some((encoder, pix)) => self.ff.encoder_takes(encoder, pix),
+            None => self.ff.has_encoder(e),
+        };
+        let built = args::build_args(task, &info, options, temp, &has)?;
+        let mut note = built.hardware.note();
+        // A software retry starts again from 0; the caller only ever sees
+        // progress go forward.
+        let mut high = 0.0_f32;
+        let mut forward = |f: f32| {
+            if f > high {
+                high = f;
+                progress(f);
+            }
+        };
+        let mut ran = child::run_ffmpeg(&self.ff, &built.args, info.duration, cancel, &mut forward);
+        if built.hardware == args::Hardware::Used
+            && ran.as_ref().is_err_and(|f| f.code != ErrorCode::Cancelled)
+        {
+            // The hardware encoder refused this video: once more in software.
+            let software = JobOptions {
+                hardware: false,
+                ..options.clone()
+            };
+            let built = args::build_args(task, &info, &software, temp, &has)?;
+            ran = child::run_ffmpeg(&self.ff, &built.args, info.duration, cancel, &mut forward);
+            note = Some(args::used_software(args::REFUSED));
+        }
+        ran.map_err(|f| {
             let why = if f.message.is_empty() {
                 "ffmpeg failed".to_string()
             } else {
@@ -77,7 +104,7 @@ impl Run for FfmpegBackend {
                 return Ok(Done::NotSmaller);
             }
         }
-        Ok(Done::Written)
+        Ok(note.map_or(Done::Written, Done::Noted))
     }
 }
 
@@ -170,6 +197,8 @@ mod backend_tests {
     use crate::backend::{Backends, Done, Run};
     use crate::detect::detect;
     use crate::error::{Error, ErrorCode};
+    #[cfg(unix)]
+    use crate::error::{Note, NoteKind};
     use crate::exec::CancelToken;
     use crate::format::FormatId::{self, *};
     use crate::job::{JobOptions, PlannedTask, Preset, Quality};
@@ -508,6 +537,107 @@ mod backend_tests {
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::Cancelled, "{e}");
         assert_eq!(e.file.as_deref(), Some(input.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_encode_retries_in_software() {
+        let Some(real) = ff() else { return };
+        let body = format!(
+            "case \"$*\" in *videotoolbox*) echo 'cannot open encoder' >&2; exit 1;; esac\nexec '{}' \"$@\"",
+            real.ffmpeg.display()
+        );
+        let ff =
+            super::child::tests::fake(&real, "ffmpeg", &body).with_encoder("h264_videotoolbox");
+        let o = JobOptions {
+            hardware: true,
+            quality: Some(Quality::Low),
+            ..JobOptions::default()
+        };
+        let input = media_sample("vid-mp4").unwrap();
+        let (r, t) = convert(&ff, &input, Some(Mov), &o);
+        assert_eq!(
+            r.map_err(|e| e.to_string()),
+            Ok(Done::Noted(Note {
+                kind: NoteKind::UsedSoftware,
+                text: "the hardware encoder couldn't encode this video — used software".into(),
+            }))
+        );
+        assert_eq!(ff.probe(&t).unwrap().video().unwrap().codec, "h264");
+        let _ = std::fs::remove_file(&t);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_never_goes_back_when_software_redoes_it() {
+        let Some(real) = ff() else { return };
+        let body = format!(
+            "case \"$*\" in *videotoolbox*) printf 'out_time_us=1500000\\nprogress=continue\\n'; exit 1;; esac\nprintf 'out_time_us=500000\\nprogress=continue\\n'\nexec '{}' \"$@\"",
+            real.ffmpeg.display()
+        );
+        let ff =
+            super::child::tests::fake(&real, "ffmpeg", &body).with_encoder("h264_videotoolbox");
+        let o = JobOptions {
+            hardware: true,
+            quality: Some(Quality::Low),
+            ..JobOptions::default()
+        };
+        let input = media_sample("vid-mp4").unwrap();
+        let t = temp();
+        let mut seen = Vec::new();
+        let r = FfmpegBackend::new(ff).run(
+            &task(&input, Some(Mov)),
+            &o,
+            &t,
+            &CancelToken::new(),
+            &mut |f| seen.push(f),
+        );
+        assert!(matches!(r, Ok(Done::Noted(_))), "{r:?}");
+        assert!(seen.contains(&0.75), "{seen:?}");
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+        let _ = std::fs::remove_file(&t);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_hardware_encode_is_not_retried() {
+        let Some(real) = ff() else { return };
+        let ff = super::child::tests::fake(&real, "ffmpeg", "kill -INT $$")
+            .with_encoder("h264_videotoolbox");
+        let o = JobOptions {
+            hardware: true,
+            quality: Some(Quality::Low),
+            ..JobOptions::default()
+        };
+        let input = media_sample("vid-mp4").unwrap();
+        let cancel = CancelToken::new();
+        super::child::tests::cancel_later(&cancel, 100);
+        let e = FfmpegBackend::new(ff)
+            .run(&task(&input, Some(Mov)), &o, &temp(), &cancel, &mut |_| {})
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Cancelled, "{e}");
+    }
+
+    #[test]
+    fn hardware_encodes_for_real() {
+        let Some(ff) = ff() else { return };
+        if !ff.has_encoder("h264_videotoolbox") {
+            eprintln!("skipped: no h264_videotoolbox");
+            return;
+        }
+        let o = JobOptions {
+            hardware: true,
+            quality: Some(Quality::Medium),
+            ..JobOptions::default()
+        };
+        let input = media_sample("vid-mp4").unwrap();
+        let (r, t) = convert(&ff, &input, Some(Mov), &o);
+        assert_eq!(r.map_err(|e| e.to_string()), Ok(Done::Written));
+        let info = ff.probe(&t).unwrap();
+        assert_eq!(info.video().unwrap().codec, "h264");
+        let d = info.duration.unwrap();
+        assert!((d - 2.0).abs() < 0.2, "{d}");
+        let _ = std::fs::remove_file(&t);
     }
 
     #[cfg(unix)]

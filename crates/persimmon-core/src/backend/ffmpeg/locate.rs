@@ -4,7 +4,7 @@
 //! Finding FFmpeg: `--ffmpeg`, else `PATH`, else the platform's usual
 //! folders. It must be 7.0 or later, with `ffprobe` beside it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,7 +20,16 @@ pub struct Ffmpeg {
     /// As `ffmpeg -version` prints it, e.g. `7.1.1`.
     pub version: String,
     encoders: HashSet<String>,
+    /// The pixel formats of the encoders whose formats matter, by name:
+    /// only HEVC's hardware encoder, whose 10-bit support varies.
+    pix_fmts: HashMap<String, Vec<String>>,
 }
+
+/// The hardware encoders prsm uses, with the codec each makes.
+const HARDWARE: [(&str, &str); 2] = [
+    ("h264_videotoolbox", "H.264"),
+    ("hevc_videotoolbox", "HEVC"),
+];
 
 impl Ffmpeg {
     /// Find FFmpeg: `explicit` (`--ffmpeg`) if given, else the first on
@@ -51,9 +60,10 @@ impl Ffmpeg {
                 )
             })?,
         };
-        let run = |arg: &str| -> Result<String, Error> {
+        let run = |args: &[&str]| -> Result<String, Error> {
             let out = Command::new(&ffmpeg)
-                .args(["-hide_banner", arg])
+                .arg("-hide_banner")
+                .args(args)
                 .stdin(Stdio::null())
                 .output()
                 .map_err(|e| {
@@ -68,7 +78,7 @@ impl Ffmpeg {
             }
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         };
-        let first = run("-version")?
+        let first = run(&["-version"])?
             .lines()
             .next()
             .unwrap_or_default()
@@ -88,7 +98,12 @@ impl Ffmpeg {
                     .with_fix_as(FixKind::InstallFfmpeg, install),
             );
         }
-        let encoders = parse_encoders(&run("-encoders")?);
+        let encoders = parse_encoders(&run(&["-encoders"])?);
+        let mut pix_fmts = HashMap::new();
+        if encoders.contains("hevc_videotoolbox") {
+            let help = run(&["-h", "encoder=hevc_videotoolbox"]).unwrap_or_default();
+            pix_fmts.insert("hevc_videotoolbox".to_string(), parse_pix_fmts(&help));
+        }
         let version = first
             .split_whitespace()
             .nth(2)
@@ -99,6 +114,7 @@ impl Ffmpeg {
             ffprobe,
             version,
             encoders,
+            pix_fmts,
         })
     }
 
@@ -106,6 +122,41 @@ impl Ffmpeg {
     pub fn has_encoder(&self, name: &str) -> bool {
         self.encoders.contains(name)
     }
+
+    /// Whether the encoder `name` takes the pixel format `pix_fmt`, as far
+    /// as this FFmpeg says; only known for the encoders in `pix_fmts`.
+    pub fn encoder_takes(&self, name: &str, pix_fmt: &str) -> bool {
+        self.pix_fmts
+            .get(name)
+            .is_some_and(|f| f.iter().any(|p| p == pix_fmt))
+    }
+
+    /// The codecs this FFmpeg's hardware encoders make, in a fixed order:
+    /// `"H.264"` and/or `"HEVC"`.
+    pub fn hardware(&self) -> Vec<String> {
+        HARDWARE
+            .iter()
+            .filter(|(enc, _)| self.has_encoder(enc))
+            .map(|(_, codec)| codec.to_string())
+            .collect()
+    }
+
+    /// This FFmpeg, said to have `name` too: tests pair it with a fake
+    /// program that refuses or accepts that encoder.
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_encoder(mut self, name: &str) -> Ffmpeg {
+        self.encoders.insert(name.to_string());
+        self
+    }
+}
+
+/// The pixel formats an encoder lists in `ffmpeg -h encoder=<name>`'s
+/// "Supported pixel formats:" line; empty when it lists none.
+fn parse_pix_fmts(help: &str) -> Vec<String> {
+    help.lines()
+        .find_map(|l| l.trim().strip_prefix("Supported pixel formats:"))
+        .map(|rest| rest.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// The first `name` (plus the platform's executable suffix) in the folders
@@ -193,6 +244,15 @@ mod tests {
         assert!(enc.contains("aac"));
         assert!(!enc.contains("="));
         assert_eq!(enc.len(), 2);
+    }
+
+    #[test]
+    fn parse_pix_fmts_reads_the_supported_line() {
+        let help = "Encoder hevc_videotoolbox [VideoToolbox H.265 Encoder]:\n    General capabilities: dr1 delay hybrid \n    Supported pixel formats: videotoolbox_vld nv12 yuv420p bgra ayuv p010le p210le\nhevc_videotoolbox AVOptions:\n";
+        let fmts = parse_pix_fmts(help);
+        assert!(fmts.iter().any(|f| f == "p010le"), "{fmts:?}");
+        assert!(fmts.iter().any(|f| f == "nv12"), "{fmts:?}");
+        assert!(parse_pix_fmts("Encoder x:\n").is_empty());
     }
 
     #[test]
