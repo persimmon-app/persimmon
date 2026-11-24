@@ -591,11 +591,12 @@ fn shutdown_leaves_nothing_behind() {
         .into_iter()
         .map(|(what, input, mode, to)| (what, row(&rig, &[input], mode, to)))
         .collect();
-    let outputs: Vec<PathBuf> = rows
-        .iter()
-        .map(|(_, id)| planned_output(&rig, *id))
-        .collect();
     rig.runner.start();
+    // Rows run side by side: the archive finishes while the video still
+    // runs, so quitting meets one row done and one cut short.
+    wait_until("the archive", 30, || {
+        matches!(state(&rig, rows[2].1), RowState::Done { .. })
+    });
     wait_until("the video", 30, || {
         matches!(
             state(&rig, rows[0].1),
@@ -603,14 +604,48 @@ fn shutdown_leaves_nothing_behind() {
         )
     });
     rig.runner.shutdown();
-    for ((what, id), output) in rows.iter().zip(&outputs) {
-        let s = state(&rig, *id);
+    // The PDF's pages and the archive both want the name `many`: whichever
+    // runs first takes it and the other gets `many (1)`. So each row is
+    // judged by how it ended, not by the name it was planned with.
+    let ended: Vec<(&str, RowState, Option<PathBuf>)> = rows
+        .iter()
+        .map(|(what, id)| {
+            let v = rig.queue.lock().unwrap().get(*id).unwrap();
+            (*what, v.state, v.output)
+        })
+        .collect();
+    let written: Vec<PathBuf> = ended
+        .iter()
+        .filter_map(|(_, s, _)| match s {
+            RowState::Done { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    for (what, s, output) in &ended {
         assert!(
             !matches!(s, RowState::Running { .. }),
             "{what} still running"
         );
-        assert!(!output.exists(), "{what}: {} was left", output.display());
+        match s {
+            RowState::Done { output, .. } => {
+                assert!(output.exists(), "{what} finished but its output is gone")
+            }
+            _ => {
+                if let Some(o) = output {
+                    assert!(
+                        !o.exists() || written.contains(o),
+                        "{what}: {} was left by a row that ended {s:?}",
+                        o.display()
+                    );
+                }
+            }
+        }
     }
+    assert!(
+        matches!(ended[0].1, RowState::Cancelled),
+        "the video wasn't cut short: {:?}",
+        ended[0].1
+    );
     assert!(no_partials(&rig.dir.0));
     assert!(no_ffmpeg_child());
 }
