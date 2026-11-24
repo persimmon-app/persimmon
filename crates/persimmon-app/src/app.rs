@@ -15,6 +15,8 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
+mod watching;
+
 use crate::history::{Batch, Filter, History, Source, SystemTrash, UndoReport, undoable};
 use crate::presets::{Preset, Presets, command, kinds, presets_dir};
 use crate::queue::{AddNote, Queue, QueueMode, Recipe, RowId, RowView, SetTarget, kinds_phrase};
@@ -22,6 +24,8 @@ use crate::runner::Runner;
 use crate::settings::{
     OutputMode, Settings, SettingsView, load, output_policy, save, settings_path, view,
 };
+use crate::watch::rule::{Rules, rules_path};
+use crate::watch::runner::WatchRunner;
 
 /// The app's state, shared by every command.
 pub struct AppState {
@@ -31,6 +35,10 @@ pub struct AppState {
     settings_file: PathBuf,
     presets: Mutex<Presets>,
     history: Mutex<History>,
+    rules: Mutex<Rules>,
+    watch: WatchRunner,
+    /// `~/Library/Application Support/Persimmon`.
+    data: PathBuf,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -54,6 +62,14 @@ impl AppState {
             .map(Recipe::Preset)
             .unwrap_or(Recipe::Mode(mode))
     }
+}
+
+/// The settings as the windows see them, with start at login read from
+/// macOS.
+fn settings_view(settings: &Settings) -> SettingsView {
+    let mut v = view(settings);
+    v.start_at_login = persimmon_mac::login::enabled();
+    v
 }
 
 fn emit_rows(app: &AppHandle, rows: &[RowView]) {
@@ -81,7 +97,7 @@ fn change_settings(
         let rows = state.queue().set_policy(output_policy(&new));
         emit_rows(app, &rows);
     }
-    let shown = view(&new);
+    let shown = settings_view(&new);
     let _ = app.emit("settings", &shown);
     shown
 }
@@ -264,7 +280,7 @@ fn reveal_row(state: State<'_, AppState>, id: RowId) -> Option<String> {
 
 #[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> SettingsView {
-    view(&lock(&state.settings))
+    settings_view(&lock(&state.settings))
 }
 
 #[tauri::command]
@@ -296,7 +312,7 @@ async fn choose_output_folder(
 ) -> Result<SettingsView, String> {
     Ok(match pick_folder(&app) {
         Some(folder) => change_settings(&app, &state, |s| s.output = OutputMode::Folder { folder }),
-        None => view(&lock(&state.settings)),
+        None => settings_view(&lock(&state.settings)),
     })
 }
 
@@ -307,7 +323,7 @@ async fn choose_fallback_folder(
 ) -> Result<SettingsView, String> {
     Ok(match pick_folder(&app) {
         Some(folder) => change_settings(&app, &state, |s| s.fallback = folder),
-        None => view(&lock(&state.settings)),
+        None => settings_view(&lock(&state.settings)),
     })
 }
 
@@ -346,7 +362,9 @@ fn open_settings(app: AppHandle) {
 async fn quit_now(app: AppHandle) -> Result<(), String> {
     let handle = app.clone();
     std::thread::spawn(move || {
-        handle.state::<AppState>().runner.shutdown();
+        let state = handle.state::<AppState>();
+        state.watch.shutdown();
+        state.runner.shutdown();
         handle.exit(0);
     });
     Ok(())
@@ -419,11 +437,15 @@ fn save_preset(
     state: State<'_, AppState>,
     preset: Preset,
 ) -> Result<Vec<PresetView>, String> {
-    let views = {
+    let (views, id) = {
         let mut presets = lock(&state.presets);
-        presets.save(preset)?;
-        preset_views(&presets)
+        let saved = presets.save(preset)?;
+        (preset_views(&presets), saved.id)
     };
+    // Rules using it take its new options.
+    if watching::used_by(&state, &id).is_some() {
+        watching::apply(&state);
+    }
     let _ = app.emit("presets", &views);
     Ok(views)
 }
@@ -434,9 +456,10 @@ fn delete_preset(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<PresetView>, String> {
+    let used = watching::used_by(&state, &id);
     let views = {
         let mut presets = lock(&state.presets);
-        presets.delete(&id)?;
+        presets.delete_unused(&id, &|_| used.clone())?;
         preset_views(&presets)
     };
     if lock(&state.settings).preset.as_deref() == Some(id.as_str()) {
@@ -453,12 +476,15 @@ struct BatchView {
     #[serde(flatten)]
     batch: Batch,
     undoable: bool,
+    /// A watch batch's folder as shown: `~/Inbox`.
+    folder_label: Option<String>,
 }
 
 fn batch_view(b: &Batch) -> BatchView {
     BatchView {
         batch: b.clone(),
         undoable: undoable(b),
+        folder_label: b.folder.as_deref().map(crate::queue::tilde),
     }
 }
 
@@ -475,7 +501,11 @@ fn history(state: State<'_, AppState>, text: String, filter: Filter) -> Vec<Batc
 fn undo_batch(app: AppHandle, state: State<'_, AppState>, id: String) -> UndoReport {
     let (report, batch) = {
         let mut h = lock(&state.history);
-        let report = h.undo(&id, &SystemTrash);
+        // A moved original goes into its rule's record before it comes
+        // back, so the rule doesn't take it for a new file.
+        let report = h.undo_restoring(&id, &SystemTrash, &mut |rule, from, stamp| {
+            state.watch.mark_restored(rule, from, stamp)
+        });
         (report, h.get(&id).cloned())
     };
     if let Some(b) = batch {
@@ -716,8 +746,8 @@ enum QuitAction {
     Exit,
 }
 
-fn quit_action(busy: bool) -> QuitAction {
-    if busy {
+fn quit_action(running: usize, rules: usize) -> QuitAction {
+    if running > 0 || rules > 0 {
         QuitAction::Confirm
     } else {
         QuitAction::Exit
@@ -728,14 +758,21 @@ fn quit_action(busy: bool) -> QuitAction {
 /// `terminate:`, which never reaches Tauri's ExitRequested, so it could
 /// neither ask nor cancel the running row.
 fn quit_requested(app: &AppHandle) {
-    match quit_action(app.state::<AppState>().runner.running() > 0) {
+    let state = app.state::<AppState>();
+    let (running, rules) = (state.runner.running(), state.watch.active());
+    match quit_action(running, rules) {
         QuitAction::Confirm => {
             // The question is asked in the main window, so show it.
             show_main(app);
-            let _ = app.emit("confirm-quit", ());
+            let _ = app.emit("confirm-quit", quit_question(running, rules));
         }
         QuitAction::Exit => app.exit(0),
     }
+}
+
+/// What the window's quit question counts.
+fn quit_question(running: usize, rules: usize) -> serde_json::Value {
+    serde_json::json!({ "running": running, "rules": rules })
 }
 
 /// The menu bar: the standard items, the app's own Quit and Settings, and
@@ -846,6 +883,8 @@ pub fn run() {
                 let _ = lock(&state.history).append(batch.clone());
                 let _ = handle.emit("history", batch_view(&batch));
             });
+            let watch = watching::runner(app.handle(), &runner, &data);
+            let rules = Rules::open(&rules_path(&data));
             app.manage(AppState {
                 queue,
                 runner,
@@ -853,7 +892,17 @@ pub fn run() {
                 settings_file: file,
                 presets: Mutex::new(presets),
                 history: Mutex::new(history),
+                rules: Mutex::new(rules),
+                watch,
+                data,
             });
+            // Rules run whether or not a window is open (D2).
+            watching::apply(&app.state::<AppState>());
+            // Opened at login: no window, rules running (D2). Otherwise
+            // the main window, which starts hidden so this can choose.
+            if !persimmon_mac::login::launched_at_login() {
+                show_main(app.handle());
+            }
             let pending = std::mem::take(&mut *lock(&app.state::<Pending>().0));
             if !pending.is_empty() {
                 let state = app.state::<AppState>();
@@ -934,7 +983,21 @@ pub fn run() {
             set_drop_window_at_launch,
             open_licences,
             open_sources,
-            retry_item
+            retry_item,
+            watching::watch_rules,
+            watching::watch_targets,
+            watching::watch_patterns,
+            watching::pick_watch_folder,
+            watching::new_rule,
+            watching::rule_command,
+            watching::save_rule,
+            watching::toggle_rule,
+            watching::remove_rule,
+            watching::scan_rule,
+            watching::copy_command,
+            watching::set_start_at_login,
+            watching::notifications,
+            watching::open_notification_settings
         ])
         .build(tauri::generate_context!())
         .expect("Persimmon couldn't start");
@@ -964,17 +1027,23 @@ pub fn run() {
         // through.
         RunEvent::ExitRequested {
             api, code: None, ..
-        } if app
-            .try_state::<AppState>()
-            .is_some_and(|s| s.runner.running() > 0) =>
+        } if app.try_state::<AppState>().is_some_and(|s| {
+            quit_action(s.runner.running(), s.watch.active()) == QuitAction::Confirm
+        }) =>
         {
             api.prevent_exit();
-            let _ = app.emit("confirm-quit", ());
+            if let Some(s) = app.try_state::<AppState>() {
+                let _ = app.emit(
+                    "confirm-quit",
+                    quit_question(s.runner.running(), s.watch.active()),
+                );
+            }
         }
         // Every way out, Dock Quit and logout included (they can't ask):
         // cancel the running row, so no .part and no FFmpeg is left.
         RunEvent::Exit => {
             if let Some(state) = app.try_state::<AppState>() {
+                state.watch.shutdown();
                 state.runner.shutdown();
             }
         }
@@ -1041,9 +1110,11 @@ mod tests {
     }
 
     #[test]
-    fn quit_asks_only_while_a_row_runs() {
-        assert_eq!(quit_action(true), QuitAction::Confirm);
-        assert_eq!(quit_action(false), QuitAction::Exit);
+    fn quit_asks_with_rules_active_or_rows_running() {
+        assert_eq!(quit_action(0, 0), QuitAction::Exit);
+        assert_eq!(quit_action(1, 0), QuitAction::Confirm);
+        assert_eq!(quit_action(0, 1), QuitAction::Confirm);
+        assert_eq!(quit_action(2, 3), QuitAction::Confirm);
     }
 
     fn permissions(file: &str) -> serde_json::Value {
@@ -1065,29 +1136,43 @@ mod tests {
                 "allow-apply-preset",
                 "allow-cancel-row",
                 "allow-clear-history",
+                "allow-copy-command",
                 "allow-engine-version",
                 "allow-get-settings",
                 "allow-history",
+                "allow-new-rule",
+                "allow-notifications",
+                "allow-open-notification-settings",
                 "allow-open-settings",
                 "allow-pick-files",
+                "allow-pick-watch-folder",
                 "allow-presets",
                 "allow-queue-rows",
                 "allow-quit-now",
                 "allow-remove-input",
                 "allow-remove-rows",
+                "allow-remove-rule",
                 "allow-reorder-input",
                 "allow-retry-item",
                 "allow-retry-row",
                 "allow-reveal-path",
                 "allow-reveal-row",
+                "allow-rule-command",
+                "allow-save-rule",
+                "allow-scan-rule",
                 "allow-set-mode",
+                "allow-set-start-at-login",
                 "allow-set-target",
                 "allow-start",
                 "allow-targets",
                 "allow-toggle-drop-window",
+                "allow-toggle-rule",
                 "allow-undo-batch",
                 "allow-undo-last",
                 "allow-use-preset",
+                "allow-watch-patterns",
+                "allow-watch-rules",
+                "allow-watch-targets",
                 "core:event:allow-listen",
                 "core:event:allow-unlisten"
             ])
@@ -1129,6 +1214,7 @@ mod tests {
                 "allow-save-preset",
                 "allow-set-drop-window-at-launch",
                 "allow-set-output-beside",
+                "allow-set-start-at-login",
                 "core:event:allow-listen",
                 "core:event:allow-unlisten"
             ])

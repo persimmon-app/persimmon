@@ -44,6 +44,20 @@ fn main() {
             "open_licences",
             "open_sources",
             "retry_item",
+            "watch_rules",
+            "watch_targets",
+            "watch_patterns",
+            "pick_watch_folder",
+            "new_rule",
+            "rule_command",
+            "save_rule",
+            "toggle_rule",
+            "remove_rule",
+            "scan_rule",
+            "copy_command",
+            "set_start_at_login",
+            "notifications",
+            "open_notification_settings",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("tauri-build failed");

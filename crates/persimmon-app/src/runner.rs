@@ -178,6 +178,11 @@ impl Runner {
         &self.inner.pool
     }
 
+    /// The engine rows run on, for work that shares it (watch folders).
+    pub fn engine(&self) -> Arc<dyn Run + Send + Sync> {
+        Arc::clone(&self.inner.engine)
+    }
+
     /// The output names held by running rows, shared with watch rules so
     /// a row and a watch output never share a name.
     pub fn claims(&self) -> Claims {

@@ -31,6 +31,9 @@ pub struct Settings {
     pub drop_window: bool,
     /// The active preset's id: new files use it instead of the plain mode.
     pub preset: Option<String>,
+    /// Whether notifications were asked for: once, when the first watch
+    /// rule is saved (spec D9).
+    pub notifications_asked: bool,
 }
 
 impl Default for Settings {
@@ -44,6 +47,7 @@ impl Default for Settings {
             mode: QueueMode::Convert,
             drop_window: false,
             preset: None,
+            notifications_asked: false,
         }
     }
 }
@@ -111,6 +115,8 @@ pub struct SettingsView {
     /// "beside original", or the output folder.
     pub output_label: String,
     pub fallback_label: String,
+    /// Whether Persimmon opens at login: read from macOS, never stored.
+    pub start_at_login: bool,
 }
 
 pub fn view(settings: &Settings) -> SettingsView {
@@ -120,6 +126,7 @@ pub fn view(settings: &Settings) -> SettingsView {
             OutputMode::Folder { folder } => crate::queue::tilde(folder),
         },
         fallback_label: crate::queue::tilde(&settings.fallback),
+        start_at_login: false,
         settings: settings.clone(),
     }
 }
@@ -178,6 +185,7 @@ mod tests {
             mode: QueueMode::Combine,
             drop_window: true,
             preset: Some("web-image".into()),
+            notifications_asked: true,
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);

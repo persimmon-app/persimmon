@@ -65,6 +65,7 @@ export const onPresets = (f: (p: PresetView[]) => void): Promise<UnlistenFn> => 
 
 // Watch folders (spec D2, D9; app.rs's watch commands).
 import type { NotificationsState, Rule, RuleDraftView, RuleView } from "./types";
+import { midnight } from "./watch";
 
 /** Every rule as the view shows it; `since` is local midnight, for "today". */
 export const watchRules = (since: number) => invoke<RuleView[]>("watch_rules", { since });
@@ -75,9 +76,9 @@ export const pickWatchFolder = () => invoke<string | null>("pick_watch_folder");
 export const newRule = (folder: string, target: FormatId) => invoke<RuleDraftView>("new_rule", { folder, target });
 export const ruleCommand = (rule: Rule) => invoke<string>("rule_command", { rule });
 /** Rejects with a Shown when the rule is refused. */
-export const saveRule = (rule: Rule, existing: boolean) => invoke<RuleView[]>("save_rule", { rule, existing });
-export const toggleRule = (id: string, on: boolean) => invoke<RuleView[]>("toggle_rule", { id, on });
-export const removeRule = (id: string) => invoke<RuleView[]>("remove_rule", { id });
+export const saveRule = (rule: Rule, existing: boolean) => invoke<RuleView[]>("save_rule", { rule, existing, since: midnight(new Date()) });
+export const toggleRule = (id: string, on: boolean) => invoke<RuleView[]>("toggle_rule", { id, on, since: midnight(new Date()) });
+export const removeRule = (id: string) => invoke<RuleView[]>("remove_rule", { id, since: midnight(new Date()) });
 export const scanRule = (id: string) => invoke<void>("scan_rule", { id });
 export const copyCommand = (id: string) => invoke<boolean>("copy_command", { id });
 /** Rejects with the reason when macOS refuses. */

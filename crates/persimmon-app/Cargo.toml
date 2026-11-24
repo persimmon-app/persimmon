@@ -21,6 +21,8 @@ rar = ["persimmon-core/rar"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 persimmon-core = { path = "../persimmon-core", default-features = false, features = ["serde"] }
+# The native layer: start at login, notifications, the clipboard.
+persimmon-mac = { path = "../persimmon-mac" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.12", features = [] }

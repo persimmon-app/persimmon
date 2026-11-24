@@ -369,6 +369,22 @@ impl Presets {
         Ok(p)
     }
 
+    /// Delete a preset unless a watch rule uses it: `used_by` names that
+    /// rule's folder.
+    pub fn delete_unused(
+        &mut self,
+        id: &str,
+        used_by: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<(), String> {
+        if let (Some(p), Some(folder)) = (self.get(id), used_by(id)) {
+            return Err(format!(
+                "{} is used by the watch rule for {folder}. Change that rule's preset first.",
+                p.name
+            ));
+        }
+        self.delete(id)
+    }
+
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
         match self.get(id) {
             None => Ok(()),
@@ -491,6 +507,24 @@ mod tests {
         }
         assert!(!d.0.join("x.json").exists());
         assert!(!d.0.join("presets/a").exists());
+    }
+
+    #[test]
+    fn a_preset_a_rule_uses_cant_be_deleted() {
+        let d = Dir::new("used");
+        let mut presets = Presets::load(&d.0.join("presets"));
+        let p = presets.save(mine("Small web")).unwrap();
+        let used = |id: &str| (id == p.id).then(|| "~/Inbox".to_string());
+        assert_eq!(
+            presets.delete_unused(&p.id, &used),
+            Err(
+                "Small web is used by the watch rule for ~/Inbox. Change that rule's preset first."
+                    .into()
+            )
+        );
+        assert!(presets.get(&p.id).is_some());
+        presets.delete_unused(&p.id, &|_| None).unwrap();
+        assert!(presets.get(&p.id).is_none());
     }
 
     #[test]

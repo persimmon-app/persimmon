@@ -17,6 +17,7 @@
     "allow-save-preset",
     "allow-set-drop-window-at-launch",
     "allow-set-output-beside",
+    "allow-set-start-at-login",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

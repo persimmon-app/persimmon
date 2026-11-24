@@ -179,6 +179,7 @@ impl WatchRunner {
     /// (re)start; disabled, removed or changed ones stop first, their open
     /// burst becoming a batch.
     pub fn apply(&self, rules: Vec<Running>) {
+        let mut ended = Vec::new();
         let mut runs = lock(&self.shared.runs);
         let ids: Vec<String> = runs.keys().cloned().collect();
         for id in ids {
@@ -188,7 +189,7 @@ impl WatchRunner {
                     && runs.get(&id).is_some_and(|run| run.shared.running == *r)
             });
             if !keep && let Some(run) = runs.remove(&id) {
-                self.shared.stop_run(run);
+                ended.extend(self.shared.stop_run(run));
             }
         }
         lock(&self.shared.statuses).retain(|id, _| rules.iter().any(|r| r.rule.id == *id));
@@ -201,6 +202,11 @@ impl WatchRunner {
                 let id = run.shared.running.rule.id.clone();
                 runs.insert(id, run);
             }
+        }
+        drop(runs);
+        // Handed on with no lock held: History takes its own lock.
+        for batch in ended {
+            self.shared.deliver(batch);
         }
     }
 
@@ -227,11 +233,16 @@ impl WatchRunner {
     /// Look at the rule's folder again now.
     pub fn scan(&self, id: &str) {
         let mut runs = lock(&self.shared.runs);
-        if let Some(run) = runs.remove(id) {
-            let running = run.shared.running.clone();
-            self.shared.stop_run(run);
-            let run = self.shared.start_run(running);
-            runs.insert(id.to_string(), run);
+        let Some(run) = runs.remove(id) else {
+            return;
+        };
+        let running = run.shared.running.clone();
+        let ended = self.shared.stop_run(run);
+        let run = self.shared.start_run(running);
+        runs.insert(id.to_string(), run);
+        drop(runs);
+        if let Some(batch) = ended {
+            self.shared.deliver(batch);
         }
     }
 
@@ -274,7 +285,9 @@ impl WatchRunner {
             .into_values()
             .collect();
         for run in runs {
-            self.shared.stop_run(run);
+            if let Some(batch) = self.shared.stop_run(run) {
+                self.shared.deliver(batch);
+            }
         }
     }
 }
@@ -364,17 +377,16 @@ impl Shared {
         }
     }
 
-    fn stop_run(&self, run: RuleRun) {
+    /// Stop a rule; its open burst comes back as a batch, for the caller
+    /// to deliver once it holds no lock.
+    fn stop_run(&self, run: RuleRun) -> Option<Batch> {
         run.shared.cancel.cancel();
         run.shared.wake.notify_all();
         for t in run.threads {
             let _ = t.join();
         }
-        let batch = lock(&run.shared.bursts).close();
-        if let Some(batch) = batch {
-            self.deliver(batch);
-        }
         let _ = lock(&run.shared.record).save();
+        lock(&run.shared.bursts).close()
     }
 
     /// A finished burst: into History, and its summary notification.
@@ -768,6 +780,13 @@ mod tests {
 
         fn runner(&self) -> WatchRunner {
             let batches = Arc::clone(&self.batches);
+            self.runner_with(Box::new(move |b| batches.lock().unwrap().push(b)))
+        }
+
+        fn runner_with(
+            &self,
+            on_batch: Box<dyn Fn(crate::history::Batch) + Send + Sync>,
+        ) -> WatchRunner {
             let statuses = Arc::clone(&self.statuses);
             WatchRunner::new(Deps {
                 reg: Registry::builtin(),
@@ -777,7 +796,7 @@ mod tests {
                 data: self.dir.join("data"),
                 timing: fast(),
                 quiet: Duration::from_millis(400),
-                on_batch: Box::new(move |b| batches.lock().unwrap().push(b)),
+                on_batch,
                 on_status: Box::new(move |s| statuses.lock().unwrap().push(s)),
                 notifier: self.notes.clone(),
             })
@@ -1160,5 +1179,45 @@ mod tests {
         assert!(r.results().is_empty());
         w.apply(vec![]);
         assert!(w.statuses().is_empty());
+    }
+
+    /// History takes its own lock in `on_batch`, and an undo holds it while
+    /// telling the runner about a restored original: stopping a rule must
+    /// hand its batch on with no runner lock held, or the two deadlock.
+    #[test]
+    fn a_stopped_rules_batch_is_handed_on_with_no_lock_held() {
+        let r = rig("no-deadlock");
+        let history = Arc::new(Mutex::new(()));
+        let w = {
+            let history = Arc::clone(&history);
+            Arc::new(r.runner_with(Box::new(move |_| drop(history.lock().unwrap()))))
+        };
+        let rule = r.rule();
+        w.apply(vec![r.running(&rule)]);
+        let a = r.png("a.png");
+        wait("a converted", || r.results() == ["a.webp"]);
+        let held = history.lock().unwrap();
+        let stopper = {
+            let w = Arc::clone(&w);
+            std::thread::spawn(move || w.apply(vec![]))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let w = Arc::clone(&w);
+            let stamp =
+                crate::watch::record::FileStamp::of(&std::fs::metadata(&a).unwrap()).unwrap();
+            std::thread::spawn(move || {
+                w.mark_restored("r1", &a, stamp);
+                let _ = tx.send(());
+            });
+        }
+        let done = rx.recv_timeout(Duration::from_secs(5));
+        drop(held);
+        stopper.join().unwrap();
+        assert!(
+            done.is_ok(),
+            "mark_restored waited on a runner lock held while delivering"
+        );
     }
 }

@@ -8,3 +8,4 @@ pub mod burst;
 pub mod record;
 pub mod rule;
 pub mod runner;
+pub mod views;
