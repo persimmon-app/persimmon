@@ -16,6 +16,10 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - Notifications for watch folders: one summary when a rule's files stop arriving, such as "~/Inbox — 23 of 24 converted, 1 failed", with Show files and Undo. "Notify on every file" adds one per file. Persimmon asks for permission when you save your first rule, and when notifications are off, History still has every result.
 - Watch batches in History, tagged WATCH. Undoing one moves its results to the Trash and puts each moved original back where it was, unless something else is there now or the original changed, and it names each file it left. Undo Last Batch (⌥⌘Z) never undoes a watch batch: it means the newest batch you started.
 - Quitting with active watch rules asks first: "Watch folders stop while Persimmon is closed. Quit anyway?"
+- The drop window floats over full-screen apps and on every Space, and dropping on it never takes focus from the app you're dragging out of.
+- A photo or video dragged from Photos gives its original, in the drop window and the main window. The row says "Getting the original from Photos…", then "Downloading from iCloud…" while an iCloud-only original comes down, with Cancel. The converted file goes to your output folder, or `~/Downloads/Persimmon`, never next to the original inside the library.
+- Convert with Persimmon and Open in Persimmon in Finder's right-click menu, under Services, for any file or folder. Open adds the files and brings the window forward; Convert converts them at once. Conversions started from Finder are tagged FINDER in History, and a notification says when one fails while Persimmon isn't in front.
+- Settings → Finder & menus says where the two Services are and how to show or hide them.
 
 ### Added: in the engine (`persimmon-core`)
 
