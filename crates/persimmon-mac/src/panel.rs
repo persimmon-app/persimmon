@@ -72,8 +72,15 @@ pub fn adopt_as_panel(window: &impl HasWindowHandle) -> Result<(), String> {
     // to it (its drop handling, its scripts, any overlay already on it).
     // The window gets an empty view in its place: Tauri expects every
     // window to have one.
-    panel.setContentView(Some(&content));
+    // Detached first: had the panel taken it while the window still held
+    // it, the window's swap would pull it back out of the panel.
     window.setContentView(Some(&NSView::new(mtm)));
+    panel.setContentView(Some(&content));
+    let moved = panel.contentView().is_some_and(|v| v == content)
+        && content.window().is_some_and(|w| *w == **panel);
+    if !moved {
+        return Err("the window's contents didn't move into the panel".into());
+    }
     panel.setFrame_display(frame, false);
     panel.setBackgroundColor(Some(&window.backgroundColor()));
     panel.setOpaque(false);
