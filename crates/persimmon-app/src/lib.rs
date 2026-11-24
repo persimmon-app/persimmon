@@ -32,3 +32,5 @@ pub mod reveal;
 pub mod settings;
 #[cfg(target_os = "macos")]
 pub mod watch;
+#[cfg(target_os = "macos")]
+pub mod wheel;
