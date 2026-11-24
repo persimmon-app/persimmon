@@ -3089,6 +3089,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-service-management",
  "objc2-user-notifications",
+ "raw-window-handle",
 ]
 
 [[package]]

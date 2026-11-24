@@ -14,6 +14,7 @@ use objc2_foundation::NSString;
 
 pub mod login;
 pub mod notes;
+pub mod panel;
 
 /// Whether this process is the active app: the one whose window is in
 /// front and takes the keyboard.
