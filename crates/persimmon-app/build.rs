@@ -58,6 +58,7 @@ fn main() {
             "set_start_at_login",
             "notifications",
             "open_notification_settings",
+            "open_keyboard_shortcuts",
         ]);
         tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
             .expect("tauri-build failed");

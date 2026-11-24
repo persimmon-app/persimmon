@@ -11,6 +11,7 @@
     "allow-delete-preset",
     "allow-engines",
     "allow-get-settings",
+    "allow-open-keyboard-shortcuts",
     "allow-open-licences",
     "allow-open-sources",
     "allow-presets",

@@ -733,6 +733,16 @@ fn open_licences(app: AppHandle) -> bool {
 
 /// Open this version's release page, which carries the sources, in the
 /// browser. The browser fetches it; the app holds no network code (DD-11).
+/// System Settings → Keyboard → Keyboard Shortcuts, where Finder's
+/// Services are shown or hidden (spec D3).
+#[tauri::command]
+fn open_keyboard_shortcuts() -> bool {
+    std::process::Command::new("/usr/bin/open")
+        .arg("x-apple.systempreferences:com.apple.Keyboard-Settings.extension")
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 #[tauri::command]
 fn open_sources() -> bool {
     std::process::Command::new("/usr/bin/open")
@@ -1020,6 +1030,7 @@ pub fn run() {
             set_drop_window_at_launch,
             open_licences,
             open_sources,
+            open_keyboard_shortcuts,
             retry_item,
             watching::watch_rules,
             watching::watch_targets,
@@ -1264,6 +1275,7 @@ mod tests {
                 "allow-delete-preset",
                 "allow-engines",
                 "allow-get-settings",
+                "allow-open-keyboard-shortcuts",
                 "allow-open-licences",
                 "allow-open-sources",
                 "allow-presets",

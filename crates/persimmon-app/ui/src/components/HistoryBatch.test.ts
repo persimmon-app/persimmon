@@ -56,4 +56,10 @@ describe("HistoryBatch", () => {
     render(HistoryBatch, { batch: batch({ id: "a" }), onReveal: vi.fn(), onUndo: vi.fn(), open: true });
     expect(screen.getByText("hero.png → hero.webp")).toBeTruthy();
   });
+
+  it("tags a Finder batch and offers its undo", () => {
+    render(HistoryBatch, { batch: batch({ id: "f", source: "finder" }), onReveal: vi.fn(), onUndo: vi.fn() });
+    expect(screen.getByText("FINDER")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Undo batch/ })).toBeTruthy();
+  });
 });

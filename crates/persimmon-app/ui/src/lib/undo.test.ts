@@ -35,4 +35,8 @@ describe("undo", () => {
     expect(undoMessage({ trashed: 1, restored: 1, skipped: [] })).toBe("Moved 1 file to the Trash and put 1 original back");
     expect(undoMessage({ trashed: 0, restored: 0, skipped: [] })).toBe("Moved 0 files to the Trash");
   });
+
+  it("counts a Finder batch as one you started", () => {
+    expect(lastUndoable([batch({ id: "f", source: "finder", undoable: true }), batch({ id: "w", undoable: false })])).toBe(true);
+  });
 });

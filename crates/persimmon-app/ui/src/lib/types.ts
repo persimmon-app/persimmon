@@ -19,7 +19,9 @@ export type RowState =
   | { state: "done"; outputSize: number | null }
   | { state: "notSmaller" }
   | { state: "failed"; error: Shown }
-  | { state: "cancelled" };
+  | { state: "cancelled" }
+  /** A file still coming from Photos; `slow` once it's downloading from iCloud. */
+  | { state: "receiving"; slow: boolean };
 
 export type RowView = {
   id: RowId;
@@ -107,7 +109,7 @@ export interface BatchView {
   id: string;
   started: number;
   finished: number;
-  source: "window" | "drop" | "opened" | "watch";
+  source: "window" | "drop" | "opened" | "watch" | "finder";
   /** A watch batch's rule and folder, and the folder as shown (~/Inbox). */
   rule?: string | null;
   folder?: string | null;

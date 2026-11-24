@@ -109,4 +109,20 @@ describe("QueueRow", () => {
     show({ ...base, from: "zip", to: null, op: "extract", state: "queued" } as unknown as RowView);
     expect(screen.getByText("EXTRACT")).toBeTruthy();
   });
+
+  it("shows a file still coming from Photos, with Cancel", async () => {
+    const { container, onCancel } = show(row({ state: "receiving", slow: false, name: "IMG_0001.HEIC", inputs: [], path: "", size: 0, from: null, to: null }));
+    expect(screen.getByText("Getting the original from Photos…")).toBeTruthy();
+    expect(container.querySelector("[role=progressbar]")).toBeNull();
+    expect(screen.queryByText("Retry")).toBeNull();
+    expect(container.querySelector(".running")).toBeNull();
+    await fireEvent.click(screen.getByLabelText("Cancel IMG_0001.HEIC"));
+    expect(onCancel).toHaveBeenCalledWith(1);
+  });
+
+  it("says when it's downloading from iCloud", () => {
+    show(row({ state: "receiving", slow: true, name: "IMG_0001.HEIC", inputs: [], path: "", size: 0, from: null, to: null }));
+    expect(screen.getByText("Downloading from iCloud…")).toBeTruthy();
+    expect(screen.getByLabelText("Cancel IMG_0001.HEIC")).toBeTruthy();
+  });
 });

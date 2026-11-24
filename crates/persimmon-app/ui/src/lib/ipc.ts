@@ -89,3 +89,6 @@ export const openNotificationSettings = () => invoke<boolean>("open_notification
 export const onWatch = (f: () => void): Promise<UnlistenFn> => listen("watch", () => f());
 /** A notification's Undo: show this batch in History. */
 export const onShowBatch = (f: (id: string) => void): Promise<UnlistenFn> => listen<string>("show-batch", (e) => f(e.payload));
+
+/** System Settings → Keyboard → Keyboard Shortcuts, where Services are shown or hidden. */
+export const openKeyboardShortcuts = () => invoke<boolean>("open_keyboard_shortcuts");

@@ -7,14 +7,15 @@
   import PresetsPane from "./components/PresetsPane.svelte";
   import EnginesPane from "./components/EnginesPane.svelte";
   import PrivacyPane from "./components/PrivacyPane.svelte";
+  import FinderPane from "./components/FinderPane.svelte";
   import AboutPane from "./components/AboutPane.svelte";
   import * as ipc from "./lib/ipc";
   import type { EnginesView, PresetView, SettingsView } from "./lib/types";
 
-  type Pane = "general" | "output" | "presets" | "engines" | "privacy" | "about";
+  type Pane = "general" | "output" | "presets" | "engines" | "finder" | "privacy" | "about";
   const panes: { id: Pane; label: string }[] = [
     { id: "general", label: "General" }, { id: "output", label: "Output" }, { id: "presets", label: "Presets" },
-    { id: "engines", label: "Engines" }, { id: "privacy", label: "Privacy" }, { id: "about", label: "About & licences" },
+    { id: "engines", label: "Engines" }, { id: "finder", label: "Finder & menus" }, { id: "privacy", label: "Privacy" }, { id: "about", label: "About & licences" },
   ];
   let pane: Pane = $state("general");
   let settings: SettingsView | null = $state(null);
@@ -57,6 +58,8 @@
       <PresetsPane {presets} onSave={savePreset} onDelete={deletePreset} />
     {:else if pane === "engines"}
       <EnginesPane {engines} />
+    {:else if pane === "finder"}
+      <FinderPane onShortcuts={() => ipc.openKeyboardShortcuts()} />
     {:else if pane === "privacy"}
       <PrivacyPane />
     {:else if pane === "about"}

@@ -26,12 +26,15 @@
   const culprit = $derived(
     row.op === "merge" && row.state === "failed" && row.error.file ? `${row.error.file.split("/").pop()}: ` : "",
   );
+  /** A file still coming from Photos (spec D5). */
+  const waiting = $derived(row.state === "receiving" && row.slow ? "Downloading from iCloud…" : "Getting the original from Photos…");
   /** What VoiceOver reads for the row: its state and why (DD-17). */
   const label = $derived.by(() => {
     switch (row.state) {
       case "running": return `${row.name}, running, ${percent === null ? "working" : `${percent}%`}`;
       case "failed": return `${row.name}, failed: ${culprit}${row.error.reason}.${row.error.fix ? ` ${row.error.fix}` : ""}`;
       case "notSmaller": return `${row.name}, already small`;
+      case "receiving": return `${row.name}, ${waiting}`;
       default: return `${row.name}, ${row.state}`;
     }
   });
@@ -77,10 +80,11 @@
     {:else if row.state === "done"}<Icon name="done" /> Done
     {:else if row.state === "notSmaller"}<Icon name="done" /> Already small
     {:else if row.state === "failed"}<Icon name="error" /> Failed
+    {:else if row.state === "receiving"}<span class="waiting">{waiting}</span>
     {:else}<Icon name="stop" /> Cancelled{/if}
   </span>
   <span class="action">
-    {#if row.state === "running"}
+    {#if row.state === "running" || row.state === "receiving"}
       <button class="icon" tabindex={tab} aria-label="Cancel {row.name}" title="Cancel (⌘.)" onclick={(e) => { e.stopPropagation(); onCancel(row.id); }}><Icon name="close" size={14} /></button>
     {:else if row.state === "done"}
       <button class="text" tabindex={tab} aria-label="Reveal {outputName} in Finder" title="Reveal in Finder (⇧⌘R)" onclick={(e) => { e.stopPropagation(); onReveal(row.id); }}>Reveal</button>
@@ -159,4 +163,5 @@
   }
   button.icon { padding: 3px; display: flex; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .waiting { color: var(--muted); font-size: var(--text-meta); }
 </style>
