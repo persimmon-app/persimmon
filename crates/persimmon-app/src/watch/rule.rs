@@ -157,8 +157,9 @@ pub fn spec(rule: &Rule, presets: &Presets, reg: &Registry) -> (WatchSpec, Optio
     (spec, preset.map(|p| p.name.clone()))
 }
 
-const CANT_READ: &str = "Persimmon can't read this folder";
-const ALLOW: &str = "Allow Persimmon in System Settings → Privacy & Security → Files and Folders";
+pub(crate) const CANT_READ: &str = "Persimmon can't read this folder";
+pub(crate) const ALLOW: &str =
+    "Allow Persimmon in System Settings → Privacy & Security → Files and Folders";
 
 /// `spec`, after every refusal a rule can meet when saved. Reads the
 /// folder, so macOS asks for access now, while someone is there.

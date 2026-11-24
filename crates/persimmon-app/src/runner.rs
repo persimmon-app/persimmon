@@ -178,6 +178,12 @@ impl Runner {
         &self.inner.pool
     }
 
+    /// The output names held by running rows, shared with watch rules so
+    /// a row and a watch output never share a name.
+    pub fn claims(&self) -> Claims {
+        self.inner.claims.clone()
+    }
+
     /// How many rows are running.
     pub fn running(&self) -> usize {
         lock(&self.inner.state).running.len()
