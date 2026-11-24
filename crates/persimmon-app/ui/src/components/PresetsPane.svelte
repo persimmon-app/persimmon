@@ -13,7 +13,7 @@
   } = $props();
 
   const blank = (): Draft => ({ id: "", name: "", builtin: false, mode: "convert", target: "jpeg",
-    options: { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false } });
+    options: { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false, hardware: false } });
   let draft: Draft | null = $state(null);
   let error: string | null = $state(null);
   let copied = $state(false);
@@ -24,7 +24,14 @@
   };
   const builtins = $derived(presets.filter((p) => p.builtin));
   const mine = $derived(presets.filter((p) => !p.builtin));
-  const line = $derived(draft ? commandLine(draft) : "");
+  /** Hardware encoding makes H.264 and HEVC only: MP4 and MOV targets,
+   * and Compress, which keeps a video's codec (presets.rs check()). */
+  const hardwareFits = (d: Draft | null): boolean =>
+    !!d && (d.mode === "compress" || (d.mode === "convert" && (d.target === "mp4" || d.target === "mov")));
+  const canHardware = $derived(hardwareFits(draft));
+  /** The draft as it would be saved: a hidden hardware box counts as off. */
+  const effective = (d: Draft): Draft => ({ ...d, options: { ...d.options, hardware: d.options.hardware && canHardware } });
+  const line = $derived(draft ? commandLine(effective(draft)) : "");
 
   function edit(p: PresetView) {
     // A Combine or Extract preset saved before options were refused for
@@ -46,7 +53,7 @@
   async function save() {
     if (!draft) return;
     const before = new Set(presets.map((p) => p.id));
-    error = await onSave($state.snapshot(draft));
+    error = await onSave(effective($state.snapshot(draft)));
     if (error) return;
     await tick();
     const fresh = presets.find((p) => !before.has(p.id));
@@ -98,6 +105,9 @@
             oninput={(e) => { if (draft) { const v = e.currentTarget.valueAsNumber; draft.options.maxSize = Number.isFinite(v) && v > 0 ? v : null; } }} />
         </label>
         <label class="check"><input type="checkbox" bind:checked={draft.options.stripMetadata} /> Strip metadata</label>
+        {#if canHardware}
+          <label class="check"><input type="checkbox" bind:checked={draft.options.hardware} /> Use hardware encoder when available — faster, slightly larger files</label>
+        {/if}
         {/if}
         <div class="command">
           <code>{line}</code>

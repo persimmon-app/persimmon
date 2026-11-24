@@ -126,6 +126,9 @@ pub fn option_args(options: &JobOptions) -> String {
     if options.strip_metadata {
         line.push_str(" --strip-metadata");
     }
+    if options.hardware {
+        line.push_str(" --hardware");
+    }
     line
 }
 
@@ -175,7 +178,11 @@ pub fn check(p: &Preset) -> Result<(), String> {
     let reg = Registry::builtin();
     let o = &p.options;
     if !takes_options(p.mode)
-        && (o.quality.is_some() || o.preset.is_some() || o.max_size.is_some() || o.strip_metadata)
+        && (o.quality.is_some()
+            || o.preset.is_some()
+            || o.max_size.is_some()
+            || o.strip_metadata
+            || o.hardware)
     {
         return Err("Combining and extracting take no quality, size or metadata options".into());
     }
@@ -188,6 +195,12 @@ pub fn check(p: &Preset) -> Result<(), String> {
         )
     {
         return Err("A video preset needs an MP4, MOV or WebM target".into());
+    }
+    if p.options.hardware
+        && p.mode == QueueMode::Convert
+        && !matches!(p.target, Some(FormatId::Mp4 | FormatId::Mov))
+    {
+        return Err("Hardware encoding is for MP4 and MOV video".into());
     }
     if p.options.max_size.is_some()
         && matches!(
@@ -497,6 +510,18 @@ mod tests {
     }
 
     #[test]
+    fn a_hardware_preset_teaches_the_flag() {
+        let mut p = Preset {
+            mode: QueueMode::Convert,
+            target: Some(FormatId::Mp4),
+            ..mine("x")
+        };
+        p.options.hardware = true;
+        assert!(command(&p).ends_with(" --hardware"), "{}", command(&p));
+        assert!(builtins().iter().all(|p| !p.options.hardware));
+    }
+
+    #[test]
     fn save_refuses_an_id_that_isnt_a_slug() {
         let d = Dir::new("slug");
         let mut presets = Presets::load(&d.0.join("presets"));
@@ -664,6 +689,24 @@ mod tests {
         assert!(builtins().iter().all(|p| check(p).is_ok()));
         let d = Dir::new("check");
         assert!(Presets::load(&d.0).save(small_png).is_err());
+    }
+
+    #[test]
+    fn hardware_needs_a_target_it_can_make() {
+        let mut p = mine("x");
+        p.options.hardware = true;
+        for (mode, target, ok) in [
+            (QueueMode::Convert, Some(FormatId::Mp4), true),
+            (QueueMode::Convert, Some(FormatId::Mov), true),
+            (QueueMode::Compress, None, true),
+            (QueueMode::Convert, Some(FormatId::Webm), false),
+            (QueueMode::Convert, Some(FormatId::Png), false),
+            (QueueMode::Combine, Some(FormatId::Zip), false),
+        ] {
+            p.mode = mode;
+            p.target = target;
+            assert_eq!(check(&p).is_ok(), ok, "{mode:?} {target:?}");
+        }
     }
 
     #[test]

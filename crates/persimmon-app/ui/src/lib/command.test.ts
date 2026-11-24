@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { commandLine } from "./command";
 
-const none = { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false } as const;
+const none = { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false, hardware: false } as const;
 
 describe("commandLine", () => {
   it("matches presets.rs for the built-ins and the edge cases", () => {
@@ -12,6 +12,8 @@ describe("commandLine", () => {
       .toBe("prsm convert <files> --to mp4 --preset compatible --quality max");
     expect(commandLine({ mode: "combine", target: "tar.gz", options: none })).toBe("prsm merge <files> --to tar.gz");
     expect(commandLine({ mode: "compress", target: null, options: none })).toBe("prsm compress <files>");
+    expect(commandLine({ mode: "convert", target: "mp4", options: { ...none, quality: "high", hardware: true } }))
+      .toBe("prsm convert <files> --to mp4 --quality high --hardware");
   });
 
   it("gives merge and extract no options, as presets.rs does", () => {

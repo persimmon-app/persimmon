@@ -66,6 +66,7 @@ export interface JobOptions {
   pages: string | null;
   maxSize: number | null;
   stripMetadata: boolean;
+  hardware: boolean;
 }
 
 /** A preset as the app sends it (app.rs, PresetView). */
@@ -134,6 +135,8 @@ export interface EnginesView {
   ffmpegError: Shown | null;
   images: boolean;
   rar: boolean;
+  /** The codecs VideoToolbox makes in this FFmpeg: "H.264", "HEVC". */
+  hardware: string[];
   version: string;
 }
 

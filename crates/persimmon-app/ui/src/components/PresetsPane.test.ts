@@ -48,6 +48,40 @@ describe("PresetsPane", () => {
     expect(await screen.findByText("A size limit is for images and video")).toBeTruthy();
   });
 
+  const HARDWARE = "Use hardware encoder when available — faster, slightly larger files";
+
+  it("offers hardware encoding for Convert and Compress video presets, and saves it", async () => {
+    const onSave = vi.fn().mockResolvedValue(null);
+    render(PresetsPane, { presets, onSave, onDelete: vi.fn() });
+    await fireEvent.click(screen.getByRole("button", { name: "New preset" }));
+    expect(screen.queryByLabelText(HARDWARE)).toBeNull();
+    const [mode, target] = screen.getAllByRole("combobox");
+    await fireEvent.change(target, { target: { value: "mp4" } });
+    await fireEvent.click(screen.getByLabelText(HARDWARE));
+    expect(screen.getByText("prsm convert <files> --to mp4 --hardware")).toBeTruthy();
+    await fireEvent.change(target, { target: { value: "webm" } });
+    expect(screen.queryByLabelText(HARDWARE)).toBeNull();
+    await fireEvent.change(mode, { target: { value: "compress" } });
+    expect((screen.getByLabelText(HARDWARE) as HTMLInputElement).checked).toBe(true);
+    await fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Fast" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave.mock.calls[0][0].options.hardware).toBe(true);
+  });
+
+  it("a preset whose target can't use it saves without hardware encoding", async () => {
+    const onSave = vi.fn().mockResolvedValue(null);
+    render(PresetsPane, { presets, onSave, onDelete: vi.fn() });
+    await fireEvent.click(screen.getByRole("button", { name: "New preset" }));
+    const [, target] = screen.getAllByRole("combobox");
+    await fireEvent.change(target, { target: { value: "mov" } });
+    await fireEvent.click(screen.getByLabelText(HARDWARE));
+    await fireEvent.change(target, { target: { value: "png" } });
+    await fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Stills" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSave.mock.calls[0][0].options.hardware).toBe(false);
+    expect(screen.queryByText(/--hardware/)).toBeNull();
+  });
+
   it("deletes only your own presets", async () => {
     const onDelete = vi.fn().mockResolvedValue(null);
     render(PresetsPane, { presets, onSave: vi.fn(), onDelete });

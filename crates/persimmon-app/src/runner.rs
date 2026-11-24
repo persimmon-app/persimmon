@@ -478,7 +478,12 @@ fn outcome_of(
     cancelled: bool,
 ) -> RowState {
     match results.into_iter().next() {
-        Some(Ok(Outcome::Written(output) | Outcome::WrittenNoted(output, _))) => {
+        Some(Ok(outcome @ (Outcome::Written(_) | Outcome::WrittenNoted(..)))) => {
+            let (output, note) = match outcome {
+                Outcome::WrittenNoted(output, note) => (output, Some(note.text)),
+                Outcome::Written(output) => (output, None),
+                Outcome::NotSmaller => unreachable!(),
+            };
             let size = std::fs::metadata(&output)
                 .ok()
                 .filter(|m| m.is_file())
@@ -486,6 +491,7 @@ fn outcome_of(
             RowState::Done {
                 output,
                 output_size: size,
+                note,
             }
         }
         Some(Ok(Outcome::NotSmaller)) => RowState::NotSmaller,
@@ -628,6 +634,7 @@ mod tests {
             let RowState::Done {
                 output,
                 output_size: size,
+                ..
             } = state(&q, i)
             else {
                 panic!("{:?}", state(&q, i))
@@ -748,6 +755,27 @@ mod tests {
     fn a_job_with_no_result_fails() {
         assert!(matches!(outcome_of(vec![], false), RowState::Failed { .. }));
         assert_eq!(outcome_of(vec![], true), RowState::Cancelled);
+    }
+
+    #[test]
+    fn a_noted_outcome_keeps_its_note() {
+        use persimmon_core::error::{Note, NoteKind};
+        let note = Note {
+            kind: NoteKind::UsedSoftware,
+            text: "hardware encoder unavailable — used software".into(),
+        };
+        let state = outcome_of(
+            vec![Ok(Outcome::WrittenNoted("/nowhere/a.mp4".into(), note))],
+            false,
+        );
+        assert_eq!(
+            state,
+            RowState::Done {
+                output: "/nowhere/a.mp4".into(),
+                output_size: None,
+                note: Some("hardware encoder unavailable — used software".into()),
+            }
+        );
     }
 
     #[test]

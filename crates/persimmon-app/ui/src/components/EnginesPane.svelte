@@ -13,6 +13,7 @@
         {#if engines.ffmpeg}<span class="data">{engines.ffmpeg.version}</span> <span class="data path">{engines.ffmpeg.path}</span>
         {:else if engines.ffmpegError}<span class="why">{engines.ffmpegError.reason}.{#if engines.ffmpegError.fix}{" "}{engines.ffmpegError.fix}{/if}</span>{/if}
       </dd>
+      <dt>VideoToolbox</dt><dd>{engines.hardware.length ? engines.hardware.join(", ") : "Not available — video uses software encoders"}</dd>
       <dt>Images (libvips)</dt><dd>{engines.images ? "Built in" : "Not in this build"}</dd>
       <dt>RAR (libarchive)</dt><dd>{engines.rar ? "Built in" : "Not in this build"}</dd>
       <dt>Persimmon</dt><dd class="data">{engines.version}</dd>

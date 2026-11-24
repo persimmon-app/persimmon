@@ -92,6 +92,10 @@ pub enum RowState {
         #[serde(skip)]
         output: PathBuf,
         output_size: Option<u64>,
+        /// The engine's note, such as a fallback to software encoding;
+        /// shown as the row's note.
+        #[serde(skip)]
+        note: Option<String>,
     },
     /// Compressing wouldn't make it smaller; nothing was written.
     NotSmaller,
@@ -680,7 +684,14 @@ impl Queue {
     pub fn update(&mut self, id: RowId, state: RowState) -> Option<RowView> {
         let rev = self.bump();
         let note = match &state {
-            RowState::Done { output, .. } => self.fallback_note(id, output),
+            RowState::Done { output, note, .. } => {
+                let notes: Vec<String> = note
+                    .iter()
+                    .cloned()
+                    .chain(self.fallback_note(id, output))
+                    .collect();
+                (!notes.is_empty()).then(|| notes.join("; "))
+            }
             _ => None,
         };
         let row = self.rows.iter_mut().find(|r| r.id == id)?;
@@ -1304,6 +1315,7 @@ mod tests {
                 RowState::Done {
                     output: fallback.join("invoice.webp"),
                     output_size: Some(1),
+                    note: None,
                 },
             )
             .unwrap();
@@ -1352,6 +1364,7 @@ mod tests {
                 RowState::Done {
                     output: fallback.join("IMG.webp"),
                     output_size: Some(1),
+                    note: None,
                 },
             )
             .unwrap();
@@ -1380,6 +1393,7 @@ mod tests {
                 RowState::Done {
                     output: chosen.join("IMG.webp"),
                     output_size: Some(1),
+                    note: None,
                 },
             )
             .unwrap();
@@ -1701,6 +1715,7 @@ mod tests {
                 RowState::Done {
                     output: d.0.join("a.jpg"),
                     output_size: Some(7),
+                    note: None,
                 },
             )
             .unwrap();
@@ -2034,12 +2049,67 @@ mod tests {
                 RowState::Done {
                     output: folder.join("a.jpg"),
                     output_size: Some(1),
+                    note: None,
                 },
             )
             .unwrap();
         assert_eq!(
             v.note, None,
             "it went where the user asked, not to a fallback"
+        );
+    }
+
+    #[test]
+    fn a_noted_output_says_so() {
+        let d = Dir::new("noted");
+        let src = d.put("a.png", &PNG_1X1);
+        let mut q = Queue::new(Registry::builtin(), OutputPolicy::default());
+        let id = q.add(&[src], QueueMode::Convert)[0].id;
+        q.next_queued().unwrap();
+        let note = "hardware encoder unavailable — used software";
+        let v = q
+            .update(
+                id,
+                RowState::Done {
+                    output: d.0.join("a.jpg"),
+                    output_size: Some(1),
+                    note: Some(note.into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(v.note.as_deref(), Some(note));
+    }
+
+    #[test]
+    fn an_engine_note_joins_the_fallback_note() {
+        let d = Dir::new("noted-fallback");
+        let src = d.put("a.png", &PNG_1X1);
+        let fb = d.0.join("fb");
+        let mut q = Queue::new(
+            Registry::builtin(),
+            OutputPolicy {
+                fallback: Some(fb.clone()),
+                ..OutputPolicy::default()
+            },
+        );
+        let id = q.add(&[src], QueueMode::Convert)[0].id;
+        q.next_queued().unwrap();
+        let v = q
+            .update(
+                id,
+                RowState::Done {
+                    output: fb.join("a.jpg"),
+                    output_size: Some(1),
+                    note: Some("used software".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            v.note.unwrap(),
+            format!(
+                "used software; Saved to {} — the original's folder isn't writable",
+                tilde(&fb)
+            )
         );
     }
 

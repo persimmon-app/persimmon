@@ -15,5 +15,6 @@ export function commandLine(p: { mode: QueueMode; target: FormatId | null; optio
   if (p.options.quality) line += ` --quality ${p.options.quality}`;
   if (p.options.maxSize) line += ` --max-size ${p.options.maxSize}`;
   if (p.options.stripMetadata) line += " --strip-metadata";
+  if (p.options.hardware) line += " --hardware";
   return line;
 }

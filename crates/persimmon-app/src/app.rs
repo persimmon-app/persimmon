@@ -638,6 +638,8 @@ struct EnginesView {
     images: bool,
     rar: bool,
     version: String,
+    /// The codecs the FFmpeg's hardware encoders make: "H.264", "HEVC".
+    hardware: Vec<String>,
 }
 
 /// The FFmpeg the packaged app carries: `ffmpeg`, with `ffprobe` beside
@@ -701,17 +703,28 @@ pub fn sources_url(version: &str) -> String {
 #[tauri::command]
 async fn engines() -> Result<EnginesView, String> {
     let backends = app_backends(std::env::current_exe().ok().as_deref());
-    let (ffmpeg, ffmpeg_error) = match backends.ffmpeg_info() {
+    Ok(engines_view(backends.ffmpeg_info()))
+}
+
+/// Settings → Engines, from the FFmpeg lookup.
+fn engines_view(
+    info: Result<persimmon_core::backend::FfmpegInfo, persimmon_core::error::Error>,
+) -> EnginesView {
+    let (ffmpeg, ffmpeg_error) = match info {
         Ok(info) => (Some(info), None),
         Err(e) => (None, Some(crate::wording::shown(&e))),
     };
-    Ok(EnginesView {
+    EnginesView {
+        hardware: ffmpeg
+            .as_ref()
+            .map(|i| i.hardware.clone())
+            .unwrap_or_default(),
         ffmpeg,
         ffmpeg_error,
         images: cfg!(feature = "vips"),
         rar: cfg!(feature = "rar"),
         version: env!("CARGO_PKG_VERSION").to_string(),
-    })
+    }
 }
 
 #[tauri::command]
@@ -1111,6 +1124,23 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn engines_list_the_hardware_codecs() {
+        let info = persimmon_core::backend::FfmpegInfo {
+            path: "/opt/homebrew/bin/ffmpeg".into(),
+            version: "8.1".into(),
+            hardware: vec!["H.264".into(), "HEVC".into()],
+        };
+        assert_eq!(super::engines_view(Ok(info)).hardware, ["H.264", "HEVC"]);
+        let missing = persimmon_core::error::Error::new(
+            persimmon_core::error::ErrorCode::BackendMissing,
+            "ffmpeg isn't installed",
+        );
+        let view = super::engines_view(Err(missing));
+        assert!(view.hardware.is_empty());
+        assert!(view.ffmpeg.is_none());
+    }
     use super::{QuitAction, quit_action};
 
     /// ⌘Q (the app's own Quit item) asks first while a row runs, and

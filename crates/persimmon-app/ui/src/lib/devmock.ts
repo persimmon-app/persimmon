@@ -37,7 +37,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   undo_last: () => ({ trashed: 1, restored: 0, skipped: [] }),
   undo_batch: () => ({ trashed: 1, restored: 0, skipped: ["hero.webp was changed or moved since it was converted, so it was left alone"] }),
-  engines: () => ({ ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1.2" }, ffmpegError: null, images: true, rar: true, version: "0.1.0" }),
+  engines: () => ({ ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1.2" }, ffmpegError: null, images: true, rar: true, version: "0.1.0", hardware: ["H.264", "HEVC"] }),
   open_licences: () => false,
   open_sources: () => true,
   set_mode: (a) => ({ ...settings, mode: a.mode }),

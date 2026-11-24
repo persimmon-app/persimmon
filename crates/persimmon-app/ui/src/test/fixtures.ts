@@ -2,7 +2,7 @@
 // Shared test data in the app's JSON shapes.
 import type { RuleView, BatchView, PresetView } from "../lib/types";
 
-const none = { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false } as const;
+const none = { quality: null, preset: null, pages: null, maxSize: null, stripMetadata: false, hardware: false } as const;
 
 export const presets: PresetView[] = [
   { id: "web-image", name: "Web image", builtin: true, mode: "convert", target: "webp",

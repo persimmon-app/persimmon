@@ -10,16 +10,30 @@ import type { SettingsView } from "../lib/types";
 
 describe("the Settings panes", () => {
   it("Engines names the FFmpeg in use", () => {
-    render(EnginesPane, { engines: { ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1" }, ffmpegError: null, images: true, rar: true, version: "0.1.0" } });
+    render(EnginesPane, { engines: { ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1" }, ffmpegError: null, images: true, rar: true, version: "0.1.0", hardware: [] } });
     expect(screen.getByText("8.1")).toBeTruthy();
     expect(screen.getByText("/opt/homebrew/bin/ffmpeg")).toBeTruthy();
   });
 
   it("Engines says, in the app's words, when FFmpeg is missing", () => {
-    render(EnginesPane, { engines: { ffmpeg: null, images: true, rar: false, version: "0.1.0",
+    render(EnginesPane, { engines: { ffmpeg: null, images: true, rar: false, version: "0.1.0", hardware: [],
       ffmpegError: { code: "BACKEND_MISSING", file: null, reason: "ffmpeg isn't installed", fix: "Persimmon's FFmpeg is missing or damaged. Reinstall Persimmon." } } });
     expect(screen.getByText(/Reinstall Persimmon/)).toBeTruthy();
     expect(screen.getByText("Not in this build")).toBeTruthy();
+  });
+
+  it("Engines lists the codecs VideoToolbox makes", () => {
+    render(EnginesPane, { engines: { ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1" }, ffmpegError: null,
+      images: true, rar: true, version: "0.3.0", hardware: ["H.264", "HEVC"] } });
+    expect(screen.getByText("VideoToolbox")).toBeTruthy();
+    expect(screen.getByText("H.264, HEVC")).toBeTruthy();
+  });
+
+  it("Engines says when VideoToolbox isn't there", () => {
+    render(EnginesPane, { engines: { ffmpeg: { path: "/opt/homebrew/bin/ffmpeg", version: "8.1" }, ffmpegError: null,
+      images: true, rar: true, version: "0.3.0", hardware: [] } });
+    expect(screen.getByText("VideoToolbox")).toBeTruthy();
+    expect(screen.getByText("Not available — video uses software encoders")).toBeTruthy();
   });
 
   it("Privacy says there is no network code", () => {
