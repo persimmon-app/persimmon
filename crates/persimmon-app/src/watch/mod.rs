@@ -5,3 +5,4 @@
 //! the files it handled, the batches its files make, and the runner.
 
 pub mod record;
+pub mod rule;

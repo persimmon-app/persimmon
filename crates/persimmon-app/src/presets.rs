@@ -89,7 +89,6 @@ fn verb(mode: QueueMode) -> &'static str {
 
 /// The `prsm` command a preset amounts to, for the editor to show.
 pub fn command(p: &Preset) -> String {
-    use persimmon_core::job::{Preset as Video, Quality};
     let mut line = format!("prsm {} <files>", verb(p.mode));
     if let Some(t) = p.target {
         line.push_str(&format!(" --to {}", t.as_str()));
@@ -98,13 +97,22 @@ pub fn command(p: &Preset) -> String {
     if !takes_options(p.mode) {
         return line;
     }
-    if let Some(v) = p.options.preset {
+    line.push_str(&option_args(&p.options));
+    line
+}
+
+/// The flags `options` amount to, each with a leading space: what a
+/// preset adds to a `prsm` line.
+pub fn option_args(options: &JobOptions) -> String {
+    use persimmon_core::job::{Preset as Video, Quality};
+    let mut line = String::new();
+    if let Some(v) = options.preset {
         line.push_str(match v {
             Video::Compatible => " --preset compatible",
             Video::Small => " --preset small",
         });
     }
-    if let Some(q) = p.options.quality {
+    if let Some(q) = options.quality {
         line.push_str(match q {
             Quality::Low => " --quality low",
             Quality::Medium => " --quality medium",
@@ -112,10 +120,10 @@ pub fn command(p: &Preset) -> String {
             Quality::Max => " --quality max",
         });
     }
-    if let Some(m) = p.options.max_size {
+    if let Some(m) = options.max_size {
         line.push_str(&format!(" --max-size {m}"));
     }
-    if p.options.strip_metadata {
+    if options.strip_metadata {
         line.push_str(" --strip-metadata");
     }
     line
