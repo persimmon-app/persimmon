@@ -92,20 +92,24 @@ pub enum Hit {
     Outside,
 }
 
-/// Where `(x, y)`, in points from the wheel's top-left, lands.
-pub fn hit(x: f64, y: f64) -> Hit {
+/// Where `(x, y)`, in points from the wheel's top-left, lands on a wheel
+/// whose ring is shared by `n` formats (at most [`SEGMENTS`]): segment 0
+/// is centred at 12 o'clock, then clockwise. With no formats the ring
+/// means nothing.
+pub fn hit(x: f64, y: f64, n: usize) -> Hit {
+    let n = n.min(SEGMENTS);
     let (dx, dy) = (x - SIZE / 2.0, y - SIZE / 2.0);
     let r = dx.hypot(dy);
     if r <= HUB {
         return Hit::Hub;
     }
-    if r > SIZE / 2.0 {
+    if r > SIZE / 2.0 || n == 0 {
         return Hit::Outside;
     }
     // Clockwise from 12 o'clock (screen y grows down), in [0, 360).
     let deg = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
-    let step = 360.0 / SEGMENTS as f64;
-    Hit::Format(((deg + step / 2.0) / step) as usize % SEGMENTS)
+    let step = 360.0 / n as f64;
+    Hit::Format(((deg + step / 2.0) / step) as usize % n)
 }
 
 /// A segment's hover text: the format's name and what Persimmon writes
@@ -204,27 +208,46 @@ mod tests {
 
     #[test]
     fn hit_finds_hub_segments_and_outside() {
-        assert_eq!(hit(160.0, 160.0), Hit::Hub);
-        assert_eq!(hit(160.0, 40.0), Hit::Format(0));
-        assert_eq!(hit(264.0, 100.0), Hit::Format(1));
-        assert_eq!(hit(160.0, 280.0), Hit::Format(3));
-        assert_eq!(hit(56.0, 100.0), Hit::Format(5));
-        assert_eq!(hit(5.0, 5.0), Hit::Outside);
+        assert_eq!(hit(160.0, 160.0, SEGMENTS), Hit::Hub);
+        assert_eq!(hit(160.0, 40.0, SEGMENTS), Hit::Format(0));
+        assert_eq!(hit(264.0, 100.0, SEGMENTS), Hit::Format(1));
+        assert_eq!(hit(160.0, 280.0, SEGMENTS), Hit::Format(3));
+        assert_eq!(hit(56.0, 100.0, SEGMENTS), Hit::Format(5));
+        assert_eq!(hit(5.0, 5.0, SEGMENTS), Hit::Outside);
         // The hub's edge, and the wheel's.
-        assert_eq!(hit(160.0, 160.0 - HUB + 1.0), Hit::Hub);
-        assert_eq!(hit(160.0, 160.0 - HUB - 1.0), Hit::Format(0));
-        assert_eq!(hit(160.0, 1.0), Hit::Format(0));
-        assert_eq!(hit(160.0, -1.0), Hit::Outside);
+        assert_eq!(hit(160.0, 160.0 - HUB + 1.0, SEGMENTS), Hit::Hub);
+        assert_eq!(hit(160.0, 160.0 - HUB - 1.0, SEGMENTS), Hit::Format(0));
+        assert_eq!(hit(160.0, 1.0, SEGMENTS), Hit::Format(0));
+        assert_eq!(hit(160.0, -1.0, SEGMENTS), Hit::Outside);
         // Just either side of the boundary between segments 0 and 1, at 30°.
         let at = |deg: f64| {
             let r = 120.0;
             let a = deg.to_radians();
-            hit(160.0 + r * a.sin(), 160.0 - r * a.cos())
+            hit(160.0 + r * a.sin(), 160.0 - r * a.cos(), SEGMENTS)
         };
         assert_eq!(at(29.0), Hit::Format(0));
         assert_eq!(at(31.0), Hit::Format(1));
         assert_eq!(at(331.0), Hit::Format(0));
         assert_eq!(at(329.0), Hit::Format(5));
+    }
+
+    /// The wheel is shared by the formats there are: five get 72° each,
+    /// one gets the whole ring, and none leaves a ring that means nothing.
+    #[test]
+    fn segments_share_the_circle() {
+        let at = |deg: f64, n: usize| {
+            let a = deg.to_radians();
+            hit(160.0 + 120.0 * a.sin(), 160.0 - 120.0 * a.cos(), n)
+        };
+        assert_eq!(at(33.0, 6), Hit::Format(1));
+        assert_eq!(at(33.0, 5), Hit::Format(0));
+        assert_eq!(at(40.0, 5), Hit::Format(1));
+        assert_eq!(at(170.0, 5), Hit::Format(2));
+        assert_eq!(at(300.0, 5), Hit::Format(4));
+        assert_eq!(at(200.0, 1), Hit::Format(0));
+        assert_eq!(at(200.0, 0), Hit::Outside);
+        assert_eq!(hit(160.0, 160.0, 0), Hit::Hub);
+        assert_eq!(at(33.0, 9), Hit::Format(1), "never more than six");
     }
 
     #[test]

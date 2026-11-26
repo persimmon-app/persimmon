@@ -42,6 +42,9 @@ pub enum Gesture {
         files: Vec<PathBuf>,
         promises: usize,
     },
+    /// The pointer moved while the wheel shows, to `at` (the same
+    /// coordinates as `Show`).
+    Move { at: (f64, f64) },
     /// The drag ended, wherever it was released.
     Hide,
 }
@@ -50,6 +53,8 @@ pub enum Gesture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Show,
+    /// The pointer moved while shown.
+    Move,
     Hide,
 }
 
@@ -86,6 +91,9 @@ impl Session {
                 return None;
             }
             self.dragging = true;
+        }
+        if self.shown {
+            return Some(Step::Move);
         }
         self.show_if(shift)
     }
@@ -172,6 +180,7 @@ pub fn start(on: impl Fn(Gesture) + Send + Sync + 'static) -> Result<(), String>
         };
         match step {
             Some(Step::Show) => on(show()),
+            Some(Step::Move) => on(Gesture::Move { at: pointer() }),
             Some(Step::Hide) => {
                 if logging() {
                     eprintln!("wheel: hide");
@@ -289,10 +298,27 @@ mod tests {
     fn a_shift_drag_shows_once_and_hides_on_up() {
         let mut s = Session::new(7);
         assert_eq!(s.on_drag(8, true), Some(Step::Show));
-        assert_eq!(s.on_drag(8, true), None);
+        assert_eq!(s.on_drag(8, true), Some(Step::Move));
         assert_eq!(s.on_flags(true), None);
         assert_eq!(s.on_up(), Some(Step::Hide));
         assert_eq!(s.on_up(), None);
+    }
+
+    /// Once the wheel shows, every move of the drag says where the
+    /// pointer is, so the wheel can light the segment under it whatever
+    /// the drag carries (a Photos drag never reaches the wheel's page).
+    #[test]
+    fn a_shown_drag_reports_its_moves() {
+        let mut s = Session::new(7);
+        assert_eq!(s.on_drag(8, false), None, "not shown: no moves");
+        assert_eq!(s.on_drag(8, true), Some(Step::Show));
+        assert_eq!(
+            s.on_drag(8, false),
+            Some(Step::Move),
+            "⇧ let go: still shown"
+        );
+        assert_eq!(s.on_up(), Some(Step::Hide));
+        assert_eq!(s.on_drag(8, true), None);
     }
 
     #[test]

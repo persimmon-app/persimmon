@@ -143,6 +143,25 @@ pub(super) struct WheelState {
     offer: Option<Offer>,
     /// Shown by Convert with Persimmon: it waits for a click.
     click: bool,
+    /// The segment last lit under a drag's pointer.
+    hover: Option<usize>,
+}
+
+/// `at`, in AppKit's screen points (y up), as a point in a window whose
+/// frame is `(x, y, width, height)`, from its top left (y down).
+pub fn local_point(at: (f64, f64), frame: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (x, y, _, height) = frame;
+    (at.0 - x, y + height - at.1)
+}
+
+/// The segment of `n` under the pointer at `at`, for a wheel whose window
+/// has `frame`; `None` over the hub or outside the ring.
+pub fn hover(at: (f64, f64), frame: (f64, f64, f64, f64), n: usize) -> Option<usize> {
+    let (x, y) = local_point(at, frame);
+    match geometry::hit(x, y, n) {
+        Hit::Format(i) => Some(i),
+        Hit::Hub | Hit::Outside => None,
+    }
 }
 
 /// Each showing's number, so a late hide never hides a newer showing.
@@ -220,6 +239,7 @@ fn put(app: &AppHandle, offer: Offer, click: bool) {
         *lock(&state.wheel) = WheelState {
             offer: Some(offer),
             click,
+            hover: None,
         };
     }
 }
@@ -252,6 +272,29 @@ fn on_gesture(app: &AppHandle, gesture: Gesture) {
                 }
             };
             show(app, at, offer, false);
+        }
+        Gesture::Move { at } => {
+            // The drag's pointer, whatever it carries: a Photos drag never
+            // reaches the wheel's page, so the page can't tell for itself.
+            let Some(state) = app.try_state::<AppState>() else {
+                return;
+            };
+            let Ok(Some(frame)) = persimmon_mac::panel::panel_frame("wheel") else {
+                return;
+            };
+            let lit = {
+                let mut wheel = lock(&state.wheel);
+                let Some(n) = wheel.offer.as_ref().map(|o| o.formats.len()) else {
+                    return;
+                };
+                let lit = hover(at, frame, n);
+                if lit == wheel.hover {
+                    return;
+                }
+                wheel.hover = lit;
+                lit
+            };
+            let _ = app.emit_to("wheel", "wheel-hover", lit);
         }
         Gesture::Hide => {
             // The drop, if it landed on the wheel, may come just after the
@@ -342,7 +385,7 @@ pub(super) fn wheel_drop(app: AppHandle, paths: Vec<PathBuf>, x: f64, y: f64) {
     act(
         &app,
         &paths,
-        decide(&offer, geometry::hit(x, y)),
+        decide(&offer, geometry::hit(x, y, offer.formats.len())),
         Source::Wheel,
     );
     hide(&app);
@@ -402,11 +445,11 @@ pub(super) fn on_promise_started(
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let hit = at.map_or(Hit::Hub, |(x, y)| geometry::hit(x, y));
     let offer = lock(&state.wheel)
         .offer
         .clone()
         .unwrap_or_else(|| promised(&Registry::builtin(), 1, &recent(app)));
+    let hit = at.map_or(Hit::Hub, |(x, y)| geometry::hit(x, y, offer.formats.len()));
     let choice = decide(&offer, hit);
     let name = name.as_deref().unwrap_or("");
     let view = match choice {
@@ -573,6 +616,18 @@ mod tests {
         assert_eq!(on_pick(Some((o.clone(), false)), Some(0)), Pick::Close);
         assert_eq!(on_pick(Some((o, false)), None), Pick::Close);
         assert_eq!(on_pick(None, Some(-1)), Pick::Close);
+    }
+
+    /// The pointer in AppKit's screen points (y up) as a point in the
+    /// wheel's window from its top left: a panel at (100, 200), 320×360.
+    #[test]
+    fn a_screen_point_becomes_a_wheel_point() {
+        let frame = (100.0, 200.0, 320.0, 360.0);
+        assert_eq!(local_point((260.0, 400.0), frame), (160.0, 160.0));
+        assert_eq!(local_point((100.0, 560.0), frame), (0.0, 0.0));
+        assert_eq!(hover((260.0, 520.0), frame, 6), Some(0));
+        assert_eq!(hover((260.0, 400.0), frame, 6), None, "the hub");
+        assert_eq!(hover((0.0, 0.0), frame, 6), None, "outside");
     }
 
     #[test]

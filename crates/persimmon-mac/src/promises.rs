@@ -108,6 +108,17 @@ define_class!(
     }
 );
 
+/// The first file name a promise gives, if it gives one yet: Photos gives
+/// an iCloud-only original none until it downloads, though AppKit's header
+/// says the list is never nil.
+fn first_name(receiver: &NSFilePromiseReceiver) -> Option<String> {
+    #[allow(unsafe_code)]
+    // SAFETY: fileNames takes no arguments and returns an NSArray of
+    // NSString or nil; reading it as an optional array matches that.
+    let names: Option<Retained<NSArray<NSString>>> = unsafe { msg_send![receiver, fileNames] };
+    names?.iter().next().map(|n| n.to_string())
+}
+
 /// A point in a view of `height`, measured from its top left: AppKit's
 /// views count up from the bottom unless flipped.
 fn top_left(p: NSPoint, height: f64, flipped: bool) -> (f64, f64) {
@@ -154,7 +165,7 @@ impl Overlay {
         let queue = NSOperationQueue::new();
         for receiver in receivers {
             let item = ITEMS.fetch_add(1, Ordering::Relaxed);
-            let name = receiver.fileNames().iter().next().map(|n| n.to_string());
+            let name = first_name(&receiver);
             (ivars.sink)(PromiseEvent::Started {
                 item,
                 name,
@@ -258,6 +269,14 @@ pub fn install_overlay(
 #[cfg(test)]
 mod point_tests {
     use super::*;
+
+    /// Photos gives an iCloud-only original's promise no file name until
+    /// it downloads; reading the name mustn't stop the app.
+    #[test]
+    fn a_promise_with_no_name_yet_has_none() {
+        let receiver = NSFilePromiseReceiver::new();
+        assert_eq!(first_name(&receiver), None);
+    }
 
     #[test]
     fn a_drop_point_is_measured_from_the_top_left() {

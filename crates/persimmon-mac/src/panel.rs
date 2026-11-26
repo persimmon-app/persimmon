@@ -157,6 +157,16 @@ pub fn set_panel_visible(name: &str, show: bool) -> Result<bool, String> {
     .map(|done| done.is_some())
 }
 
+/// Where the panel called `name` is: `(x, y, width, height)` in AppKit's
+/// screen points, its origin at the bottom left; `None` when there's no
+/// such panel. Main thread only.
+pub fn panel_frame(name: &str) -> Result<Option<(f64, f64, f64, f64)>, String> {
+    with_panel(name, |panel| {
+        let f = panel.frame();
+        (f.origin.x, f.origin.y, f.size.width, f.size.height)
+    })
+}
+
 /// Whether the panel called `name` can take the keyboard; `Ok(false)`
 /// when there's none. Main thread only.
 pub fn takes_keys(name: &str) -> Result<bool, String> {
@@ -254,6 +264,10 @@ mod tests {
         assert_eq!(set_panel_visible("drop", true), refused);
         assert_eq!(place_panel("drop", (100.0, 100.0)), refused);
         assert_eq!(focus_panel("wheel"), refused);
+        assert_eq!(
+            panel_frame("wheel"),
+            Err("not on the main thread".to_string())
+        );
     }
 
     #[test]

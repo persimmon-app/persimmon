@@ -32,6 +32,9 @@ export const wheelDrop = (paths: string[], x: number, y: number) => invoke<void>
 export const wheelPick = (index: number | null) => invoke<void>("wheel_pick", { index });
 export const onWheelShow = (f: (w: WheelShow) => void): Promise<UnlistenFn> =>
   listen<WheelShow>("wheel-show", (e) => f(e.payload));
+/** The wheel: the segment under a drag's pointer, or null. */
+export const onWheelHover = (f: (index: number | null) => void): Promise<UnlistenFn> =>
+  listen<number | null>("wheel-hover", (e) => f(e.payload));
 export const reorderInput = (id: RowId, from: number, to: number) => invoke<RowView | null>("reorder_input", { id, from, to });
 export const removeInput = (id: RowId, index: number) => invoke<RowView | null>("remove_input", { id, index });
 export const getSettings = () => invoke<SettingsView>("get_settings");

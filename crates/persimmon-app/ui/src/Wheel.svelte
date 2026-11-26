@@ -6,12 +6,12 @@
   import type { FormatId } from "./lib/types";
 
   type DragEvent = { payload: { type: string; paths?: string[]; position?: { x: number; y: number } } };
-  let { formats, labels, hub, scale, listenDrag, onPick, onDrop }: {
+  let { formats, labels, hub, listenDrag, listenHover = () => Promise.resolve(() => {}), onPick, onDrop }: {
     formats: FormatId[];
     labels: string[];
     hub: string;
-    /** Device pixels per point: a drag's position comes in pixels. */
-    scale: number;
+    /** The segment under a drag's pointer, as the app follows it. */
+    listenHover?: (h: (index: number | null) => void) => Promise<() => void>;
     listenDrag: (h: (e: DragEvent) => void) => Promise<() => void>;
     /** A click: a segment's index, null for the hub, -1 to cancel. */
     onPick: (index: number | null) => void;
@@ -21,18 +21,19 @@
 
   let hovered: number | null = $state(null);
   function point(x: number, y: number) {
-    const h = hit(x, y);
+    const h = hit(x, y, formats.length);
     hovered = typeof h === "number" && h < formats.length ? h : null;
   }
   function click(e: MouseEvent) {
-    const h = hit(e.clientX, e.clientY);
+    const h = hit(e.clientX, e.clientY, formats.length);
     onPick(h === "hub" ? null : h === "outside" ? -1 : h);
   }
 
   onMount(() => {
     const off = listenDrag((e) => {
-      const { type, paths, position } = e.payload;
-      const p = position ? { x: position.x / scale, y: position.y / scale } : null;
+      // On macOS the webview gives a drag's place in points from the top
+      // left, though Tauri labels it physical: used as it comes.
+      const { type, paths, position: p } = e.payload;
       if ((type === "enter" || type === "over") && p) point(p.x, p.y);
       else if (type === "leave") hovered = null;
       else if (type === "drop") {
@@ -40,7 +41,8 @@
         if (paths?.length && p) onDrop(paths, p.x, p.y);
       }
     });
-    return () => { off.then((f) => f()); };
+    const offHover = listenHover((i) => { hovered = i !== null && i < formats.length ? i : null; });
+    return () => { off.then((f) => f()); offHover.then((f) => f()); };
   });
 </script>
 
@@ -52,8 +54,8 @@
 <div class="wheel">
   <svg width={SIZE} height={SIZE} viewBox="0 0 {SIZE} {SIZE}" role="img" aria-label={hub}>
     {#each formats as f, i (f)}
-      <path class="segment" class:hovered={hovered === i} d={sector(i)} />
-      <text class="badge" x={badgeAt(i).x} y={badgeAt(i).y}>{f.toUpperCase()}</text>
+      <path class="segment" class:hovered={hovered === i} d={sector(i, formats.length)} fill-rule="evenodd" />
+      <text class="badge" x={badgeAt(i, formats.length).x} y={badgeAt(i, formats.length).y}>{f.toUpperCase()}</text>
     {/each}
     <circle class="hub" cx={SIZE / 2} cy={SIZE / 2} r={HUB} />
     <text class="hub-text" x={SIZE / 2} y={SIZE / 2 + (hovered === null ? 0 : -8)}>{hub}</text>
