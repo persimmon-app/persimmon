@@ -27,3 +27,8 @@ targets = [
 # Test-only crates never reach a release binary; build scripts can.
 ignore-dev-dependencies = true
 ignore-build-dependencies = false
+
+# notify, the file-event crate for watch folders: CC0-1.0 for this crate
+# alone, as deny.toml's exception (owner-approved 2026-11-18).
+[notify]
+accepted = ["CC0-1.0"]
