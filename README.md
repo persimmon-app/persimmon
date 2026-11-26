@@ -28,7 +28,7 @@ The app isn't signed yet. macOS blocks apps from developers it doesn't know. Ope
 xattr -dr com.apple.quarantine /Applications/Persimmon.app
 ```
 
-Updates: download the new DMG from the Releases page. Persimmon never checks for updates itself (it has no network code). Its settings, presets and history live in `~/Library/Application Support/Persimmon`. Each release also carries `Persimmon-<version>-sources.tar`, the source of everything the app bundles, and FFmpeg's configure line.
+Updates: download the new DMG from the Releases page. Persimmon never checks for updates itself (it has no network code). Each update is a new unsigned build, so macOS asks again for any folder a watch rule reads (Desktop, Documents, Downloads). Open Persimmon after updating; a rule that can't read its folder says so until you allow it. Its settings, presets and history live in `~/Library/Application Support/Persimmon`. Each release also carries `Persimmon-<version>-sources.tar`, the source of everything the app bundles, and FFmpeg's configure line.
 
 ### Release archives
 
