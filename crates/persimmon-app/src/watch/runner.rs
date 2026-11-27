@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -78,6 +79,17 @@ impl PartialEq for Running {
     }
 }
 
+impl Running {
+    /// Whether `other` converts the same files the same way: they differ
+    /// at most in whether each file is notified, which a running rule takes
+    /// without starting again.
+    pub fn same_work(&self, other: &Running) -> bool {
+        let mut a = self.clone();
+        a.rule.notify_each = other.rule.notify_each;
+        a == *other
+    }
+}
+
 /// What a rule is doing, for its line in the Watch folders view.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -121,6 +133,28 @@ impl RuleStatus {
     }
 }
 
+/// What a rule offers when watching its folder failed for a reason other
+/// than the folder being away or unreadable.
+pub(crate) const RULE_FIX: &str =
+    "Press Scan now to try again, or choose another folder for this rule.";
+
+/// A rule's state when watching `folder` couldn't start.
+fn start_state(e: &Error, folder: &Path) -> WatchState {
+    match e.code {
+        ErrorCode::InputNotFound => WatchState::Missing,
+        ErrorCode::UnsupportedInput => WatchState::Unreadable {
+            error: app_error(ErrorCode::UnsupportedInput, folder, CANT_READ, Some(ALLOW)),
+        },
+        _ => WatchState::Unreadable {
+            error: Shown {
+                file: Some(folder.to_path_buf()),
+                fix: Some(RULE_FIX.to_string()),
+                ..shown(e)
+            },
+        },
+    }
+}
+
 /// What a damaged record leaves the rule's line saying.
 pub const DAMAGED_NOTE: &str =
     "Couldn't read what this rule had converted, so files already here were left alone";
@@ -137,11 +171,18 @@ struct RuleShared {
     root: Mutex<Option<PathBuf>>,
     /// Files converted since the queue was last empty.
     streak: Mutex<usize>,
+    /// The rule's `notify_each`, which an edit changes in place.
+    notify_each: AtomicBool,
+    /// The watcher thread's token: cancelled with the rule, or by Scan now
+    /// to start the watcher again.
+    watching: Mutex<CancelToken>,
 }
 
 struct RuleRun {
     shared: Arc<RuleShared>,
-    threads: Vec<JoinHandle<()>>,
+    /// The watcher thread, which Scan now replaces.
+    watcher: JoinHandle<()>,
+    worker: JoinHandle<()>,
 }
 
 struct Shared {
@@ -186,7 +227,9 @@ impl WatchRunner {
             let keep = rules.iter().any(|r| {
                 r.rule.id == id
                     && r.rule.enabled
-                    && runs.get(&id).is_some_and(|run| run.shared.running == *r)
+                    && runs
+                        .get(&id)
+                        .is_some_and(|run| run.shared.running.same_work(r))
             });
             if !keep && let Some(run) = runs.remove(&id) {
                 ended.extend(self.shared.stop_run(run));
@@ -197,7 +240,11 @@ impl WatchRunner {
             if !r.rule.enabled {
                 self.shared
                     .set_status(RuleStatus::new(&r.rule.id, WatchState::Paused));
-            } else if !runs.contains_key(&r.rule.id) {
+            } else if let Some(run) = runs.get(&r.rule.id) {
+                run.shared
+                    .notify_each
+                    .store(r.rule.notify_each, Ordering::Relaxed);
+            } else {
                 let run = self.shared.start_run(r);
                 let id = run.shared.running.rule.id.clone();
                 runs.insert(id, run);
@@ -236,20 +283,18 @@ impl WatchRunner {
         }
     }
 
-    /// Look at the rule's folder again now.
+    /// Look at the rule's folder again now: its watcher starts again, and
+    /// the file being converted, the queue, the burst and the rule's last
+    /// failure carry on as they are.
     pub fn scan(&self, id: &str) {
         let mut runs = lock(&self.shared.runs);
-        let Some(run) = runs.remove(id) else {
+        let Some(run) = runs.get_mut(id) else {
             return;
         };
-        let running = run.shared.running.clone();
-        let ended = self.shared.stop_run(run);
-        let run = self.shared.start_run(running);
-        runs.insert(id.to_string(), run);
-        drop(runs);
-        if let Some(batch) = ended {
-            self.shared.deliver(batch);
-        }
+        let old = std::mem::replace(&mut *lock(&run.shared.watching), CancelToken::new());
+        old.cancel();
+        let watcher = std::mem::replace(&mut run.watcher, self.shared.spawn_watcher(&run.shared));
+        let _ = watcher.join();
     }
 
     pub fn statuses(&self) -> Vec<RuleStatus> {
@@ -356,39 +401,46 @@ impl Shared {
                 running.preset_name.clone(),
                 self.deps.quiet,
             )),
-            running,
             cancel: CancelToken::new(),
             record: Mutex::new(record),
             queue: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             root: Mutex::new(None),
             streak: Mutex::new(0),
+            notify_each: AtomicBool::new(running.rule.notify_each),
+            watching: Mutex::new(CancelToken::new()),
+            running,
         });
         let mut status = RuleStatus::new(&id, WatchState::Watching);
         status.note = damaged.then(|| DAMAGED_NOTE.to_string());
         self.set_status(status);
-        let watch = {
-            let (shared, rs) = (Arc::clone(self), Arc::clone(&rs));
-            std::thread::spawn(move || shared.watch(&rs))
-        };
-        let work = {
+        let watcher = self.spawn_watcher(&rs);
+        let worker = {
             let (shared, rs) = (Arc::clone(self), Arc::clone(&rs));
             std::thread::spawn(move || shared.work(&rs))
         };
         RuleRun {
             shared: rs,
-            threads: vec![watch, work],
+            watcher,
+            worker,
         }
+    }
+
+    /// A watcher thread for `rs`, with its current token.
+    fn spawn_watcher(self: &Arc<Self>, rs: &Arc<RuleShared>) -> JoinHandle<()> {
+        let (shared, rs) = (Arc::clone(self), Arc::clone(rs));
+        let cancel = lock(&rs.watching).clone();
+        std::thread::spawn(move || shared.watch(&rs, &cancel))
     }
 
     /// Stop a rule; its open burst comes back as a batch, for the caller
     /// to deliver once it holds no lock.
     fn stop_run(&self, run: RuleRun) -> Option<Batch> {
         run.shared.cancel.cancel();
+        lock(&run.shared.watching).cancel();
         run.shared.wake.notify_all();
-        for t in run.threads {
-            let _ = t.join();
-        }
+        let _ = run.watcher.join();
+        let _ = run.worker.join();
         let _ = lock(&run.shared.record).save();
         lock(&run.shared.bursts).close()
     }
@@ -425,29 +477,18 @@ impl Shared {
     /// A rule's watcher thread: start watching (waiting for a missing or
     /// unreadable folder), then queue each ready file the record doesn't
     /// already hold as it is.
-    fn watch(&self, rs: &RuleShared) {
+    fn watch(&self, rs: &RuleShared, cancel: &CancelToken) {
         let spec = &rs.running.spec;
         loop {
-            if rs.cancel.is_cancelled() {
+            if cancel.is_cancelled() {
                 return;
             }
             let mut watcher = match Watcher::start(spec) {
                 Ok(w) => w,
                 Err(e) => {
-                    let state = match e.code {
-                        ErrorCode::InputNotFound => WatchState::Missing,
-                        ErrorCode::UnsupportedInput => WatchState::Unreadable {
-                            error: app_error(
-                                ErrorCode::UnsupportedInput,
-                                &spec.folder,
-                                CANT_READ,
-                                Some(ALLOW),
-                            ),
-                        },
-                        _ => WatchState::Unreadable { error: shown(&e) },
-                    };
+                    let state = start_state(&e, &spec.folder);
                     self.update(rs, |s| s.state = state);
-                    if !nap(&rs.cancel, self.deps.timing.rescan) {
+                    if !nap(cancel, self.deps.timing.rescan) {
                         return;
                     }
                     continue;
@@ -470,7 +511,7 @@ impl Shared {
                     s.state = WatchState::Watching;
                 }
             });
-            while let Some(change) = watcher.next(&rs.cancel) {
+            while let Some(change) = watcher.next(cancel) {
                 match change {
                     Change::Missing => self.update(rs, |s| s.state = WatchState::Missing),
                     Change::Back => self.update(rs, |s| s.state = WatchState::Watching),
@@ -636,7 +677,7 @@ impl Shared {
             moved,
             restored: false,
         };
-        if rule.notify_each && self.deps.notifier.allowed() {
+        if rs.notify_each.load(Ordering::Relaxed) && self.deps.notifier.allowed() {
             let n = lock(&rs.bursts).len();
             self.deps
                 .notifier
@@ -683,7 +724,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// Copies the input; fails `bad*`; holds `slow*` on its first try
-    /// until cancelled. Counts tries per file name.
+    /// until cancelled, and `lag*` for 800 ms unless cancelled. Counts
+    /// tries per file name.
     #[derive(Default)]
     struct Fake {
         tries: Mutex<HashMap<String, usize>>,
@@ -714,6 +756,16 @@ mod tests {
             };
             if name.starts_with("bad") {
                 return Err(Error::new(ErrorCode::CorruptInput, "it's damaged").with_file(input));
+            }
+            if name.starts_with("lag") && n == 1 {
+                // Finishes after a moment, unless cancelled first.
+                let end = Instant::now() + Duration::from_millis(800);
+                while Instant::now() < end {
+                    if cancel.is_cancelled() {
+                        return Err(Error::new(ErrorCode::Cancelled, "cancelled"));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
             if name.starts_with("slow") && n == 1 {
                 std::fs::write(temp, b"partial").unwrap();
@@ -1041,6 +1093,95 @@ mod tests {
         let w = r.runner();
         w.apply(vec![r.running(&rule)]);
         wait("slow converted", || r.results() == ["slow.webp"]);
+    }
+
+    #[test]
+    fn scan_now_leaves_the_file_in_progress_alone() {
+        let r = rig("scan-busy");
+        let w = r.runner();
+        w.apply(vec![r.running(&r.rule())]);
+        r.png("lag.png");
+        wait("lag started", || r.engine.tries("lag.png") == 1);
+        w.scan("r1");
+        wait("lag converted", || r.results() == ["lag.webp"]);
+        settle_down();
+        assert_eq!(r.engine.tries("lag.png"), 1, "Scan now restarted it");
+        assert_eq!(r.results(), ["lag.webp"]);
+    }
+
+    #[test]
+    fn a_notify_only_edit_leaves_the_file_in_progress_alone() {
+        let r = rig("notify-edit");
+        let w = r.runner();
+        let mut rule = r.rule();
+        w.apply(vec![r.running(&rule)]);
+        r.png("lag.png");
+        wait("lag started", || r.engine.tries("lag.png") == 1);
+        rule.notify_each = true;
+        w.apply(vec![r.running(&rule)]);
+        wait("lag converted", || r.results() == ["lag.webp"]);
+        assert_eq!(r.engine.tries("lag.png"), 1, "the edit restarted it");
+        // The edit took effect: the next file is notified on its own.
+        r.png("d.png");
+        wait("d's note", || {
+            r.notes
+                .posts
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p.1 == "d.png → d.webp")
+        });
+    }
+
+    #[test]
+    fn scan_now_keeps_last_failed() {
+        let r = rig("scan-failed");
+        let w = r.runner();
+        w.apply(vec![r.running(&r.rule())]);
+        r.png("bad.png");
+        wait("bad tried", || {
+            w.statuses()
+                .first()
+                .is_some_and(|s| s.last_failed.is_some())
+        });
+        w.scan("r1");
+        settle_down();
+        assert_eq!(
+            w.statuses()[0]
+                .last_failed
+                .as_ref()
+                .map(|f| f.name.as_str()),
+            Some("bad.png")
+        );
+        assert_eq!(r.engine.tries("bad.png"), 1);
+    }
+
+    #[test]
+    fn an_unexpected_start_error_offers_a_rule_fix() {
+        let folder = Path::new("/x/in");
+        let WatchState::Unreadable { error } = start_state(
+            &Error::new(ErrorCode::Internal, "too many open files"),
+            folder,
+        ) else {
+            panic!("not unreadable")
+        };
+        assert!(
+            error.reason.contains("too many open files"),
+            "{}",
+            error.reason
+        );
+        assert_eq!(error.fix.as_deref(), Some(RULE_FIX));
+        assert_eq!(
+            start_state(&Error::new(ErrorCode::InputNotFound, "gone"), folder),
+            WatchState::Missing
+        );
+        let WatchState::Unreadable { error } =
+            start_state(&Error::new(ErrorCode::UnsupportedInput, "no"), folder)
+        else {
+            panic!("not unreadable")
+        };
+        assert_eq!(error.reason, CANT_READ);
+        assert_eq!(error.fix.as_deref(), Some(ALLOW));
     }
 
     #[test]
