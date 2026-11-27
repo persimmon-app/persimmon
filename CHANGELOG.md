@@ -4,6 +4,10 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-27
+
+The beta. Persimmon reaches files where they are: watch folders, Finder's Services, the format wheel, Photos' originals, and several files at once. Please report what makes you stop trusting it.
+
 ### Added
 
 - Folders as inputs to `prsm convert` and `prsm compress`: a folder stands for the files directly inside it, and `--recursive` adds its subfolders. Files that can't become the target are skipped and counted on a last line, such as `3 files skipped: can't become WebP`.
@@ -20,10 +24,10 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 - A photo or video dragged from Photos gives its original, in the drop window and the main window. The row says "Getting the original from Photos…", then "Downloading from iCloud…" while an iCloud-only original comes down, with Cancel. The converted file goes to your output folder, or `~/Downloads/Persimmon`, never next to the original inside the library.
 - Convert with Persimmon and Open in Persimmon in Finder's right-click menu, under Services, for any file or folder. Open adds the files and brings the window forward; Convert shows the format wheel at the pointer, for the selected files. Conversions started from Finder are tagged FINDER in History, and a notification says when one fails while Persimmon isn't in front.
 - Settings → Finder & menus says where the two Services are and how to show or hide them.
-- The format wheel: hold ⇧ while dragging files anywhere, and six formats they can all become appear round the pointer, the ones you used last first. Drop on a format to convert to it at once, or on the middle to add the files to the queue without starting. Esc, or letting go anywhere else, cancels, and the drag carries on as usual. It works for photos dragged from Photos too, and asks for no permission. It's off until you turn it on, from the first-run card's Show me or Settings → Finder & menus. Wheel conversions are tagged WHEEL in History, and a notification says when one fails while Persimmon isn't in front.
+- The format wheel: hold ⇧ while dragging files anywhere, and six formats they can all become appear round the pointer, the ones you used last first. Drop on a format to convert to it at once, or on the middle to add the files to the queue without starting. Esc, or letting go anywhere else, cancels, and the drag carries on as usual. It works for photos dragged from Photos too, and asks for no permission. A file still arriving that turns out unable to become the format you dropped it on waits in the queue for you to pick one. It's off until you turn it on, from the first-run card's Show me or Settings → Finder & menus. Wheel conversions are tagged WHEEL in History, and a notification says when one fails while Persimmon isn't in front.
 - A new install's empty queue introduces the wheel, with Show me and Not now, and lists the ways in. Someone who had Persimmon before gets a one-time tip about the wheel instead. The empty queue also has a card for Finder's Convert with Persimmon.
 - `--hardware` on `convert`, `compress` and `watch` encodes H.264 and HEVC with the Mac's hardware encoder (VideoToolbox): much faster, with slightly larger files. Where FFmpeg has no hardware encoder, or it can't encode a video, `prsm` uses software and the result line says so, such as `clip.mov → clip.mp4 (hardware encoder unavailable — used software)`. It's never on unless you ask.
-- Presets for Convert to MP4 or MOV, and for Compress, can use the hardware encoder: "Use hardware encoder when available — faster, slightly larger files". A row that fell back to software says so. Settings → Engines shows which codecs VideoToolbox makes.
+- Presets for Convert to MP4 or MOV, and for Compress, can use the hardware encoder: "Use hardware encoder when available — faster, slightly larger files". A row that fell back to software says so, and so do History and a watch rule's notifications. Settings → Engines shows which codecs VideoToolbox makes.
 - The app's bundled FFmpeg includes VideoToolbox.
 
 ### Added: in the engine (`persimmon-core`)
@@ -50,6 +54,10 @@ Every release of Persimmon and what changed in it. The format follows [Keep a Ch
 
 ### Known limitations
 
+- The app is unsigned: macOS asks you to allow it once, and asks again for any folder a watch rule reads after each update (see the README).
+- The format wheel hasn't been tried on a second display or on macOS 14 yet. It's off until you turn it on.
+- Finder's Services haven't been tried on macOS 14 yet.
+- The app is Apple silicon only, and needs macOS 14 or later.
 - Video and audio still run one at a time.
 
 ## [0.2.0] - 2026-11-16

@@ -4,7 +4,7 @@
 
 An open-source file conversion toolkit for Linux, Windows and macOS. Everything runs locally; there is no network code in the build.
 
-> Version 0.2: the macOS app and the command line. Both convert and compress images, audio and video; make, merge, split and render PDFs; and extract and create archives.
+> Version 0.5: the beta. Watch folders, Finder's right-click menu, the format wheel and Photos, beside the app and the command line. Both convert and compress images, audio and video; make, merge, split and render PDFs; and extract and create archives.
 >
 > **macOS comes first.** The engine and CLI are platform-neutral and build on all three from the first commit, but the GUI and shell integration are built out on macOS through to v1.0 before Windows and Linux begin.
 
@@ -28,7 +28,9 @@ The app isn't signed yet. macOS blocks apps from developers it doesn't know. Ope
 xattr -dr com.apple.quarantine /Applications/Persimmon.app
 ```
 
-Updates: download the new DMG from the Releases page. Persimmon never checks for updates itself (it has no network code). Each update is a new unsigned build, so macOS asks again for any folder a watch rule reads (Desktop, Documents, Downloads). Open Persimmon after updating; a rule that can't read its folder says so until you allow it. Its settings, presets and history live in `~/Library/Application Support/Persimmon`. Each release also carries `Persimmon-<version>-sources.tar`, the source of everything the app bundles, and FFmpeg's configure line.
+Updates: download the new DMG from the Releases page. Persimmon never checks for updates itself (it has no network code). Each update is a new unsigned build, so macOS asks again for any folder a watch rule reads (Desktop, Documents, Downloads). Open Persimmon after updating; a rule that can't read its folder says so until you allow it. Its settings, presets and history live in `~/Library/Application Support/Persimmon`.
+
+Beside its window, the app reaches files where they are: watch folders (under Automation in the sidebar), Convert with Persimmon and Open in Persimmon in Finder's right-click menu under Services, the format wheel (hold ⇧ while dragging files; it's off until you turn it on in Settings → Finder & menus), and photos dragged straight from Photos, which give their originals. It converts several files at once, and a preset can use the Mac's hardware video encoder. Each release also carries `Persimmon-<version>-sources.tar`, the source of everything the app bundles, and FFmpeg's configure line.
 
 ### Release archives
 
@@ -127,7 +129,7 @@ prsm compress scan.png                           # "scan (compressed).png", only
 prsm convert clip.mov --to mp4                   # copies the video stream when MP4 already takes it: fast and lossless
 prsm convert clip.mov --to mp4 --preset small    # HEVC: smaller, slower. --preset compatible is H.264, which plays anywhere
 prsm convert clip.mov --to webm                  # VP9 and Opus; --preset small makes AV1
-prsm compress clip.mp4 --hardware                # the Mac's hardware encoder: much faster, slightly larger
+prsm convert clip.mov --to mp4 --hardware         # the Mac's hardware encoder: much faster, slightly larger
 prsm convert talk.mp4 --to m4a                   # just the audio
 prsm convert clip.mp4 --to gif --max-size 480    # an animated GIF, at most 480 px on the long edge
 prsm compress clip.mp4                           # re-encoded, kept only if it's smaller
