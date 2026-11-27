@@ -24,6 +24,8 @@ pub mod wording;
 // The shipped app has both backends; the e2e suite is about it.
 #[cfg(all(test, target_os = "macos", feature = "vips", feature = "rar"))]
 mod e2e;
+#[cfg(all(test, target_os = "macos", feature = "vips", feature = "rar"))]
+mod e2e_watch;
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) static FFMPEG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(target_os = "macos")]

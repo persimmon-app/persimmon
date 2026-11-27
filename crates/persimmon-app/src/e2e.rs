@@ -103,7 +103,7 @@ pub(crate) fn ffmpeg() -> Option<PathBuf> {
 }
 
 /// Add `paths` in `mode` and point the new row at `to`.
-fn row(rig: &Rig, paths: &[PathBuf], mode: QueueMode, to: Option<FormatId>) -> RowId {
+pub(crate) fn row(rig: &Rig, paths: &[PathBuf], mode: QueueMode, to: Option<FormatId>) -> RowId {
     let mut q = rig.queue.lock().unwrap();
     let added = q.add(paths, mode);
     let id = added
@@ -479,7 +479,7 @@ fn every_corpus_failure_shows_file_reason_and_fix() {
 }
 
 /// No `.part` or `.prsm-*` file anywhere under `dir`.
-fn no_partials(dir: &Path) -> bool {
+pub(crate) fn no_partials(dir: &Path) -> bool {
     std::fs::read_dir(dir).unwrap().all(|e| {
         let e = e.unwrap();
         let n = e.file_name().to_string_lossy().into_owned();
@@ -488,7 +488,7 @@ fn no_partials(dir: &Path) -> bool {
     })
 }
 
-fn no_ffmpeg_child() -> bool {
+pub(crate) fn no_ffmpeg_child() -> bool {
     !std::process::Command::new("/usr/bin/pgrep")
         .args(["-P", &std::process::id().to_string(), "ffmpeg"])
         .status()
@@ -496,7 +496,7 @@ fn no_ffmpeg_child() -> bool {
         .success()
 }
 
-fn wait_until(what: &str, secs: u64, done: impl Fn() -> bool) {
+pub(crate) fn wait_until(what: &str, secs: u64, done: impl Fn() -> bool) {
     let end = Instant::now() + Duration::from_secs(secs);
     while !done() {
         assert!(Instant::now() < end, "timed out waiting for {what}");
@@ -529,7 +529,7 @@ fn many_files_tar(dir: &Scratch) -> PathBuf {
 
 /// One long input per backend: FFmpeg, PDF pages, an archive, each with
 /// the mode and target its row takes.
-fn long_inputs(rig: &Rig) -> Vec<(&'static str, PathBuf, QueueMode, Option<FormatId>)> {
+pub(crate) fn long_inputs(rig: &Rig) -> Vec<(&'static str, PathBuf, QueueMode, Option<FormatId>)> {
     let video = rig.dir.copy(&media_sample("vid-long").unwrap(), "long.mov");
     let pdf = write_pdf_sample(&rig.dir.0, "pdf-many");
     let tar = many_files_tar(&rig.dir);
@@ -831,7 +831,7 @@ fn undo_trashes_what_a_run_wrote() {
 }
 
 /// A rig whose runner has these limits.
-fn rig_with(name: &str, limits: persimmon_core::pool::Limits) -> Rig {
+pub(crate) fn rig_with(name: &str, limits: persimmon_core::pool::Limits) -> Rig {
     let queue = Arc::new(Mutex::new(Queue::new(
         Registry::builtin(),
         OutputPolicy::default(),
