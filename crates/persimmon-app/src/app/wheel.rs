@@ -70,6 +70,8 @@ pub fn offer(reg: &Registry, paths: &[PathBuf], recent: &[FormatId]) -> Offer {
             geometry::formats(reg, &ids, recent),
             geometry::hub(reg, &ids),
         ),
+        // Nothing read: the count alone. Some read and some not: MIXED.
+        _ if found.iter().all(Option::is_none) => (Vec::new(), count(found.len())),
         _ => (Vec::new(), format!("MIXED · {}", count(found.len()))),
     };
     Offer {
@@ -85,7 +87,7 @@ pub fn promised(reg: &Registry, n: usize, recent: &[FormatId]) -> Offer {
     Offer {
         files: Vec::new(),
         formats: geometry::formats(reg, &[FormatId::Heic], recent),
-        hub: format!("PHOTOS · {n}"),
+        hub: count(n),
     }
 }
 
@@ -571,9 +573,17 @@ mod tests {
     }
 
     #[test]
+    fn files_with_no_readable_kind_show_their_count() {
+        let d = Dir::new("no-kind");
+        let a = d.put("a.xyz", b"what is this");
+        assert_eq!(offer(&Registry::builtin(), &[a], &[]).hub, "1 FILE");
+        assert_eq!(promised(&Registry::builtin(), 1, &[]).hub, "1 FILE");
+    }
+
+    #[test]
     fn promises_alone_offer_what_photos_become() {
         let offer = promised(&Registry::builtin(), 3, &[Mp4, Webp]);
-        assert_eq!(offer.hub, "PHOTOS · 3");
+        assert_eq!(offer.hub, "3 FILES");
         assert_eq!(offer.formats[0], Webp, "a photo can't become MP4");
         assert!(offer.formats.contains(&Jpeg));
         assert!(offer.files.is_empty());

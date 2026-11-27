@@ -587,10 +587,32 @@ impl Queue {
         row.keys = vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())];
         row.staged = path.parent().map(Path::to_path_buf);
         row.waiting = None;
-        let start = row.start_when_ready;
-        let target = row.preset.as_ref().and_then(|p| p.target).or(row.wanted);
-        let view = Box::new(self.refresh_at(i, target));
-        Received::Queued { view, start }
+        let mut start = row.start_when_ready;
+        let preset_target = row.preset.as_ref().and_then(|p| p.target);
+        let wanted = row.wanted;
+        let mut shown = self.refresh_at(i, preset_target.or(wanted));
+        // The wheel's pick, which this file turned out unable to become:
+        // it waits with the usual default rather than start as something
+        // nobody asked for.
+        if preset_target.is_none()
+            && let Some(t) = wanted
+            && shown.to != Some(t)
+        {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let format = self.reg.format(t).name.to_uppercase();
+            self.rows[i].note = Some(format!(
+                "{name} can't become {format} — pick a format, then Start."
+            ));
+            shown = view(&self.rows[i]);
+            start = false;
+        }
+        Received::Queued {
+            view: Box::new(shown),
+            start,
+        }
     }
 
     /// The promised file for row `id` never came.
@@ -1226,13 +1248,43 @@ mod tests {
         };
         assert!(start);
         assert_eq!(view.to, Some(FormatId::Tiff));
-        // A format the file can't become leaves it the usual default.
-        let b = q.add_receiving("IMG.HEIC", &convert(), true, true, Some(FormatId::Mp4));
-        let Received::Queued { view, .. } = q.received(b.id, &land(&d, "1-2", "IMG.png")) else {
+        assert_eq!(view.note, None);
+    }
+
+    #[test]
+    fn a_promise_that_cant_become_the_wheels_pick_waits() {
+        let d = Dir::new("promised-cant");
+        let mut q = photos_queue(&d.0.join("out"));
+        let a = q.add_receiving("song", &convert(), true, false, Some(FormatId::Jpeg));
+        let song = d.0.join("promised").join("1-1").join("song.mp3");
+        std::fs::create_dir_all(song.parent().unwrap()).unwrap();
+        std::fs::copy(
+            persimmon_corpus::media::media_sample("aud-mp3")
+                .unwrap_or_else(|| persimmon_corpus::media::media_sample("aud-flac").unwrap()),
+            &song,
+        )
+        .unwrap();
+        let Received::Queued { view, start } = q.received(a.id, &song) else {
             panic!()
         };
-        assert_ne!(view.to, Some(FormatId::Mp4));
+        assert!(!start, "it started as something it wasn't asked to be");
+        assert_eq!(view.state, RowState::Queued);
+        assert_eq!(
+            view.note.as_deref(),
+            Some("song.mp3 can't become JPEG — pick a format, then Start.")
+        );
+        assert_ne!(view.to, Some(FormatId::Jpeg));
         assert!(view.to.is_some());
+        // A format the file can't become, from a photo: the same.
+        let b = q.add_receiving("IMG.HEIC", &convert(), true, true, Some(FormatId::Mp4));
+        let Received::Queued { view, start } = q.received(b.id, &land(&d, "1-2", "IMG.png")) else {
+            panic!()
+        };
+        assert!(!start);
+        assert_eq!(
+            view.note.as_deref(),
+            Some("IMG.png can't become MP4 — pick a format, then Start.")
+        );
     }
 
     #[test]
