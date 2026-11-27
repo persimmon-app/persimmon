@@ -293,3 +293,184 @@ fn rows_and_a_rule_writing_one_folder_never_share_a_name() {
     b.watch.shutdown();
     b.queue.runner.shutdown();
 }
+
+/// How many FFmpeg processes this test process has started and not reaped.
+fn ffmpeg_children() -> usize {
+    let out = std::process::Command::new("/usr/bin/pgrep")
+        .args(["-P", &std::process::id().to_string(), "ffmpeg"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().count()
+}
+
+/// The long video sample, copied to `to`.
+fn long_video(to: &Path) -> PathBuf {
+    let src = persimmon_corpus::media::media_sample("vid-long").unwrap();
+    std::fs::copy(&src, to).unwrap();
+    to.to_path_buf()
+}
+
+/// Two FFmpegs at once: the rule's video beside the queue's.
+const TWO_VIDEOS: Limits = Limits { total: 4, media: 2 };
+
+fn ffmpeg_backends(ff: &Path) -> Backends {
+    Backends::new().with_ffmpeg(ff)
+}
+
+#[test]
+fn quitting_with_rules_and_rows_running_leaves_nothing() {
+    let Some(ff) = crate::e2e::ffmpeg() else {
+        return;
+    };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let b = both(
+        "quit",
+        TWO_VIDEOS,
+        ffmpeg_backends(&ff),
+        OutputPolicy::default(),
+    );
+    let row_input = long_video(&b.queue.dir.0.join("row.mp4"));
+    let id = crate::e2e::row(
+        &b.queue,
+        &[row_input],
+        QueueMode::Convert,
+        Some(FormatId::Webm),
+    );
+    b.queue.runner.start();
+    let rule = b.rule(FormatId::Webm);
+    b.watch.apply(vec![b.running(&rule)]);
+    long_video(&b.folder.join("clip.mp4"));
+    wait("both videos encoding", 60, || {
+        ffmpeg_children() == 2
+            && matches!(
+                crate::e2e::state(&b.queue, id),
+                RowState::Running { fraction: Some(_) }
+            )
+    });
+    // The app's order (`quit_now`): watch rules, then the queue.
+    b.watch.shutdown();
+    b.queue.runner.shutdown();
+    assert!(crate::e2e::no_partials(&b.queue.dir.0));
+    assert!(crate::e2e::no_ffmpeg_child());
+    assert!(matches!(
+        crate::e2e::state(&b.queue, id),
+        RowState::Cancelled
+    ));
+    assert!(b.results().is_empty(), "{:?}", b.results());
+    // The next launch converts the cut-short file, once.
+    let Both { queue, watch, .. } = b;
+    drop(watch);
+    let Rig { runner, dir, .. } = queue;
+    drop(runner);
+    let b = both_at(
+        dir,
+        TWO_VIDEOS,
+        ffmpeg_backends(&ff),
+        OutputPolicy::default(),
+    );
+    b.watch.apply(vec![b.running(&rule)]);
+    wait("the video converted", 180, || b.results() == ["clip.webm"]);
+    settle_down();
+    assert_eq!(b.results(), ["clip.webm"]);
+    b.watch.shutdown();
+}
+
+#[test]
+fn cancelling_a_row_leaves_the_rule_converting() {
+    let Some(ff) = crate::e2e::ffmpeg() else {
+        return;
+    };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let b = both(
+        "cancel",
+        POOL,
+        Backends::new().with_ffmpeg(&ff),
+        OutputPolicy::default(),
+    );
+    let row_input = long_video(&b.queue.dir.0.join("row.mp4"));
+    let id = crate::e2e::row(
+        &b.queue,
+        &[row_input],
+        QueueMode::Convert,
+        Some(FormatId::Webm),
+    );
+    b.queue.runner.start();
+    let rule = b.rule(FormatId::Webp);
+    b.watch.apply(vec![b.running(&rule)]);
+    for i in 0..10 {
+        std::fs::write(b.folder.join(format!("p{i}.png")), PNG_1X1).unwrap();
+    }
+    wait("the row encoding", 60, || {
+        matches!(
+            crate::e2e::state(&b.queue, id),
+            RowState::Running { fraction: Some(_) }
+        )
+    });
+    assert!(b.queue.runner.cancel(id));
+    wait("the row cancelled", 30, || {
+        matches!(crate::e2e::state(&b.queue, id), RowState::Cancelled)
+    });
+    wait("10 outputs", 60, || b.results().len() == 10);
+    assert!(crate::e2e::no_partials(&b.queue.dir.0));
+    b.watch.shutdown();
+    b.queue.runner.shutdown();
+    assert!(crate::e2e::no_ffmpeg_child());
+}
+
+/// A rule converting the long video, stopped by `stop` mid-file: no FFmpeg
+/// and nothing partial left. Returns the rig and the rule.
+fn stopped_mid_file(
+    name: &str,
+    ff: &Path,
+    stop: impl Fn(&Both, &rule::Rule),
+) -> (Both, rule::Rule) {
+    let b = both(name, POOL, ffmpeg_backends(ff), OutputPolicy::default());
+    let rule = b.rule(FormatId::Webm);
+    b.watch.apply(vec![b.running(&rule)]);
+    long_video(&b.folder.join("clip.mp4"));
+    wait("the video encoding", 60, || ffmpeg_children() == 1);
+    stop(&b, &rule);
+    wait("FFmpeg gone", 10, crate::e2e::no_ffmpeg_child);
+    assert!(crate::e2e::no_partials(&b.queue.dir.0));
+    (b, rule)
+}
+
+#[test]
+fn pausing_a_rule_mid_file_leaves_no_part_and_resumes() {
+    let Some(ff) = crate::e2e::ffmpeg() else {
+        return;
+    };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let (b, mut rule) = stopped_mid_file("pause", &ff, |b, rule| {
+        let mut paused = rule.clone();
+        paused.enabled = false;
+        b.watch.apply(vec![b.running(&paused)]);
+    });
+    assert!(b.results().is_empty(), "{:?}", b.results());
+    rule.enabled = true;
+    b.watch.apply(vec![b.running(&rule)]);
+    wait("the video converted", 180, || b.results() == ["clip.webm"]);
+    settle_down();
+    assert_eq!(b.results(), ["clip.webm"]);
+    b.watch.shutdown();
+}
+
+#[test]
+fn removing_a_rule_mid_file_leaves_no_part() {
+    let Some(ff) = crate::e2e::ffmpeg() else {
+        return;
+    };
+    let _serial = crate::FFMPEG_TESTS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let (b, _) = stopped_mid_file("remove", &ff, |b, _| b.watch.apply(vec![]));
+    settle_down();
+    assert!(b.results().is_empty(), "{:?}", b.results());
+    assert_eq!(b.watch.active(), 0);
+}
