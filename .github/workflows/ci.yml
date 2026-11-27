@@ -144,6 +144,15 @@ jobs:
             cargo deny --manifest-path crates/persimmon-app/Cargo.toml --target "$target" check licenses advisories
           done
 
+      # The licence inventory: THIRD-PARTY.md lists every direct dependency
+      # of the shipped crates, and about.toml (the release's licence list)
+      # accepts exactly what deny.toml allows.
+      - name: Check the licence inventory
+        if: runner.os == 'Linux'
+        run: |
+          bash .github/scripts/inventory-test.sh
+          bash .github/scripts/inventory.sh
+
       - name: Build release
         run: cargo build --workspace --release --locked ${{ matrix.features }}
 
