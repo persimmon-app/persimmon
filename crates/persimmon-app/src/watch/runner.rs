@@ -601,12 +601,15 @@ impl Shared {
             return;
         };
         let (plan, claim) = job.plan_claimed(&self.deps.reg, &self.deps.claims);
+        let mut note = None;
         let ended = match plan.errors.first() {
             Some(e) => Some((ItemOutcome::Failed { error: shown(e) }, None)),
             None => {
                 let results = execute(&job, &plan, &*self.deps.engine, &rs.cancel, &mut |_| {});
                 match results.into_iter().next() {
-                    Some(Ok(Outcome::Written(out) | Outcome::WrittenNoted(out, _))) => {
+                    Some(Ok(Outcome::Written(out))) => Some((ItemOutcome::Done, Some(out))),
+                    Some(Ok(Outcome::WrittenNoted(out, n))) => {
+                        note = Some(n.text);
                         Some((ItemOutcome::Done, Some(out)))
                     }
                     Some(Ok(Outcome::NotSmaller)) => Some((ItemOutcome::NotSmaller, None)),
@@ -676,6 +679,7 @@ impl Shared {
             mode: Some(QueueMode::Convert),
             moved,
             restored: false,
+            note,
         };
         if rs.notify_each.load(Ordering::Relaxed) && self.deps.notifier.allowed() {
             let n = lock(&rs.bursts).len();
@@ -777,6 +781,12 @@ mod tests {
                 return Err(Error::new(ErrorCode::Cancelled, "cancelled"));
             }
             std::fs::copy(input, temp).unwrap();
+            if name.starts_with("noted") {
+                return Ok(Done::Noted(persimmon_core::error::Note {
+                    kind: persimmon_core::error::NoteKind::UsedSoftware,
+                    text: "hardware encoder unavailable — used software".into(),
+                }));
+            }
             Ok(Done::Written)
         }
     }
@@ -1093,6 +1103,29 @@ mod tests {
         let w = r.runner();
         w.apply(vec![r.running(&rule)]);
         wait("slow converted", || r.results() == ["slow.webp"]);
+    }
+
+    #[test]
+    fn a_software_fallback_reaches_history_and_the_file_note() {
+        let r = rig("noted");
+        let w = r.runner();
+        let mut rule = r.rule();
+        rule.notify_each = true;
+        w.apply(vec![r.running(&rule)]);
+        r.png("noted.png");
+        wait("a batch", || r.batches().len() == 1);
+        assert_eq!(
+            r.batches()[0].items[0].note.as_deref(),
+            Some("hardware encoder unavailable — used software")
+        );
+        let posts = r.notes.posts.lock().unwrap().clone();
+        assert!(
+            posts
+                .iter()
+                .any(|p| p.1
+                    == "noted.png → noted.webp (hardware encoder unavailable — used software)"),
+            "{posts:?}"
+        );
     }
 
     #[test]

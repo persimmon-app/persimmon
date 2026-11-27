@@ -421,6 +421,10 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
     let items = rows
         .iter()
         .map(|r| {
+            let note = match &r.state {
+                RowState::Done { note, .. } => note.clone(),
+                _ => None,
+            };
             let (outcome, output_size) = match &r.state {
                 RowState::Done { output_size, .. } => (ItemOutcome::Done, *output_size),
                 RowState::NotSmaller => (ItemOutcome::NotSmaller, None),
@@ -453,6 +457,7 @@ fn record(started: u64, source: Source, rows: &[RowView]) -> Batch {
                 }),
                 moved: None,
                 restored: false,
+                note,
             }
         })
         .collect();
@@ -775,6 +780,29 @@ mod tests {
                 output_size: None,
                 note: Some("hardware encoder unavailable — used software".into()),
             }
+        );
+    }
+
+    #[test]
+    fn a_noted_row_keeps_its_note_in_history() {
+        let mut q = Queue::new(
+            Registry::builtin(),
+            persimmon_core::output::OutputPolicy::default(),
+        );
+        let id = q.add(&[PathBuf::from("/x/a.mov")], QueueMode::Convert)[0].id;
+        q.update(
+            id,
+            RowState::Done {
+                output: "/x/a.mp4".into(),
+                output_size: Some(1),
+                note: Some("hardware encoder unavailable — used software".into()),
+            },
+        );
+        let rows = vec![q.get(id).unwrap()];
+        let batch = record(0, Source::Window, &rows);
+        assert_eq!(
+            batch.items[0].note.as_deref(),
+            Some("hardware encoder unavailable — used software")
         );
     }
 

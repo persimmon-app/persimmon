@@ -162,7 +162,10 @@ fn name(p: &Path) -> String {
 pub fn file_note(item: &Item) -> String {
     let input = item.inputs.first().map(|p| name(p)).unwrap_or_default();
     match (&item.outcome, &item.output) {
-        (ItemOutcome::Done, Some(out)) => format!("{input} → {}", name(out)),
+        (ItemOutcome::Done, Some(out)) => match &item.note {
+            Some(note) => format!("{input} → {} ({note})", name(out)),
+            None => format!("{input} → {}", name(out)),
+        },
         (ItemOutcome::Failed { error }, _) => format!("{input} failed: {}", error.reason),
         _ => format!("{input}: nothing written"),
     }
@@ -173,6 +176,17 @@ mod tests {
     use super::*;
     use crate::wording::Shown;
     use persimmon_core::error::ErrorCode;
+
+    #[test]
+    fn file_note_appends_the_note() {
+        let mut i = item("clip.mov", Some("clip.mp4"));
+        i.note = Some("hardware encoder unavailable — used software".into());
+        assert_eq!(
+            file_note(&i),
+            "clip.mov → clip.mp4 (hardware encoder unavailable — used software)"
+        );
+        assert_eq!(file_note(&item("a.png", Some("a.webp"))), "a.png → a.webp");
+    }
 
     fn item(name: &str, out: Option<&str>) -> Item {
         Item {
@@ -197,6 +211,7 @@ mod tests {
             mode: None,
             moved: None,
             restored: false,
+            note: None,
         }
     }
 

@@ -52,6 +52,14 @@ describe("HistoryBatch", () => {
     expect(screen.getByText("Original put back")).toBeTruthy();
   });
 
+  it("shows an item's note", async () => {
+    const b = batch({ id: "n" });
+    b.items[0] = { ...b.items[0], note: "hardware encoder unavailable — used software" };
+    render(HistoryBatch, { batch: b, onReveal: vi.fn(), onUndo: vi.fn(), open: true });
+    expect(screen.getByText("hardware encoder unavailable — used software")).toBeTruthy();
+    expect(document.querySelectorAll(".note").length).toBe(1);
+  });
+
   it("opens by itself when asked to", () => {
     render(HistoryBatch, { batch: batch({ id: "a" }), onReveal: vi.fn(), onUndo: vi.fn(), open: true });
     expect(screen.getByText("hero.png → hero.webp")).toBeTruthy();

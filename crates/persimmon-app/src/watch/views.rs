@@ -141,6 +141,7 @@ mod tests {
             mode: None,
             moved: None,
             restored: false,
+            note: None,
         }
     }
 

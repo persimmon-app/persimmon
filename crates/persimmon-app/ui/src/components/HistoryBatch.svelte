@@ -57,6 +57,7 @@
         <li>
           <span class="names">{base(item.inputs[0])}{#if item.output}{" → "}{base(item.output)}{/if}</span>
           {#if item.outcome === "done"}<span class="sizes">{size(item.size)} → {size(item.outputSize ?? 0)}</span>{/if}
+          {#if item.note}<span class="note">{item.note}</span>{/if}
           {#if item.outcome === "failed"}<span class="why">{item.error.reason}</span>{/if}
           {#if item.outcome === "cancelled"}<span class="state">Cancelled</span>{/if}
           {#if item.outcome === "failed" || item.outcome === "cancelled"}
@@ -88,6 +89,7 @@
   li { display: flex; align-items: center; gap: var(--space-3); padding: 3px 0; }
   .names { flex: 1; color: var(--text); }
   .why { font-size: var(--text-meta); color: var(--error-text); }
+  .note { font-size: var(--text-meta); color: var(--muted); }
   .disclose { width: 24px; border: 0; background: transparent; color: var(--muted); font-size: 16px; padding: 0; }
   .chev { display: inline-block; transition: transform 0.15s; }
   .chev.open { transform: rotate(90deg); }

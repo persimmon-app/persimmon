@@ -64,6 +64,10 @@ pub struct Item {
     /// Whether undo put that original back.
     #[serde(default)]
     pub restored: bool,
+    /// The engine's note beside the result, such as a fallback to software
+    /// encoding; older lines have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// An original a watch rule moved, as History keeps it.
@@ -606,6 +610,7 @@ mod tests {
             mode: None,
             moved: None,
             restored: false,
+            note: None,
         }
     }
 
@@ -850,6 +855,21 @@ mod tests {
     }
 
     #[test]
+    fn a_line_without_a_note_still_loads() {
+        let line = r#"{"inputs":["/a.png"],"output":"/a.webp","outputSize":1,"outputMtime":null,"size":1,"outcome":"done"}"#;
+        let item: Item = serde_json::from_str(line).unwrap();
+        assert_eq!(item.note, None);
+        let written = serde_json::to_string(&item).unwrap();
+        assert!(!written.contains("\"note\""), "{written}");
+        let noted = Item {
+            note: Some("hardware encoder unavailable — used software".into()),
+            ..item
+        };
+        let back: Item = serde_json::from_str(&serde_json::to_string(&noted).unwrap()).unwrap();
+        assert_eq!(back.note, noted.note);
+    }
+
+    #[test]
     fn an_old_history_line_loads_without_a_target() {
         let line = r#"{"inputs":["/a.png"],"output":null,"outputSize":null,"outputMtime":null,"size":1,"outcome":"cancelled"}"#;
         let item: Item = serde_json::from_str(line).unwrap();
@@ -895,6 +915,7 @@ mod tests {
             mode: None,
             moved: None,
             restored: false,
+            note: None,
         };
         h.append(batch("bad", now(), vec![failed])).unwrap();
         let ids = |v: Vec<&Batch>| v.iter().map(|b| b.id.clone()).collect::<Vec<_>>();

@@ -109,6 +109,8 @@ export type Item = {
   moved?: { from: string; to: string; stamp: { size: number; secs: number; nanos: number } } | null;
   /** Whether undo put that original back. */
   restored?: boolean;
+  /** The engine's note beside the result, such as a fallback to software encoding. */
+  note?: string | null;
 } & ItemOutcome;
 
 export type HistoryFilter = "all" | "undoable" | "failed";
