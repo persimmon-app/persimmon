@@ -131,8 +131,9 @@ impl Runner {
         self.inner.wake.notify_all();
     }
 
-    /// Start from the main window.
+    /// Start from the main window: held rows run too.
     pub fn start(&self) {
+        lock(&self.inner.queue).release_held();
         self.start_from(Source::Window);
     }
 
@@ -310,7 +311,7 @@ impl Inner {
             }
             // Rows still queued wait for their lanes, ahead of background work.
             let mut wanted = [false, false];
-            for row in queue.rows().iter().filter(|r| r.state == RowState::Queued) {
+            for row in &queue.queued() {
                 wanted[lane_index(self.lane_of(row))] = true;
             }
             for (i, lane) in [Lane::Cpu, Lane::Media].into_iter().enumerate() {
@@ -1034,6 +1035,65 @@ mod tests {
         }
 
         const TWO: Limits = Limits { total: 2, media: 1 };
+
+        /// A promised file that can't become the wheel's pick waits through
+        /// the wheel's own start, and the drain that's under way; Start
+        /// from the window runs it.
+        #[test]
+        fn a_held_promise_waits_until_start() {
+            let d = Dir::new("several-held");
+            let out = d.0.join("out");
+            let (q, r, _gate) = gated(
+                TWO,
+                persimmon_core::output::OutputPolicy {
+                    dir: None,
+                    overwrite: false,
+                    fallback: Some(out),
+                },
+            );
+            let convert = crate::queue::Recipe::Mode(QueueMode::Convert);
+            let land = |folder: &str, name: &str, src: &Path| {
+                let dir = d.0.join("promised").join(folder);
+                std::fs::create_dir_all(&dir).unwrap();
+                let p = dir.join(name);
+                std::fs::copy(src, &p).unwrap();
+                p
+            };
+            let png = d.put("src.png", &PNG_1X1);
+            let mp3 = media_sample("aud-mp3").unwrap();
+            let (song, photo) = {
+                let mut q = q.lock().unwrap();
+                let song = q.add_receiving("song", &convert, true, false, Some(FormatId::Jpeg));
+                let photo = q.add_receiving("IMG", &convert, true, true, Some(FormatId::Jpeg));
+                (song.id, photo.id)
+            };
+            let held = q
+                .lock()
+                .unwrap()
+                .received(song, &land("1-1", "song.mp3", &mp3));
+            assert!(matches!(
+                held,
+                crate::queue::Received::Queued { start: false, .. }
+            ));
+            let ok = q
+                .lock()
+                .unwrap()
+                .received(photo, &land("1-2", "IMG.png", &png));
+            assert!(matches!(
+                ok,
+                crate::queue::Received::Queued { start: true, .. }
+            ));
+            r.start_from(Source::Wheel);
+            wait("the photo", 5, || {
+                matches!(state(&q, photo), RowState::Done { .. })
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(state(&q, song), RowState::Queued, "the held row ran");
+            r.start();
+            wait("the song, once started", 5, || {
+                matches!(state(&q, song), RowState::Done { .. })
+            });
+        }
 
         #[test]
         fn two_image_rows_run_at_once() {

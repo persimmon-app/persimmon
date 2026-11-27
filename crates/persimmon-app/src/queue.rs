@@ -198,6 +198,10 @@ struct Row {
     /// Run as soon as the file arrives (a drop on the drop panel, or Start
     /// while it was still coming).
     start_when_ready: bool,
+    /// Waiting for a format to be picked, or Start from the window: a
+    /// promised file that can't become the wheel's pick. The runner leaves
+    /// it alone until then.
+    held: bool,
     /// The file came from Photos rather than another app.
     photos: bool,
     /// The format a promised file was dropped on (the wheel), set when it
@@ -606,6 +610,7 @@ impl Queue {
             self.rows[i].note = Some(format!(
                 "{name} can't become {format} — pick a format, then Start."
             ));
+            self.rows[i].held = true;
             shown = view(&self.rows[i]);
             start = false;
         }
@@ -695,7 +700,7 @@ impl Queue {
         let i = self
             .rows
             .iter()
-            .position(|r| r.state == RowState::Queued && ok(&view(r)))?;
+            .position(|r| r.state == RowState::Queued && !r.held && ok(&view(r)))?;
         let rev = self.bump();
         let row = &mut self.rows[i];
         row.state = RowState::Running { fraction: None };
@@ -705,7 +710,26 @@ impl Queue {
 
     /// Whether any row is waiting to run.
     pub fn any_queued(&self) -> bool {
-        self.rows.iter().any(|r| r.state == RowState::Queued)
+        self.rows
+            .iter()
+            .any(|r| r.state == RowState::Queued && !r.held)
+    }
+
+    /// The rows waiting to run, leaving out held ones.
+    pub fn queued(&self) -> Vec<RowView> {
+        self.rows
+            .iter()
+            .filter(|r| r.state == RowState::Queued && !r.held)
+            .map(view)
+            .collect()
+    }
+
+    /// Start from the window means every queued row, held ones too: they
+    /// run with the format they show.
+    pub fn release_held(&mut self) {
+        for row in self.rows.iter_mut().filter(|r| r.held) {
+            row.held = false;
+        }
     }
 
     pub fn update(&mut self, id: RowId, state: RowState) -> Option<RowView> {
@@ -778,6 +802,7 @@ impl Queue {
             rev: 0,
             staged: None,
             start_when_ready: false,
+            held: false,
             photos: false,
             wanted: None,
             waiting: None,
@@ -813,6 +838,7 @@ impl Queue {
             .unwrap_or(0);
         row.output = None;
         row.note = None;
+        row.held = false;
         row.from = None;
         row.job.inputs = vec![path.clone()];
         row.job.output = self.policy.clone();
@@ -892,6 +918,7 @@ impl Queue {
     fn refresh_combine(&self, row: &mut Row, target: Option<FormatId>) {
         row.output = None;
         row.note = None;
+        row.held = false;
         row.from = None;
         row.size = row
             .inputs
@@ -1133,6 +1160,7 @@ fn placeholder() -> Row {
         rev: 0,
         staged: None,
         start_when_ready: false,
+        held: false,
         photos: false,
         wanted: None,
         waiting: None,
