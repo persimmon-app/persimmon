@@ -1258,7 +1258,8 @@ mod tests {
         std::fs::create_dir_all(r.input()).unwrap();
         r.png("a.png");
         wait("a converted", || r.results() == ["a.webp"]);
-        assert_eq!(r.last_state(), Some(WatchState::Watching));
+        // The output appears before the worker reports the queue empty.
+        wait("watching", || r.last_state() == Some(WatchState::Watching));
     }
 
     #[test]
