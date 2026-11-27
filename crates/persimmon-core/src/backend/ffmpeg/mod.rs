@@ -65,8 +65,16 @@ impl Run for FfmpegBackend {
             }
         };
         let mut ran = child::run_ffmpeg(&self.ff, &built.args, info.duration, cancel, &mut forward);
+        // Software can't help with a cancel, an output it can't write
+        // either, or an FFmpeg that lacks the encoder.
+        let software_might_help = |code: ErrorCode| {
+            !matches!(
+                code,
+                ErrorCode::Cancelled | ErrorCode::OutputNotWritable | ErrorCode::BackendMissing
+            )
+        };
         if built.hardware == args::Hardware::Used
-            && ran.as_ref().is_err_and(|f| f.code != ErrorCode::Cancelled)
+            && ran.as_ref().is_err_and(|f| software_might_help(f.code))
         {
             // The hardware encoder refused this video: once more in software.
             let software = JobOptions {
@@ -616,6 +624,71 @@ mod backend_tests {
             .run(&task(&input, Some(Mov)), &o, &temp(), &cancel, &mut |_| {})
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::Cancelled, "{e}");
+    }
+
+    /// A fake FFmpeg that logs each call to a file and runs `body`;
+    /// returns it and the log.
+    #[cfg(unix)]
+    fn counting(real: &Ffmpeg, body: &str) -> (Ffmpeg, PathBuf) {
+        let log = temp().with_extension("calls");
+        let ff = super::child::tests::fake(
+            real,
+            "ffmpeg",
+            &format!("echo x >> '{}'\n{body}", log.display()),
+        )
+        .with_encoder("h264_videotoolbox");
+        (ff, log)
+    }
+
+    #[cfg(unix)]
+    fn calls(log: &Path) -> usize {
+        std::fs::read_to_string(log).map_or(0, |s| s.lines().count())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_output_is_not_retried_in_software() {
+        let Some(real) = ff() else { return };
+        let (ff, log) = counting(&real, "echo 'Permission denied' >&2; exit 1");
+        // A quality makes it an encode, not a remux.
+        let o = JobOptions {
+            hardware: true,
+            quality: Some(Quality::Low),
+            ..JobOptions::default()
+        };
+        let input = media_sample("vid-mp4").unwrap();
+        let (r, _) = convert(&ff, &input, Some(Mov), &o);
+        let e = r.unwrap_err();
+        assert_eq!(e.code, ErrorCode::OutputNotWritable, "{e}");
+        assert_eq!(
+            e.fix.as_ref().map(|f| &f.kind),
+            Some(&FixKind::ChooseOutputFolder)
+        );
+        assert_eq!(calls(&log), 1, "retried in software");
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_retry_reports_the_software_error() {
+        let Some(real) = ff() else { return };
+        let (ff, log) = counting(
+            &real,
+            "case \"$*\" in *videotoolbox*) echo 'cannot open encoder' >&2; exit 1;; esac\necho 'Invalid data found when processing input' >&2; exit 1",
+        );
+        // A quality makes it an encode, not a remux.
+        let o = JobOptions {
+            hardware: true,
+            quality: Some(Quality::Low),
+            ..JobOptions::default()
+        };
+        let input = media_sample("vid-mp4").unwrap();
+        let (r, _) = convert(&ff, &input, Some(Mov), &o);
+        let e = r.unwrap_err();
+        assert_eq!(e.code, ErrorCode::CorruptInput, "{e}");
+        assert!(e.to_string().contains("Invalid data found"), "{e}");
+        assert_eq!(calls(&log), 2);
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]

@@ -537,6 +537,43 @@ mod archives {
         lock(&out_dir, 0o755);
         assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
     }
+
+    /// A hardware encode into a folder it can't write fails once, naming
+    /// `--out`: no software retry, and one fix line.
+    #[cfg(unix)]
+    #[test]
+    fn hardware_on_an_unwritable_folder_fails_once() {
+        use persimmon_corpus::media::{media_sample, test_ffmpeg};
+        let Some(ff) = test_ffmpeg() else { return };
+        let Some(clip) = media_sample("vid-mp4") else {
+            return;
+        };
+        let c = Corpus::new("hardware-unwritable");
+        std::fs::copy(&clip, c.dir.join("clip.mp4")).unwrap();
+        let out_dir = c.dir.join("readonly");
+        std::fs::create_dir(&out_dir).unwrap();
+        lock(&out_dir, 0o555);
+        let ff = ff.to_string_lossy().into_owned();
+        let out = prsm(
+            &c.dir,
+            [
+                "convert",
+                "clip.mp4",
+                "--to",
+                "mov",
+                "--quality",
+                "low",
+                "--hardware",
+                "--ffmpeg",
+                &ff,
+                "--out",
+                "readonly",
+            ],
+        );
+        lock(&out_dir, 0o755);
+        assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
+        assert_eq!(stderr(&out).matches("--out").count(), 1, "{}", stderr(&out));
+    }
 }
 
 #[test]
